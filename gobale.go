@@ -11,6 +11,6 @@ func Hello(name string) string {
 }
 
 // NewBot creates a new bot instance
-func NewBot(name string) string {
+func New_Bot(name string) string {
     return "Bot " + name + " created!"
 }
