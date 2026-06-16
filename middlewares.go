@@ -17,6 +17,7 @@ type tokenBucket struct {
 	lastRefill time.Time
 	rate       float64
 	capacity   float64
+	lastWarned time.Time
 }
 
 type ChatLimiterManager struct {
@@ -41,6 +42,18 @@ func (tb *tokenBucket) allow() bool {
 
 	if tb.tokens >= 1.0 {
 		tb.tokens -= 1.0
+		return true
+	}
+	return false
+}
+
+func (tb *tokenBucket) shouldWarn(cooldown time.Duration) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(tb.lastWarned) >= cooldown {
+		tb.lastWarned = now
 		return true
 	}
 	return false
@@ -136,9 +149,15 @@ func ChatRateLimitMiddleware(rate float64, capacity float64, onLimit HandlerFunc
 
 		tb := manager.getLimiter(chatID)
 		if !tb.allow() {
-			if onLimit != nil {
-				onLimit(c)
+
+			_ = c.Delete()
+
+			if tb.shouldWarn(5 * time.Second) {
+				if onLimit != nil {
+					onLimit(c)
+				}
 			}
+
 			c.Abort()
 			return
 		}
