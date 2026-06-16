@@ -1,57 +1,181 @@
 ## 🚀 راهنمای نصب و افزودن به پروژه (Installation & Setup)
 
-شما به دو روش استاندارد (از روی گیت‌هاب) یا روش توسعه محلی (فضای کاری Go Work) می‌توانید این کتابخانه را به پروژه خود اضافه کنید [1]:
+شما به دو روش استاندارد (از روی گیت‌هاب) یا روش توسعه محلی (فضای کاری Go Work) می‌توانید این کتابخانه را به پروژه خود اضافه کنید.
 
 ### روش اول: نصب و استفاده استاندارد (Production Mode)
 
-این روش برای زمانی است که کتابخانه روی گیت‌هاب شما منتشر شده است و می‌خواهید آن را به پروژه خود ایمپورت کنید [1]:
+1. **ایجاد پروژه جدید** (در صورت نیاز):
+   ```bash
+   mkdir mybot
+   cd mybot
+   go mod init github.com/YOUR_USERNAME/mybot
+   ```
 
-۱. ابتدا پوشه پروژه خود را بسازید و مدول گو را در آن مقداردهی اولیه کنید (یوزرنیم گیت‌هاب خود را جایگزین کنید) [1]:
-```bash
-go mod init mybot
-```
+2. **تنظیم پروکسی و محیط** (برای کاربران ایرانی و مناطق با محدودیت شبکه):
+   ```bash
+   # تنظیم پروکسی برای دانلود ماژول‌ها
+   go env -w GOPROXY=https://goproxy.ir,direct
+   # غیرفعال کردن سام (برای رفع خطای TLS در برخی شبکه‌ها)
+   go env -w GOSUMDB=off
+   ```
 
-۲. با دستور زیر، کتابخانه را از روی گیت‌هاب به پروژه خود اضافه کنید [1]:
-```bash
-go get github.com/PHX-Go/GoBale
-```
+3. **دریافت کتابخانه**:
+   ```bash
+   # دریافت آخرین نسخه پایدار
+   go get github.com/PHX-Go/GoBale@v0.1.0
+   ```
 
-۳. اکنون می‌توانید پکیج را در فایل‌های پروژه خود ایمپورت و استفاده کنید [1]:
-```go
-import (
-    "github.com/PHX-Go/GoBale"
-    "github.com/PHX-Go/GoBale/models"
-)
-```
+4. **استفاده در کد**:
+   ```go
+   package main
+
+   import (
+       "fmt"
+       "github.com/PHX-Go/GoBale"
+       "github.com/PHX-Go/GoBale/models"
+   )
+
+   func main() {
+       // ایجاد نمونه ربات
+       bot := gobale.NewBot("YOUR_BOT_TOKEN", gobale.AutoWorkers)
+
+       // ثبت یک دستور ساده
+       bot.OnCommand("/start", func(c *gobale.Context) {
+           c.Reply("به ربات GoBale خوش آمدید! 🎉")
+       })
+
+       // شروع به کار ربات
+       bot.RunPolling()
+   }
+   ```
 
 ---
 
 ### روش دوم: توسعه همزمان محلی با فضای کاری گو (Local Go Workspace - `go.work`)
 
-اگر می‌خواهید کتابخانه اصلی (`gobale`) و ربات خود را به صورت محلی و همزمان توسعه دهید (بدون نیاز به انتشار مداوم روی گیت‌هاب برای تست تغییرات)، استفاده از **Go Workspaces** حرفه‌ای‌ترین روش است [1].
+اگر می‌خواهید کتابخانه اصلی (`gobale`) و ربات خود را به صورت محلی و همزمان توسعه دهید (بدون نیاز به انتشار مداوم روی گیت‌هاب برای تست تغییرات)، استفاده از **Go Workspaces** حرفه‌ای‌ترین روش است.
 
-۱. یک پوشه مادر (مثلاً به نام `GoBaleProject`) ایجاد کرده و پوشه‌های `gobale` و ربات خود (مثلاً `mybot`) را در داخل آن قرار دهید [1].
+1. **ایجاد ساختار پوشه‌ها**:
+   یک پوشه مادر (مثلاً به نام `GoBaleProject`) ایجاد کرده و پوشه‌های `gobale` و ربات خود (مثلاً `mybot`) را در داخل آن قرار دهید.
 
-۲. یک فایل به نام **`go.work`** در پوشه مادر بسازید و پوشه‌های مدول‌ها را در آن رجیستر کنید [1]:
+2. **ایجاد فایل فضای کاری**:
+   یک فایل به نام **`go.work`** در پوشه مادر بسازید و پوشه‌های مدول‌ها را در آن رجیستر کنید:
+   ```go
+   go 1.26.3
+
+   use (
+       ./gobale
+       ./mybot
+   )
+   ```
+   > **نکته**: همچنین می‌توانید به جای ساخت دستی، فایل فضای کاری را با دستورات زیر در ترمینال پوشه مادر ایجاد کنید:
+   ```bash
+   go work init
+   go work use ./gobale
+   go work use ./mybot
+   ```
+
+3. **مزیت این روش**:
+   با این کار، زمانی که در فایل‌های ربات خود کدهای کتابخانه را با آدرس گیت‌هاب `import "github.com/PHX-Go/GoBale"` صدا می‌زنید، کامپایلر گو به صورت هوشمند متوجه شده و تغییرات را به صورت آفلاین از پوشه محلی `./gobale` می‌خواند. این کار فرآیند تست و توسعه محلی شما را به غایت ساده و سریع می‌کند.
+
+---
+
+### 🛠️ عیب‌یابی خطاهای رایج نصب
+
+#### ۱. خطای `go: module github.com/PHX-Go/GoBale@latest found (v1.0.0), but does not contain package`
+
+**راه‌حل**: این خطا به دلیل کش قدیمی گو یا نسخه‌های ناقص قبلی رخ می‌دهد. مراحل زیر را به ترتیب انجام دهید:
+
+```bash
+# ۱. پاکسازی کامل کش ماژول‌ها
+go clean -modcache
+
+# ۲. حذف فایل‌های go.mod و go.sum (در پروژه خودتان، نه کتابخانه)
+rm go.mod go.sum   # در ویندوز: del go.mod go.sum
+
+# ۳. تنظیم مجدد پروکسی (برای کاربران ایرانی)
+go env -w GOPROXY=https://goproxy.ir,direct
+go env -w GOSUMDB=off
+
+# ۴. ایجاد مجدد go.mod
+go mod init myapp
+
+# ۵. دریافت کتابخانه با نسخه دقیق
+go get github.com/PHX-Go/GoBale@v0.1.0
+
+# ۶. مرتب‌سازی وابستگی‌ها
+go mod tidy
+```
+
+#### ۲. خطای TLS Handshake یا `net/http: TLS handshake timeout`
+
+**راه‌حل**: این خطا به دلیل محدودیت‌های شبکه در برخی مناطق رخ می‌دهد. برای رفع آن، یکی از راه‌حل‌های زیر را امتحان کنید:
+
+```bash
+# راه‌حل اول: استفاده از پروکسی ایرانی
+go env -w GOPROXY=https://goproxy.ir,direct
+go env -w GOSUMDB=off
+
+# راه‌حل دوم: استفاده از پروکسی گوگل (اگر پروکسی اول کار نکرد)
+go env -w GOPROXY=https://proxy.golang.org,direct
+go env -w GOSUMDB=off
+
+# راه‌حل سوم: استفاده از Mirror RunFlare
+go env -w GOPROXY=https://mirror-go.runflare.com,direct
+go env -w GOSUMDB=off
+
+# راه‌حل چهارم: استفاده از روش مستقیم (بدون پروکسی)
+go env -w GOPROXY=direct
+go env -w GOSUMDB=off
+```
+
+#### ۳. خطای `cannot find package "github.com/PHX-Go/GoBale"`
+
+**راه‌حل**: این خطا معمولاً به خاطر کش قدیمی IDE یا تنظیمات نادرست `GOPATH` است. مراحل زیر را امتحان کنید:
+
+```bash
+# ۱. پاکسازی کامل کش
+go clean -cache -modcache -testcache
+
+# ۲. دریافت مجدد کتابخانه
+go get -v github.com/PHX-Go/GoBale@v0.1.0
+
+# ۳. در VS Code، کلیدهای Ctrl+Shift+P را بزنید و Go: Restart Language Server را اجرا کنید
+
+# ۴. اگر مشکل ادامه داشت، VS Code را کاملاً ببندید و دوباره باز کنید
+```
+
+#### ۴. خطای `no required module provides package`
+
+**راه‌حل**: مطمئن شوید که مسیر `import` در کد شما دقیقاً به شکل زیر باشد:
 
 ```go
-go 1.26.3
-
-use (
-	./gobale
-	./mybot
+import (
+    "github.com/PHX-Go/GoBale"           // پکیج اصلی
+    "github.com/PHX-Go/GoBale/models"     // پکیج مدل‌ها
+    "github.com/PHX-Go/GoBale/methods"    // پکیج متدها
+    "github.com/PHX-Go/GoBale/middleware" // پکیج میدل‌ورها
+    "github.com/PHX-Go/GoBale/session"    // پکیج سشن
 )
 ```
 
-۳. همچنین می‌توانید به جای ساخت دستی، فایل فضای کاری را با دستورات زیر در ترمینال پوشه مادر ایجاد کنید [1]:
-```bash
-go work init
-go work use ./gobale
-go work use ./mybot
-```
+---
 
-#### مزیت عالی روش `go.work`:
-با این کار، زمانی که در فایل‌های ربات خود کدهای کتابخانه را با آدرس گیت‌هاب `import "github.com/YOUR_USERNAME/gobale"` صدا می‌زنید، کامپایلر گو به صورت هوشمند متوجه شده و تغییرات را به صورت آفلاین از پوشه محلی `./gobale` می‌خواند [1]. این کار فرآیند تست و توسعه محلی شما را به غایت ساده و سریع می‌کند [1].
+### 💡 نکته نهایی
+
+اگر پس از انجام تمام مراحل بالا، همچنان با مشکل مواجه شدید، می‌توانید کتابخانه را به صورت **محلی** (بدون نیاز به گیت‌هاب) کلون کرده و از طریق `replace` در `go.mod` به پروژه خود متصل کنید:
+
+```bash
+# ۱. کلون کردن کتابخانه در کنار پروژه
+git clone https://github.com/PHX-Go/GoBale.git
+
+# ۲. در فایل go.mod پروژه خود، خط زیر را اضافه کنید:
+# replace github.com/PHX-Go/GoBale => ../GoBale
+
+# ۳. اجرا کنید:
+go mod tidy
+go run main.go
+```
 ---
 # مستندات فنی: دریافت آپدیت‌ها، وب‌هوک و پولینگ (Updates, Webhook & Polling)
 
