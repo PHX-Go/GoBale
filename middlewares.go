@@ -145,18 +145,17 @@ func MaintenanceMiddleware(enabled *bool, adminID int64, alertText string) Handl
 	}
 }
 
-func AntiSpamMiddleware(b *Bot) HandlerFunc {
+func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
+
+	var userLimits sync.Map
+
 	return func(c *Context) {
-		if b.AntiSpamLimit > 0 && c.Message != nil && c.Message.From != nil {
+		if limit > 0 && c.Message != nil && c.Message.From != nil {
 			userID := c.Message.From.ID
 			now := time.Now().UnixNano()
+			windowNs := int64(window)
 
-			windowNs := int64(5 * time.Second)
-			if b.AntiSpamWindow > 0 {
-				windowNs = int64(b.AntiSpamWindow)
-			}
-
-			val, _ := b.userLimits.LoadOrStore(userID, &userLimit{})
+			val, _ := userLimits.LoadOrStore(userID, &userLimit{})
 			ul := val.(*userLimit)
 
 			ul.mu.Lock()
@@ -169,10 +168,24 @@ func AntiSpamMiddleware(b *Bot) HandlerFunc {
 			count := ul.msgCount
 			ul.mu.Unlock()
 
-			if count > b.AntiSpamLimit {
-				if b.OnSpam != nil {
-					b.OnSpam(c)
+			if count > limit {
+
+				_ = c.Delete()
+
+				if count == limit+1 {
+
+					var mention string
+					if c.Message.From.Username != "" {
+						mention = "@" + c.Message.From.Username
+					} else {
+						mention = Bold(c.Message.From.FirstName)
+					}
+
+					warningText := fmt.Sprintf("⚠️ کاربر %s، شما به دلیل ارسال بیش از حد پیام مسدود شدید! پیام‌های شما موقتاً حذف خواهند شد.", mention)
+
+					_, _ = c.SendTemp(warningText, 5*time.Second, WithMarkdown())
 				}
+
 				c.Abort()
 				return
 			}
@@ -181,14 +194,34 @@ func AntiSpamMiddleware(b *Bot) HandlerFunc {
 	}
 }
 
-func AntiLinkMiddleware() HandlerFunc {
+var DefaultTLDs = []string{"com", "ir", "net", "org", "co", "biz", "info", "me", "club", "xyz", "link", "site", "online", "space", "tech", "website", "gov", "edu", "ble\\.ir"}
+
+func AntiLinkMiddleware(warnDuration time.Duration, customTLDs ...string) HandlerFunc {
+	tldsList := append(DefaultTLDs, customTLDs...)
+
+	tldsPattern := strings.Join(tldsList, "|")
+	regexPattern := fmt.Sprintf(`(?i)(https?://)?([a-zA-Z0-9-]+\.)+(%s)(/[^\s]*)?`, tldsPattern)
+	linkRegex := regexp.MustCompile(regexPattern)
+
 	return func(c *Context) {
-		if c.Message != nil && c.Message.Text != "" {
+		if c.Message != nil && c.Message.Text != "" && c.Message.From != nil {
 			text := c.Message.Text
-			if strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "ble.ir/") || strings.Contains(text, "join/") {
+
+			if linkRegex.MatchString(text) {
 				if !c.IsAdmin() {
-					c.Delete()
-					c.Reply("⚠️ ارسال هرگونه لینک تبلیغاتی در این گروه ممنوع است!")
+					var mention string
+					if c.Message.From.Username != "" {
+						mention = "@" + c.Message.From.Username
+					} else {
+						mention = Bold(c.Message.From.FirstName)
+					}
+
+					warningText := fmt.Sprintf("⚠️ کاربر %s، ارسال هرگونه لینک تبلیغاتی در این گروه ممنوع است!", mention)
+
+					_, _ = c.SendTemp(warningText, warnDuration, WithMarkdown())
+
+					_ = c.Delete()
+
 					c.Abort()
 					return
 				}

@@ -148,8 +148,6 @@ func NewBot(token string, numWorkers int) *Bot {
 		})
 	})
 
-	bot.Use(AntiSpamMiddleware(bot))
-
 	bot.Use(func(c *Context) {
 		if c.Message != nil && c.Message.From != nil {
 			userID := c.Message.From.ID
