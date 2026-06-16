@@ -3,6 +3,7 @@ package gobale
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +20,10 @@ type tokenBucket struct {
 }
 
 type ChatLimiterManager struct {
-	mu       sync.RWMutex
-	limiters map[int64]*tokenBucket
-	rate     float64
-	capacity float64
+	shards     []*limiterShard
+	shardCount int64
+	rate       float64
+	capacity   float64
 }
 
 func (tb *tokenBucket) allow() bool {
@@ -45,45 +46,71 @@ func (tb *tokenBucket) allow() bool {
 	return false
 }
 
+type limiterShard struct {
+	mu       sync.RWMutex
+	limiters map[int64]*tokenBucket
+}
+
 func NewChatLimiterManager(rate float64, capacity float64) *ChatLimiterManager {
+	shardCount := 32
 	manager := &ChatLimiterManager{
-		limiters: make(map[int64]*tokenBucket),
-		rate:     rate,
-		capacity: capacity,
+		shards:     make([]*limiterShard, shardCount),
+		shardCount: int64(shardCount),
+		rate:       rate,
+		capacity:   capacity,
+	}
+
+	for i := 0; i < shardCount; i++ {
+		manager.shards[i] = &limiterShard{
+			limiters: make(map[int64]*tokenBucket),
+		}
 	}
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
 		for range ticker.C {
-			manager.mu.Lock()
 			now := time.Now()
-			for chatID, tb := range manager.limiters {
-				tb.mu.Lock()
-				if now.Sub(tb.lastRefill) > 10*time.Minute && tb.tokens >= tb.capacity {
-					delete(manager.limiters, chatID)
+			for _, shard := range manager.shards {
+				shard.mu.Lock()
+				for chatID, tb := range shard.limiters {
+					tb.mu.Lock()
+					if now.Sub(tb.lastRefill) > 10*time.Minute && tb.tokens >= tb.capacity {
+						delete(shard.limiters, chatID)
+					}
+					tb.mu.Unlock()
 				}
-				tb.mu.Unlock()
+				shard.mu.Unlock()
 			}
-			manager.mu.Unlock()
 		}
 	}()
 
 	return manager
 }
 
+func (m *ChatLimiterManager) getShard(chatID int64) *limiterShard {
+	idx := chatID % m.shardCount
+	if idx < 0 {
+		idx = -idx
+	}
+	return m.shards[idx]
+}
+
 func (m *ChatLimiterManager) getLimiter(chatID int64) *tokenBucket {
-	m.mu.RLock()
-	tb, exists := m.limiters[chatID]
-	m.mu.RUnlock()
+	shard := m.getShard(chatID)
+
+	shard.mu.RLock()
+	tb, exists := shard.limiters[chatID]
+	shard.mu.RUnlock()
 
 	if exists {
 		return tb
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	if tb, exists = m.limiters[chatID]; exists {
+	if tb, exists = shard.limiters[chatID]; exists {
 		return tb
 	}
 
@@ -93,7 +120,7 @@ func (m *ChatLimiterManager) getLimiter(chatID int64) *tokenBucket {
 		rate:       m.rate,
 		capacity:   m.capacity,
 	}
-	m.limiters[chatID] = tb
+	shard.limiters[chatID] = tb
 	return tb
 }
 
