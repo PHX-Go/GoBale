@@ -1,11 +1,13 @@
 package gobale
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -179,4 +181,62 @@ func JalaliLong(t time.Time) string {
 
 func JalaliCompact(t time.Time) string {
 	return FormatJalali(t, "yy/mm/dd")
+}
+
+var configMutex sync.Mutex
+
+func SaveConfigAtomic(filePath string, target any) {
+	dataCopy, _ := json.Marshal(target)
+
+	go func() {
+		configMutex.Lock()
+		defer configMutex.Unlock()
+
+		tmpPath := filePath + ".tmp"
+		file, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+		if err != nil {
+			return
+		}
+
+		var decoded any
+		_ = json.Unmarshal(dataCopy, &decoded)
+
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		err = encoder.Encode(decoded)
+		if err != nil {
+			_ = file.Close()
+			_ = os.Remove(tmpPath)
+			return
+		}
+
+		_ = file.Sync()
+		_ = file.Close()
+
+		_ = os.Rename(tmpPath, filePath)
+	}()
+}
+
+func LoadEnv(filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open env file: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			val = strings.Trim(val, `"'`)
+			_ = os.Setenv(key, val)
+		}
+	}
+	return scanner.Err()
 }

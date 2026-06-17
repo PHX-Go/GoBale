@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHX-Go/GoBale/models"
@@ -192,7 +193,6 @@ func MaintenanceMiddleware(enabled *bool, adminID int64, alertText string) Handl
 }
 
 func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
-
 	var userLimits sync.Map
 
 	return func(c *Context) {
@@ -214,12 +214,18 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 			count := ul.msgCount
 			ul.mu.Unlock()
 
-			if count > limit {
+			activeLimit := limit
+			if atomic.LoadUint32(&c.Bot.shieldMode) == 1 {
+				activeLimit = limit / 3
+				if activeLimit < 1 {
+					activeLimit = 1
+				}
+			}
 
+			if count > activeLimit {
 				_ = c.Delete()
 
-				if count == limit+1 {
-
+				if count == activeLimit+1 {
 					var mention string
 					if c.Message.From.Username != "" {
 						mention = "@" + c.Message.From.Username
@@ -227,7 +233,12 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 						mention = Bold(c.Message.From.FirstName)
 					}
 
-					warningText := fmt.Sprintf("⚠️ کاربر %s، شما به دلیل ارسال بیش از حد پیام مسدود شدید! پیام‌های شما موقتاً حذف خواهند شد.", mention)
+					var warningText string
+					if activeLimit < limit {
+						warningText = fmt.Sprintf("🛡️ کاربر %s، ربات در حالت سپر دفاعی (ترافیک شدید) قرار دارد! ارسال شما موقتاً مسدود شد.", mention)
+					} else {
+						warningText = fmt.Sprintf("⚠️ کاربر %s، شما به دلیل ارسال بیش از حد پیام مسدود شدید! پیام‌های شما موقتاً حذف خواهند شد.", mention)
+					}
 
 					_, _ = c.SendTemp(warningText, 5*time.Second, WithMarkdown())
 				}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"mime"
 	"net/http"
@@ -111,6 +112,14 @@ func (c *Context) Send(text string, opts ...Option) (*models.Message, error) {
 	}
 
 	err = c.Bot.ExecuteWithContext(activeCtx, req, &result)
+	if err != nil {
+		if strings.Contains(err.Error(), "can't parse entities") || strings.Contains(err.Error(), "bad description") {
+			log.Printf("⚠️ [GoBale Fallback] Markdown parsing failed due to syntax error. Falling back to PLAIN TEXT for safe delivery...\n")
+			req.ParseMode = ""
+			err = c.Bot.ExecuteWithContext(activeCtx, req, &result)
+		}
+	}
+
 	if err != nil {
 		c.err = err
 		if c.Bot.OnError != nil {
@@ -1530,7 +1539,14 @@ func (c *Context) Edit(newText string, opts ...Option) (*models.Message, error) 
 	if err != nil {
 		return nil, err
 	}
-	return c.Bot.EditMessageText(chatID, c.Message.MessageID, newText, opts...)
+	msg, err := c.Bot.EditMessageText(chatID, c.Message.MessageID, newText, opts...)
+	if err != nil {
+		if strings.Contains(err.Error(), "can't parse entities") || strings.Contains(err.Error(), "bad description") {
+			log.Printf("⚠️ [GoBale Fallback] Markdown parsing failed in Edit. Falling back to PLAIN TEXT...\n")
+			msg, err = c.Bot.EditMessageText(chatID, c.Message.MessageID, newText)
+		}
+	}
+	return msg, err
 }
 
 func (c *Context) EditCaption(newCaption string, opts ...Option) (*models.Message, error) {
@@ -2226,7 +2242,9 @@ func (c *Context) ReplyMemoryStats() (*models.Message, error) {
 
 func (c *Context) Go(task func()) {
 	go func() {
+		c.Bot.bgSemaphore <- struct{}{}
 		defer func() {
+			<-c.Bot.bgSemaphore
 			if r := recover(); r != nil {
 				if c.Bot.OnError != nil {
 					c.Bot.OnError(fmt.Errorf("panic in background task: %v", r), c)
@@ -2237,7 +2255,6 @@ func (c *Context) Go(task func()) {
 	}()
 }
 
-// EditToggle ویرایش درون‌خطی و پویای دکمه‌ی سوئیچ وضعیت بدون تولید پیام جدید (تمیز ماندن چت کاربر)
 func (c *Context) EditToggle(text string, label string, isEnabled bool, callbackData string) (*models.Message, error) {
 	statusIcon := "🔴 خاموش"
 	if isEnabled {
@@ -2251,4 +2268,82 @@ func (c *Context) EditToggle(text string, label string, isEnabled bool, callback
 		Build()
 
 	return c.Edit(text, WithKeyboard(markup))
+}
+
+func (c *Context) SendSettingsMenu(text string, adminID ...any) (*models.Message, error) {
+	if len(adminID) > 0 {
+		switch val := adminID[0].(type) {
+		case int64:
+			c.Bot.MaintenanceAdminID = val
+		case int:
+			c.Bot.MaintenanceAdminID = int64(val)
+		case string:
+			if parsed, err := strconv.ParseInt(val, 10, 64); err == nil {
+				c.Bot.MaintenanceAdminID = parsed
+			}
+		}
+	}
+
+	builder := models.InlineMarkup()
+	for _, entry := range c.Bot.settings {
+		statusIcon := "🔴 خاموش"
+		if *entry.Ptr {
+			statusIcon = "🟢 روشن"
+		}
+		builder.Row(models.Btn(fmt.Sprintf("%s: %s", entry.Label, statusIcon)).Callback(fmt.Sprintf("_sys_cfg:%s", entry.Key)))
+	}
+	return c.Send(text, WithKeyboard(builder.Build()))
+}
+
+func (c *Context) EditSettingsMenu(text string, adminID ...any) (*models.Message, error) {
+	if len(adminID) > 0 {
+		switch val := adminID[0].(type) {
+		case int64:
+			c.Bot.MaintenanceAdminID = val
+		case int:
+			c.Bot.MaintenanceAdminID = int64(val)
+		case string:
+			if parsed, err := strconv.ParseInt(val, 10, 64); err == nil {
+				c.Bot.MaintenanceAdminID = parsed
+			}
+		}
+	}
+
+	builder := models.InlineMarkup()
+	for _, entry := range c.Bot.settings {
+		statusIcon := "🔴 خاموش"
+		if *entry.Ptr {
+			statusIcon = "🟢 روشن"
+		}
+		builder.Row(models.Btn(fmt.Sprintf("%s: %s", entry.Label, statusIcon)).Callback(fmt.Sprintf("_sys_cfg:%s", entry.Key)))
+	}
+	return c.Edit(text, WithKeyboard(builder.Build()))
+}
+
+func (c *Context) SenderID() int64 {
+	if c.Update == nil {
+		return 0
+	}
+	if c.Update.Message != nil && c.Update.Message.From != nil {
+		return c.Update.Message.From.ID
+	}
+	if c.Update.CallbackQuery != nil {
+		return c.Update.CallbackQuery.From.ID
+	}
+	if c.Update.PreCheckoutQuery != nil {
+		return c.Update.PreCheckoutQuery.From.ID
+	}
+	return 0
+}
+
+func (c *Context) Log() *ContextLogger {
+	chatID, _ := c.DetermineChatID()
+	var prefix string
+	if chatID > 0 {
+		prefix = fmt.Sprintf("[Chat: %d] ", chatID)
+	}
+	return &ContextLogger{
+		logger: c.Bot.Log,
+		prefix: prefix,
+	}
 }

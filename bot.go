@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"net/http"
 	"os"
@@ -34,6 +35,12 @@ import (
 type Request interface {
 	Method() string
 	Params() any
+}
+
+type SettingEntry struct {
+	Key   string
+	Label string
+	Ptr   *bool
 }
 
 type wrappedError struct {
@@ -66,9 +73,13 @@ type commandInfo struct {
 
 type Metrics struct {
 	TotalUpdates      uint64
+	_                 [56]byte
 	ProcessedMessages uint64
+	_                 [56]byte
 	FailedRequests    uint64
+	_                 [56]byte
 	NetworkLatencyNs  int64
+	_                 [56]byte
 }
 
 type Bot struct {
@@ -100,11 +111,22 @@ type Bot struct {
 	MaintenanceText     string
 	i18n                map[string]map[string]string
 	workersWg           sync.WaitGroup
+	bgSemaphore         chan struct{}
+	shieldMode          uint32
+	settings            []SettingEntry
+	Log                 *Logger
 }
 
 func NewBot(token string, numWorkers int) *Bot {
+	if token == "" {
+		log.Fatal("❌ [Bale Error] Bot Token is empty! Please verify your .env file path and make sure BALE_TOKEN is loaded successfully.")
+	}
+
 	if numWorkers <= 0 {
-		numWorkers = runtime.NumCPU() * 2
+		numWorkers = runtime.NumCPU() * 10
+		if numWorkers < 32 {
+			numWorkers = 32
+		}
 	}
 
 	store := session.NewGOBStore("gobale_sessions.db")
@@ -114,6 +136,7 @@ func NewBot(token string, numWorkers int) *Bot {
 
 	bot = &Bot{
 		Client:             NewClient(token),
+		Log:                NewLogger(LevelInfo, "bot.log", true),
 		handlers:           make(map[string][]HandlerFunc),
 		textRoutes:         make(map[string][]HandlerFunc),
 		callbackDataRoutes: make(map[string][]HandlerFunc),
@@ -149,8 +172,9 @@ func NewBot(token string, numWorkers int) *Bot {
 	})
 
 	bot.Use(func(c *Context) {
-		if c.Message != nil && c.Message.From != nil {
-			userID := c.Message.From.ID
+		userID := c.SenderID()
+
+		if userID > 0 {
 			if bot.Blacklist[userID] {
 				c.Abort()
 				return
@@ -164,7 +188,66 @@ func NewBot(token string, numWorkers int) *Bot {
 		c.Next()
 	})
 
+	bot.bgSemaphore = make(chan struct{}, 100)
+	bot.shieldMode = 0
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		var lastUpdates uint64
+		for range ticker.C {
+			currentUpdates := atomic.LoadUint64(&bot.metrics.TotalUpdates)
+			diff := currentUpdates - lastUpdates
+			lastUpdates = currentUpdates
+
+			ups := float64(diff) / 10.0
+			queueDepth := len(bot.workerChan)
+
+			if queueDepth > 800 || ups > 150 {
+				if atomic.CompareAndSwapUint32(&bot.shieldMode, 0, 1) {
+					anomalyErr := fmt.Errorf("🚨 TRAFFIC ANOMALY DETECTED! UPS: %.2f | Queue: %d/1000", ups, queueDepth)
+					if bot.OnError != nil {
+						bot.OnError(anomalyErr, nil)
+					}
+				}
+			} else if queueDepth < 100 && ups < 10 {
+				if atomic.CompareAndSwapUint32(&bot.shieldMode, 1, 0) {
+					log.Println("🛡️ [Traffic Shield] Deactivated. Bot returned to normal mode.")
+				}
+			}
+		}
+	}()
+
+	bot.OnCallbackData("_sys_cfg", func(c *Context) {
+		args := c.CallbackArgs()
+		if len(args) == 0 {
+			return
+		}
+		key := args[0]
+
+		_ = c.Answer("تغییرات اعمال شد", false)
+
+		db := NewLocalDB("gobale_settings.db")
+		for _, entry := range bot.settings {
+			if entry.Key == key {
+				*entry.Ptr = !*entry.Ptr
+				_ = db.Set(key, *entry.Ptr)
+				break
+			}
+		}
+		_, _ = c.EditSettingsMenu("⚙️ منوی تنظیمات سیستمی:")
+	})
+
+	bot.OptimizeForHardware()
+
 	return bot
+}
+
+func (b *Bot) SetMaxBackgroundTasks(n int) {
+	if n > 0 {
+		b.bgSemaphore = make(chan struct{}, n)
+	}
 }
 
 func (b *Bot) OnState(state string, handlers ...HandlerFunc) {
@@ -1340,9 +1423,11 @@ func (b *Bot) SendMediaGroup(chatID any, media []any, opts ...Option) ([]models.
 	}()
 
 	for idx, item := range media {
+		// لاگ نوع فیزیکی متغیر دریافتی در زمان اجرا جهت عیب‌یابی دقیق نوع (Type)
 		log.Printf("🔍 [DEBUG] Album item %d type: %T\n", idx, item)
 
 		switch m := item.(type) {
+		// حالت اول: مقدار فیزیکی
 		case models.InputMediaPhoto:
 			if !strings.HasPrefix(m.Media, "http://") && !strings.HasPrefix(m.Media, "https://") && len(m.Media) < 100 {
 				fieldName := fmt.Sprintf("file_%d", idx)
@@ -1360,6 +1445,7 @@ func (b *Bot) SendMediaGroup(chatID any, media []any, opts ...Option) ([]models.
 			}
 			resolvedMedia = append(resolvedMedia, m)
 
+		// حالت دوم: آدرس پوینتر فیزیکی
 		case *models.InputMediaPhoto:
 			if !strings.HasPrefix(m.Media, "http://") && !strings.HasPrefix(m.Media, "https://") && len(m.Media) < 100 {
 				fieldName := fmt.Sprintf("file_%d", idx)
@@ -1377,6 +1463,7 @@ func (b *Bot) SendMediaGroup(chatID any, media []any, opts ...Option) ([]models.
 			}
 			resolvedMedia = append(resolvedMedia, m)
 
+		// حالت سوم: مقدار ویدیو
 		case models.InputMediaVideo:
 			if !strings.HasPrefix(m.Media, "http://") && !strings.HasPrefix(m.Media, "https://") && len(m.Media) < 100 {
 				fieldName := fmt.Sprintf("file_%d", idx)
@@ -1394,6 +1481,7 @@ func (b *Bot) SendMediaGroup(chatID any, media []any, opts ...Option) ([]models.
 			}
 			resolvedMedia = append(resolvedMedia, m)
 
+		// حالت چهارم: پوینتر ویدیو
 		case *models.InputMediaVideo:
 			if !strings.HasPrefix(m.Media, "http://") && !strings.HasPrefix(m.Media, "https://") && len(m.Media) < 100 {
 				fieldName := fmt.Sprintf("file_%d", idx)
@@ -1655,6 +1743,8 @@ func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
 	c.Message = update.Message
 	c.index = -1
 	c.ctx = ctx
+	c.err = nil
+	c.Logger = b.Logger
 
 	if c.Keys != nil {
 		for k := range c.Keys {
@@ -1840,15 +1930,19 @@ func (b *Bot) RunWebhook(addr string, path string) error {
 		<-ctx.Done()
 		log.Println("Stopping Webhook server...")
 
+		// ۱. متوقف کردن فوری دریافت ترافیک جدید توسط وب‌سرور بله
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 
+		// ۲. بستن اتمیک کانال صف ورکرها (آغاز فرآیند تخلیه خودکار پیام‌های باقی‌مانده)
 		close(b.workerChan)
 
+		// ۳. مسدود ماندن نخ اصلی تا زمان اتمام کار آخرین ورکر فعال روی پیام‌های صف
 		log.Println("⏳ Waiting for active workers to drain the queue...")
 		b.workersWg.Wait()
 
+		// ۴. ذخیره اتمیک و امن نشست‌ها روی هارد دیسک
 		log.Println("Saving active sessions to disk...")
 		if saver, ok := b.Sessions.(interface{ Save() error }); ok {
 			_ = saver.Save()
@@ -2204,4 +2298,49 @@ func (b *Bot) GetWorkerChan() chan *models.Update {
 
 func (b *Bot) GetWorkersWg() *sync.WaitGroup {
 	return &b.workersWg
+}
+
+func (b *Bot) FreeMemory() {
+	runtime.GC()
+	debug.FreeOSMemory()
+}
+
+func (b *Bot) RegisterSetting(key string, label string, ptr *bool) *Bot {
+	b.settings = append(b.settings, SettingEntry{Key: key, Label: label, Ptr: ptr})
+	db := NewLocalDB("gobale_settings.db")
+	if val, ok := db.Get(key); ok {
+		if bVal, ok := val.(bool); ok {
+			*ptr = bVal
+		}
+	}
+	return b
+}
+
+func (b *Bot) OptimizeForHardware() {
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+
+	log.Printf("🔍 [Hardware Monitor] OS: %s | Arch: %s | CPU Cores: %d\n", goos, goarch, runtime.NumCPU())
+
+	switch goarch {
+	case "arm", "arm64":
+		b.SetGCPercent(80)
+		if b.GetMemoryStats().MemoryLimitBytes == math.MaxInt64 {
+			b.SetMemoryLimit(16)
+		}
+		log.Println("🛡️ [Hardware Tuning] Optimized for low-power/mobile ARM architecture.")
+
+	case "amd64", "386":
+		b.SetGCPercent(100)
+		if b.GetMemoryStats().MemoryLimitBytes == math.MaxInt64 {
+			b.SetMemoryLimit(32)
+		}
+		log.Println("🛡️ [Hardware Tuning] Optimized for high-performance x86/64 Server architecture.")
+	}
+	switch goos {
+	case "windows":
+		log.Println("🛡️ [Hardware Tuning] OS specific tweaks applied for Windows Environment.")
+	case "linux", "android":
+		log.Println("🛡️ [Hardware Tuning] OS specific tweaks applied for Unix-like Environment.")
+	}
 }
