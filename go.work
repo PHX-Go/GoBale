@@ -2,5 +2,6 @@ go 1.26.1
 
 use (
     .
-    ./examples/tests
+    ./examples/Tests
+    ./examples/GoBale-Demo1
 )

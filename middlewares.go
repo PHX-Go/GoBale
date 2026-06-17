@@ -469,3 +469,14 @@ func MandatoryJoinMulti(alertText string, channels ...string) HandlerFunc {
 		c.Abort()
 	}
 }
+
+func SuperGroupOnly(alertText string) HandlerFunc {
+	return func(c *Context) {
+		if !c.IsSuperGroup() {
+			c.Reply(alertText)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}

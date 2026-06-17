@@ -1737,6 +1737,7 @@ func (b *Bot) StartWorkers(ctx context.Context) {
 }
 
 func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
+	NormalizeUpdateDigits(update)
 	c := b.ctxPool.Get().(*Context)
 	c.Bot = b
 	c.Update = update
@@ -2342,5 +2343,30 @@ func (b *Bot) OptimizeForHardware() {
 		log.Println("🛡️ [Hardware Tuning] OS specific tweaks applied for Windows Environment.")
 	case "linux", "android":
 		log.Println("🛡️ [Hardware Tuning] OS specific tweaks applied for Unix-like Environment.")
+	}
+}
+
+func NormalizeUpdateDigits(u *models.Update) {
+	if u == nil {
+		return
+	}
+	if u.Message != nil {
+		if u.Message.Text != "" {
+			u.Message.Text = ToEnglishDigits(u.Message.Text)
+		}
+		if u.Message.Caption != "" {
+			u.Message.Caption = ToEnglishDigits(u.Message.Caption)
+		}
+	}
+	if u.EditedMessage != nil {
+		if u.EditedMessage.Text != "" {
+			u.EditedMessage.Text = ToEnglishDigits(u.EditedMessage.Text)
+		}
+		if u.EditedMessage.Caption != "" {
+			u.EditedMessage.Caption = ToEnglishDigits(u.EditedMessage.Caption)
+		}
+	}
+	if u.CallbackQuery != nil && u.CallbackQuery.Data != "" {
+		u.CallbackQuery.Data = ToEnglishDigits(u.CallbackQuery.Data)
 	}
 }

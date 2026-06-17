@@ -240,3 +240,41 @@ func LoadEnv(filePath string) error {
 	}
 	return scanner.Err()
 }
+
+func GetEnv[T any](key string) T {
+	val := os.Getenv(key)
+	var result T
+
+	switch ptr := any(&result).(type) {
+	case *string:
+		*ptr = val
+	case *int:
+		if v, err := strconv.Atoi(val); err == nil {
+			*ptr = v
+		}
+	case *int64:
+		if v, err := strconv.ParseInt(val, 10, 64); err == nil {
+			*ptr = v
+		}
+	case *bool:
+		if v, err := strconv.ParseBool(val); err == nil {
+			*ptr = v
+		}
+	case *time.Duration:
+		if v, err := parseDurationWithDays(val); err == nil {
+			*ptr = v
+		}
+	}
+	return result
+}
+
+var digitReplacer = strings.NewReplacer(
+	"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
+	"۵", "5", "۶", "6", "۷", "7", "۸", "8", "۹", "9",
+	"٠", "0", "١", "1", "٢", "2", "٣", "3", "٤", "4",
+	"٥", "5", "٦", "6", "٧", "7", "٨", "8", "٩", "9",
+)
+
+func ToEnglishDigits(s string) string {
+	return digitReplacer.Replace(s)
+}

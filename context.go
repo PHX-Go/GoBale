@@ -2347,3 +2347,10 @@ func (c *Context) Log() *ContextLogger {
 		prefix: prefix,
 	}
 }
+
+func (c *Context) IsSuperGroup() bool {
+	if c.Message == nil {
+		return false
+	}
+	return c.Message.Chat.Type == "supergroup"
+}
