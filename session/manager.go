@@ -4,17 +4,20 @@ import (
 	"encoding/gob"
 	"os"
 	"sync"
+	"time"
 )
 
 type Session struct {
-	mu    sync.RWMutex
-	State string
-	Data  map[string]any
+	mu           sync.RWMutex
+	State        string
+	Data         map[string]any
+	LastAccessed time.Time
 }
 
 func (s *Session) SetState(state string) {
 	s.mu.Lock()
 	s.State = state
+	s.LastAccessed = time.Now()
 	s.mu.Unlock()
 }
 
@@ -30,6 +33,7 @@ func (s *Session) SetData(key string, val any) {
 		s.Data = make(map[string]any)
 	}
 	s.Data[key] = val
+	s.LastAccessed = time.Now()
 	s.mu.Unlock()
 }
 
@@ -74,6 +78,28 @@ func NewGOBStore(filePath string) *GOBStore {
 			sessions: make(makeMap),
 		}
 	}
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			for _, shard := range m.shards {
+				shard.mu.Lock()
+				for chatID, s := range shard.sessions {
+					s.mu.RLock()
+					if now.Sub(s.LastAccessed) > 24*time.Hour {
+						s.mu.RUnlock()
+						delete(shard.sessions, chatID)
+						continue
+					}
+					s.mu.RUnlock()
+				}
+				shard.mu.Unlock()
+			}
+		}
+	}()
+
 	return m
 }
 
@@ -93,10 +119,15 @@ func (m *GOBStore) Get(chatID int64) *Session {
 	s, exists := shard.sessions[chatID]
 	if !exists {
 		s = &Session{
-			State: "",
-			Data:  make(map[string]any),
+			State:        "",
+			Data:         make(map[string]any),
+			LastAccessed: time.Now(),
 		}
 		shard.sessions[chatID] = s
+	} else {
+		s.mu.Lock()
+		s.LastAccessed = time.Now()
+		s.mu.Unlock()
 	}
 	return s
 }
