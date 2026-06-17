@@ -1,0 +1,7 @@
+*.gob
+*.bin
+*.db
+*.db.tmp
+*.tmp
+*.log
+*.env
