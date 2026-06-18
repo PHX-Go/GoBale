@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/gob"
 	"os"
 	"sync"
@@ -160,7 +161,13 @@ func (m *GOBStore) Save() error {
 		shard.mu.RUnlock()
 	}
 
-	go func() {
+	var buf bytes.Buffer
+	err := gob.NewEncoder(&buf).Encode(flatData)
+	if err != nil {
+		return err
+	}
+
+	go func(dataToSave []byte) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
@@ -170,7 +177,7 @@ func (m *GOBStore) Save() error {
 			return
 		}
 
-		err = gob.NewEncoder(file).Encode(flatData)
+		_, err = file.Write(dataToSave)
 		if err != nil {
 			_ = file.Close()
 			_ = os.Remove(tmpPath)
@@ -185,7 +192,7 @@ func (m *GOBStore) Save() error {
 		}
 
 		_ = os.Rename(tmpPath, m.filePath)
-	}()
+	}(buf.Bytes())
 
 	return nil
 }
@@ -214,4 +221,14 @@ func (m *GOBStore) Load() error {
 		shard.mu.Unlock()
 	}
 	return nil
+}
+
+func (m *GOBStore) GetSessionsCount() int {
+	count := 0
+	for _, shard := range m.shards {
+		shard.mu.RLock()
+		count += len(shard.sessions)
+		shard.mu.RUnlock()
+	}
+	return count
 }
