@@ -86,3 +86,9 @@ func (db *LocalDB) load() error {
 	defer file.Close()
 	return gob.NewDecoder(file).Decode(&db.store)
 }
+
+func (db *LocalDB) GetKeysCount() int {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return len(db.store)
+}
