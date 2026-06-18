@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/PHX-Go/GoBale/models"
 )
@@ -182,7 +183,11 @@ func BlacklistMiddleware(blacklist map[int64]bool) HandlerFunc {
 func MaintenanceMiddleware(enabled *bool, adminID int64, alertText string) HandlerFunc {
 	return func(c *Context) {
 		if c.Message != nil && c.Message.From != nil {
-			if *enabled && c.Message.From.ID != adminID {
+			c.Bot.muSettings.RLock()
+			isEnabled := *enabled
+			c.Bot.muSettings.RUnlock()
+
+			if isEnabled && c.Message.From.ID != adminID {
 				c.Reply(alertText)
 				c.Abort()
 				return
@@ -476,6 +481,68 @@ func SuperGroupOnly(alertText string) HandlerFunc {
 			c.Reply(alertText)
 			c.Abort()
 			return
+		}
+		c.Next()
+	}
+}
+
+func isCrashPayload(text string) bool {
+	runes := []rune(text)
+	if len(runes) > 4096 {
+		return true
+	}
+
+	consecutiveMarks := 0
+	totalMarks := 0
+
+	for _, r := range runes {
+		isCombiningMark := false
+
+		if r >= 0x0300 && r <= 0x036F {
+			isCombiningMark = true
+		}
+
+		if (r >= 0x0610 && r <= 0x061A) || (r >= 0x064B && r <= 0x065F) || (r >= 0x06D6 && r <= 0x06ED) {
+			isCombiningMark = true
+		}
+
+		if (r >= 0x1AB0 && r <= 0x1AFF) || (r >= 0x20D0 && r <= 0x20FF) || (r >= 0xFE20 && r <= 0xFE2F) {
+			isCombiningMark = true
+		}
+
+		if unicode.Is(unicode.Mn, r) {
+			isCombiningMark = true
+		}
+
+		if isCombiningMark {
+			consecutiveMarks++
+			totalMarks++
+			if consecutiveMarks > 5 {
+				return true
+			}
+		} else {
+			consecutiveMarks = 0
+		}
+	}
+
+	if len(runes) > 15 {
+		ratio := float64(totalMarks) / float64(len(runes))
+		if ratio > 0.35 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func AntiCrashMiddleware() HandlerFunc {
+	return func(c *Context) {
+		if c.Message != nil && c.Message.Text != "" {
+			if isCrashPayload(c.Message.Text) {
+				_ = c.Delete()
+				c.Abort()
+				return
+			}
 		}
 		c.Next()
 	}
