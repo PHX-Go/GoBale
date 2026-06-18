@@ -2,9 +2,17 @@ package gobale
 
 import (
 	"bufio"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -277,4 +285,70 @@ var digitReplacer = strings.NewReplacer(
 
 func ToEnglishDigits(s string) string {
 	return digitReplacer.Replace(s)
+}
+
+func GenerateSecureOTP(length int) (string, error) {
+	if length <= 0 {
+		return "", fmt.Errorf("invalid length")
+	}
+	var sb strings.Builder
+	for i := 0; i < length; i++ {
+		num, err := rand.Int(rand.Reader, big.NewInt(10))
+		if err != nil {
+			return "", err
+		}
+		sb.WriteString(num.String())
+	}
+	return sb.String(), nil
+}
+
+func GenerateSecureToken(bytesCount int) (string, error) {
+	b := make([]byte, bytesCount)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func SecureCompare(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func VerifyWebAppData(token string, initData string) (bool, error) {
+
+	params, err := url.ParseQuery(initData)
+	if err != nil {
+		return false, err
+	}
+
+	hash := params.Get("hash")
+	if hash == "" {
+		return false, nil
+	}
+
+	var keys []string
+	for k := range params {
+		if k != "hash" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	var dataCheckArr []string
+	for _, k := range keys {
+		dataCheckArr = append(dataCheckArr, fmt.Sprintf("%s=%s", k, params.Get(k)))
+	}
+	dataCheckStr := strings.Join(dataCheckArr, "\n")
+
+	macKey := hmac.New(sha256.New, []byte("WebAppData"))
+	macKey.Write([]byte(token))
+	secretKey := macKey.Sum(nil)
+
+	mac := hmac.New(sha256.New, secretKey)
+	mac.Write([]byte(dataCheckStr))
+	expectedHash := hex.EncodeToString(mac.Sum(nil))
+
+	isValid := subtle.ConstantTimeCompare([]byte(hash), []byte(expectedHash)) == 1
+	return isValid, nil
 }

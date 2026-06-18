@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,7 +171,7 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	Logger     bool
-	fileCache  *FileCache
+	fileCache  *FileCache // تبدیل sync.Map قدیمی به ساختار اتمیک FileCache جدید
 	rateLimit  *RateLimiter
 	cb         *CircuitBreaker
 	Gzip       bool
@@ -220,23 +221,6 @@ func prettyJSON(raw []byte) string {
 	return pretty.String()
 }
 
-func structToMap(obj any) (map[string]any, error) {
-	if obj == nil {
-		return nil, nil
-	}
-	data, err := json.Marshal(obj)
-	if err != nil {
-		return nil, err
-	}
-	var result map[string]any
-
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-
-	err = decoder.Decode(&result)
-	return result, err
-}
-
 func (c *Client) BaseRequest(ctx context.Context, method string, params any, result any) error {
 	if !c.cb.CanExecute() {
 		return fmt.Errorf("circuit breaker is open, bale api is currently unavailable")
@@ -253,24 +237,7 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 	defer bufferPool.Put(buf)
 
 	if params != nil {
-		fields, err := structToMap(params)
-		if err != nil {
-			return err
-		}
-
-		if markup, exists := fields["reply_markup"]; exists && markup != nil {
-			if _, ok := markup.(string); !ok {
-				markupJSON, err := json.Marshal(markup)
-				if err == nil {
-					fields["reply_markup"] = string(markupJSON)
-				}
-			}
-			if text, ok := fields["text"].(string); ok && text != "" {
-				fields["text"] = stretchText(text)
-			}
-		}
-
-		if err := json.NewEncoder(buf).Encode(fields); err != nil {
+		if err := json.NewEncoder(buf).Encode(params); err != nil {
 			return err
 		}
 	}
@@ -290,7 +257,6 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 
 	maxAttempts := 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return err
@@ -302,10 +268,9 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 
 		resp, reqErr = c.httpClient.Do(req)
 		if reqErr != nil {
-
 			if attempt < maxAttempts-1 {
 				delay := backoffDelay(attempt)
-				log.Printf("⚠️ [GoBale Network Alert] HTTP connection failed: %v. Retrying in %v (Attempt %d/%d)...", reqErr, delay, attempt+1, maxAttempts)
+				log.Printf("⚠️ [GoBale Network Alert] Connection failed: %v. Retrying in %v...", reqErr, delay)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -340,6 +305,11 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 
 		respBytes, reqErr = io.ReadAll(reader)
 		_ = reader.Close()
+
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+
 		if reqErr != nil {
 			if attempt < maxAttempts-1 {
 				delay := backoffDelay(attempt)
@@ -359,7 +329,6 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 
 		var apiResp APIResponse
 		if errJSON := json.NewDecoder(resp.Body).Decode(&apiResp); errJSON == nil {
-
 			if !apiResp.OK && apiResp.ErrorCode >= 500 {
 				if attempt < maxAttempts-1 {
 					delay := backoffDelay(attempt)
@@ -430,6 +399,24 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 	return nil
 }
 
+func isZeroValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.String, reflect.Slice, reflect.Map, reflect.Array:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Ptr:
+		return v.IsNil()
+	}
+	return false
+}
+
 func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params any, files []models.InputFile, result any) error {
 	if !c.cb.CanExecute() {
 		return fmt.Errorf("circuit breaker is open, bale api is currently unavailable")
@@ -447,20 +434,42 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 
 	writer := multipart.NewWriter(buf)
 
-	fields, err := structToMap(params)
-	if err != nil {
-		return fmt.Errorf("failed to parse params to map: %w", err)
-	}
-
-	for k, v := range fields {
-		if v == nil {
-			continue
+	if params != nil {
+		v := reflect.ValueOf(params)
+		if v.Kind() == reflect.Ptr {
+			v = v.Elem()
 		}
-		if str, ok := v.(string); ok {
-			_ = writer.WriteField(k, str)
-		} else {
-			jsonVal, _ := json.Marshal(v)
-			_ = writer.WriteField(k, string(jsonVal))
+
+		if v.Kind() == reflect.Struct {
+			t := v.Type()
+			for i := 0; i < v.NumField(); i++ {
+				field := v.Field(i)
+				structField := t.Field(i)
+
+				jsonTag := structField.Tag.Get("json")
+				if jsonTag == "" || jsonTag == "-" {
+					continue
+				}
+
+				tagParts := strings.Split(jsonTag, ",")
+				fieldName := tagParts[0]
+
+				hasOmitempty := len(tagParts) > 1 && tagParts[1] == "omitempty"
+				if hasOmitempty && isZeroValue(field) {
+					continue
+				}
+
+				if field.Kind() == reflect.String {
+					_ = writer.WriteField(fieldName, field.String())
+				} else if field.Kind() == reflect.Interface && field.Elem().Kind() == reflect.String {
+					_ = writer.WriteField(fieldName, field.Elem().String())
+				} else {
+					jsonVal, err := json.Marshal(field.Interface())
+					if err == nil {
+						_ = writer.WriteField(fieldName, string(jsonVal))
+					}
+				}
+			}
 		}
 	}
 
@@ -503,21 +512,15 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 
 		if isLogger && attempt == 0 {
 			timeStr := time.Now().Format("15:04:05")
-			var targetChat any = "N/A"
-			if fields != nil {
-				if cid, ok := fields["chat_id"]; ok {
-					targetChat = cid
-				}
-			}
-			log.Printf("\n[GoBale] %s 📤  MULTIPART /%s\n ├── Chat: %v\n └── Uploading %d file(s)",
-				timeStr, method, targetChat, len(files))
+			log.Printf("\n[GoBale] %s 📤  MULTIPART /%s | Uploading %d file(s)",
+				timeStr, method, len(files))
 		}
 
 		resp, reqErr = c.httpClient.Do(req)
 		if reqErr != nil {
 			if attempt < maxAttempts-1 {
 				delay := backoffDelay(attempt)
-				log.Printf("⚠️ [GoBale Network Alert] Multipart connection failed: %v. Retrying in %v (Attempt %d/%d)...", reqErr, delay, attempt+1, maxAttempts)
+				log.Printf("⚠️ [GoBale Network Alert] Connection failed: %v. Retrying in %v...", reqErr, delay)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -536,7 +539,7 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 				_ = resp.Body.Close()
 				if attempt < maxAttempts-1 {
 					delay := backoffDelay(attempt)
-					log.Printf("⚠️ [GoBale Network Alert] Multipart Gzip decompression failed. Retrying in %v...", delay)
+					log.Printf("⚠️ [GoBale Network Alert] Gzip decompression failed. Retrying in %v...", delay)
 					select {
 					case <-ctx.Done():
 						return ctx.Err()
@@ -552,6 +555,11 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 
 		respBytes, reqErr = io.ReadAll(reader)
 		_ = reader.Close()
+
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+
 		if reqErr != nil {
 			if attempt < maxAttempts-1 {
 				delay := backoffDelay(attempt)
