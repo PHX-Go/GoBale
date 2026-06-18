@@ -84,6 +84,8 @@ type Metrics struct {
 
 type Bot struct {
 	*Client
+	muRoutes            sync.RWMutex
+	muSettings          sync.RWMutex
 	handlers            map[string][]HandlerFunc
 	anyMessage          []HandlerFunc
 	textRoutes          map[string][]HandlerFunc
@@ -171,22 +173,30 @@ func NewBot(token string, numWorkers int) *Bot {
 		})
 	})
 
-	bot.Use(func(c *Context) {
-		userID := c.SenderID()
 
-		if userID > 0 {
-			if bot.Blacklist[userID] {
-				c.Abort()
-				return
-			}
-			if bot.Maintenance && userID != bot.MaintenanceAdminID {
-				c.Reply(bot.MaintenanceText)
-				c.Abort()
-				return
-			}
+bot.Use(func(c *Context) {
+	userID := c.SenderID()
+
+	if userID > 0 {
+		bot.muSettings.RLock()
+		isBlacklisted := bot.Blacklist[userID]
+		isMaintenance := bot.Maintenance
+		maintenanceAdminID := bot.MaintenanceAdminID
+		maintenanceText := bot.MaintenanceText
+		bot.muSettings.RUnlock()
+
+		if isBlacklisted {
+			c.Abort()
+			return
 		}
-		c.Next()
-	})
+		if isMaintenance && userID != maintenanceAdminID {
+			c.Reply(maintenanceText)
+			c.Abort()
+			return
+		}
+	}
+	c.Next()
+})
 
 	bot.bgSemaphore = make(chan struct{}, 100)
 	bot.shieldMode = 0
@@ -220,24 +230,28 @@ func NewBot(token string, numWorkers int) *Bot {
 	}()
 
 	bot.OnCallbackData("_sys_cfg", func(c *Context) {
-		args := c.CallbackArgs()
-		if len(args) == 0 {
-			return
-		}
-		key := args[0]
+	args := c.CallbackArgs()
+	if len(args) == 0 {
+		return
+	}
+	key := args[0]
 
-		_ = c.Answer("تغییرات اعمال شد", false)
+	_ = c.Answer("تغییرات اعمال شد", false)
 
-		db := NewLocalDB("gobale_settings.db")
-		for _, entry := range bot.settings {
-			if entry.Key == key {
-				*entry.Ptr = !*entry.Ptr
-				_ = db.Set(key, *entry.Ptr)
-				break
-			}
+	db := NewLocalDB("gobale_settings.db")
+	
+	bot.muSettings.Lock()
+	for _, entry := range bot.settings {
+		if entry.Key == key {
+			*entry.Ptr = !*entry.Ptr
+			_ = db.Set(key, *entry.Ptr)
+			break
 		}
-		_, _ = c.EditSettingsMenu("⚙️ منوی تنظیمات سیستمی:")
-	})
+	}
+	bot.muSettings.Unlock()
+
+	_, _ = c.EditSettingsMenu("⚙️ منوی تنظیمات سیستمی:")
+})
 
 	bot.OptimizeForHardware()
 
@@ -251,7 +265,9 @@ func (b *Bot) SetMaxBackgroundTasks(n int) {
 }
 
 func (b *Bot) OnState(state string, handlers ...HandlerFunc) {
+	b.muRoutes.Lock()
 	b.stateRoutes[state] = handlers
+	b.muRoutes.Unlock()
 }
 
 func (b *Bot) Use(m ...HandlerFunc) {
@@ -279,7 +295,9 @@ func (b *Bot) OnCallback(handlers ...HandlerFunc) {
 }
 
 func (b *Bot) OnCallbackData(data string, handlers ...HandlerFunc) {
+	b.muRoutes.Lock()
 	b.callbackDataRoutes[data] = handlers
+	b.muRoutes.Unlock()
 }
 
 func (b *Bot) ExecuteWithContext(ctx context.Context, req Request, result any) error {
@@ -424,7 +442,7 @@ func (b *Bot) SendMessage(chatID any, text string, opts ...Option) (*models.Mess
 
 	req := methods.SendMessage{
 		ChatID:           b.ResolveChatID(chatID),
-		Text:             text,
+		Text:             stretchText(text),
 		ParseMode:        config.ParseMode,
 		ReplyToMessageID: config.ReplyToMessageID,
 		ReplyMarkup:      config.ReplyMarkup,
@@ -436,513 +454,6 @@ func (b *Bot) SendMessage(chatID any, text string, opts ...Option) (*models.Mess
 		return nil, err
 	}
 	return &msg, nil
-}
-
-func (b *Bot) SendPhoto(chatID any, photo any, opts ...Option) (*models.Message, error) {
-	if b.Err() != nil {
-		return nil, b.Err()
-	}
-
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-
-	resolvedChatID := b.ResolveChatID(chatID)
-
-	req := methods.SendPhoto{
-		ChatID:           resolvedChatID,
-		FromChatID:       config.FromChatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-
-	switch p := photo.(type) {
-	case string:
-		if isLocalFile(p) {
-			if cached, ok := b.Client.fileCache.Load(p); ok {
-				req.Photo = cached.(string)
-				err := b.Execute(req, &msg)
-				return &msg, err
-			}
-
-			file, err := os.Open(p)
-			if err != nil {
-				b.setErr(err)
-				return nil, err
-			}
-			defer file.Close()
-
-			inputFile := models.InputFile{
-				FileName: filepath.Base(p),
-				Reader:   file,
-				Field:    "photo",
-			}
-			startTime := time.Now()
-			err = b.BaseRequestMultipart(context.Background(), "sendPhoto", req, []models.InputFile{inputFile}, &msg)
-			b.RecordLatency(time.Since(startTime))
-			if err != nil {
-				b.setErr(err)
-				b.RecordFailure()
-				if b.OnError != nil {
-					b.OnError(err, nil)
-				}
-				return nil, err
-			}
-
-			b.RecordMessage()
-			if len(msg.Photo) > 0 {
-				bestPhoto := msg.Photo[len(msg.Photo)-1]
-				b.Client.fileCache.Store(p, bestPhoto.FileID)
-			}
-			return &msg, nil
-		}
-		req.Photo = p
-		err := b.Execute(req, &msg)
-		return &msg, err
-
-	case models.InputFile:
-		p.Field = "photo"
-		startTime := time.Now()
-		err := b.BaseRequestMultipart(context.Background(), "sendPhoto", req, []models.InputFile{p}, &msg)
-		b.RecordLatency(time.Since(startTime))
-		if err != nil {
-			b.setErr(err)
-			b.RecordFailure()
-			if b.OnError != nil {
-				b.OnError(err, nil)
-			}
-			return nil, err
-		}
-		b.RecordMessage()
-		return &msg, err
-	}
-
-	return nil, fmt.Errorf("invalid photo type")
-}
-
-func (b *Bot) SendAudio(chatID any, audio any, opts ...Option) (*models.Message, error) {
-	if b.Err() != nil {
-		return nil, b.Err()
-	}
-
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-
-	resolvedChatID := b.ResolveChatID(chatID)
-
-	req := methods.SendAudio{
-		ChatID:           resolvedChatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-
-	switch a := audio.(type) {
-	case string:
-		if isLocalFile(a) {
-			if cached, ok := b.Client.fileCache.Load(a); ok {
-				req.Audio = cached.(string)
-				err := b.Execute(req, &msg)
-				return &msg, err
-			}
-
-			file, err := os.Open(a)
-			if err != nil {
-				b.setErr(err)
-				return nil, err
-			}
-			defer file.Close()
-
-			inputFile := models.InputFile{
-				FileName: filepath.Base(a),
-				Reader:   file,
-				Field:    "audio",
-			}
-			startTime := time.Now()
-			err = b.BaseRequestMultipart(context.Background(), "sendAudio", req, []models.InputFile{inputFile}, &msg)
-			b.RecordLatency(time.Since(startTime))
-			if err != nil {
-				b.setErr(err)
-				b.RecordFailure()
-				if b.OnError != nil {
-					b.OnError(err, nil)
-				}
-				return nil, err
-			}
-
-			b.RecordMessage()
-			if msg.Audio != nil {
-				b.Client.fileCache.Store(a, msg.Audio.FileID)
-			}
-			return &msg, nil
-		}
-		req.Audio = a
-		err := b.Execute(req, &msg)
-		return &msg, err
-
-	case models.InputFile:
-		a.Field = "audio"
-		startTime := time.Now()
-		err := b.BaseRequestMultipart(context.Background(), "sendAudio", req, []models.InputFile{a}, &msg)
-		b.RecordLatency(time.Since(startTime))
-		if err != nil {
-			b.setErr(err)
-			b.RecordFailure()
-			if b.OnError != nil {
-				b.OnError(err, nil)
-			}
-			return nil, err
-		}
-		b.RecordMessage()
-		return &msg, err
-	}
-
-	return nil, fmt.Errorf("invalid audio type")
-}
-
-func (b *Bot) SendDocument(chatID any, document any, opts ...Option) (*models.Message, error) {
-	if b.Err() != nil {
-		return nil, b.Err()
-	}
-
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-
-	resolvedChatID := b.ResolveChatID(chatID)
-
-	req := methods.SendDocument{
-		ChatID:           resolvedChatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-
-	switch d := document.(type) {
-	case string:
-		if isLocalFile(d) {
-			if cached, ok := b.Client.fileCache.Load(d); ok {
-				req.Document = cached.(string)
-				err := b.Execute(req, &msg)
-				return &msg, err
-			}
-
-			file, err := os.Open(d)
-			if err != nil {
-				b.setErr(err)
-				return nil, err
-			}
-			defer file.Close()
-
-			inputFile := models.InputFile{
-				FileName: filepath.Base(d),
-				Reader:   file,
-				Field:    "document",
-			}
-			startTime := time.Now()
-			err = b.BaseRequestMultipart(context.Background(), "sendDocument", req, []models.InputFile{inputFile}, &msg)
-			b.RecordLatency(time.Since(startTime))
-			if err != nil {
-				b.setErr(err)
-				b.RecordFailure()
-				if b.OnError != nil {
-					b.OnError(err, nil)
-				}
-				return nil, err
-			}
-
-			b.RecordMessage()
-			if msg.Document != nil {
-				b.Client.fileCache.Store(d, msg.Document.FileID)
-			}
-			return &msg, nil
-		}
-		req.Document = d
-		err := b.Execute(req, &msg)
-		return &msg, err
-
-	case models.InputFile:
-		d.Field = "document"
-		startTime := time.Now()
-		err := b.BaseRequestMultipart(context.Background(), "sendDocument", req, []models.InputFile{d}, &msg)
-		b.RecordLatency(time.Since(startTime))
-		if err != nil {
-			b.setErr(err)
-			b.RecordFailure()
-			if b.OnError != nil {
-				b.OnError(err, nil)
-			}
-			return nil, err
-		}
-		b.RecordMessage()
-		return &msg, err
-	}
-
-	return nil, fmt.Errorf("invalid document type")
-}
-
-func (b *Bot) SendVideo(chatID any, video any, opts ...Option) (*models.Message, error) {
-	if b.Err() != nil {
-		return nil, b.Err()
-	}
-
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-
-	resolvedChatID := b.ResolveChatID(chatID)
-
-	req := methods.SendVideo{
-		ChatID:           resolvedChatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-
-	switch v := video.(type) {
-	case string:
-		if isLocalFile(v) {
-			if cached, ok := b.Client.fileCache.Load(v); ok {
-				req.Video = cached.(string)
-				err := b.Execute(req, &msg)
-				return &msg, err
-			}
-
-			file, err := os.Open(v)
-			if err != nil {
-				b.setErr(err)
-				return nil, err
-			}
-			defer file.Close()
-
-			inputFile := models.InputFile{
-				FileName: filepath.Base(v),
-				Reader:   file,
-				Field:    "video",
-			}
-			startTime := time.Now()
-			err = b.BaseRequestMultipart(context.Background(), "sendVideo", req, []models.InputFile{inputFile}, &msg)
-			b.RecordLatency(time.Since(startTime))
-			if err != nil {
-				b.setErr(err)
-				b.RecordFailure()
-				if b.OnError != nil {
-					b.OnError(err, nil)
-				}
-				return nil, err
-			}
-
-			b.RecordMessage()
-			if msg.Video != nil {
-				b.Client.fileCache.Store(v, msg.Video.FileID)
-			}
-			return &msg, nil
-		}
-		req.Video = v
-		err := b.Execute(req, &msg)
-		return &msg, err
-
-	case models.InputFile:
-		v.Field = "video"
-		startTime := time.Now()
-		err := b.BaseRequestMultipart(context.Background(), "sendVideo", req, []models.InputFile{v}, &msg)
-		b.RecordLatency(time.Since(startTime))
-		if err != nil {
-			b.setErr(err)
-			b.RecordFailure()
-			if b.OnError != nil {
-				b.OnError(err, nil)
-			}
-			return nil, err
-		}
-		b.RecordMessage()
-		return &msg, err
-	}
-
-	return nil, fmt.Errorf("invalid video type")
-}
-
-func (b *Bot) SendAnimation(chatID any, animation any, opts ...Option) (*models.Message, error) {
-	if b.Err() != nil {
-		return nil, b.Err()
-	}
-
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-
-	resolvedChatID := b.ResolveChatID(chatID)
-
-	req := methods.SendAnimation{
-		ChatID:           resolvedChatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-
-	switch a := animation.(type) {
-	case string:
-		if isLocalFile(a) {
-			if cached, ok := b.Client.fileCache.Load(a); ok {
-				req.Animation = cached.(string)
-				err := b.Execute(req, &msg)
-				return &msg, err
-			}
-
-			file, err := os.Open(a)
-			if err != nil {
-				b.setErr(err)
-				return nil, err
-			}
-			defer file.Close()
-
-			inputFile := models.InputFile{
-				FileName: filepath.Base(a),
-				Reader:   file,
-				Field:    "animation",
-			}
-			startTime := time.Now()
-			err = b.BaseRequestMultipart(context.Background(), "sendAnimation", req, []models.InputFile{inputFile}, &msg)
-			b.RecordLatency(time.Since(startTime))
-			if err != nil {
-				b.setErr(err)
-				b.RecordFailure()
-				if b.OnError != nil {
-					b.OnError(err, nil)
-				}
-				return nil, err
-			}
-
-			b.RecordMessage()
-			if msg.Animation != nil {
-				b.Client.fileCache.Store(a, msg.Animation.FileID)
-			}
-			return &msg, nil
-		}
-		req.Animation = a
-		err := b.Execute(req, &msg)
-		return &msg, err
-
-	case models.InputFile:
-		a.Field = "animation"
-		startTime := time.Now()
-		err := b.BaseRequestMultipart(context.Background(), "sendAnimation", req, []models.InputFile{a}, &msg)
-		b.RecordLatency(time.Since(startTime))
-		if err != nil {
-			b.setErr(err)
-			b.RecordFailure()
-			if b.OnError != nil {
-				b.OnError(err, nil)
-			}
-			return nil, err
-		}
-		b.RecordMessage()
-		return &msg, err
-	}
-
-	return nil, fmt.Errorf("invalid animation type")
-}
-
-func (b *Bot) SendVoice(chatID any, voice any, opts ...Option) (*models.Message, error) {
-	if b.Err() != nil {
-		return nil, b.Err()
-	}
-
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-
-	resolvedChatID := b.ResolveChatID(chatID)
-
-	req := methods.SendVoice{
-		ChatID:           resolvedChatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-	var errSend error
-
-	switch v := voice.(type) {
-	case string:
-		if isLocalFile(v) {
-			if cached, ok := b.Client.fileCache.Load(v); ok {
-				req.Voice = cached.(string)
-				errSend = b.Execute(req, &msg)
-				return &msg, errSend
-			}
-
-			file, err := os.Open(v)
-			if err != nil {
-				b.setErr(err)
-				return nil, err
-			}
-			defer file.Close()
-
-			inputFile := models.InputFile{
-				FileName: filepath.Base(v),
-				Reader:   file,
-				Field:    "voice",
-			}
-			startTime := time.Now()
-			errSend = b.BaseRequestMultipart(context.Background(), "sendVoice", req, []models.InputFile{inputFile}, &msg)
-			b.RecordLatency(time.Since(startTime))
-			if errSend != nil {
-				b.setErr(errSend)
-				b.RecordFailure()
-				if b.OnError != nil {
-					b.OnError(errSend, nil)
-				}
-				return nil, errSend
-			}
-
-			b.RecordMessage()
-			if msg.Voice != nil {
-				b.Client.fileCache.Store(v, msg.Voice.FileID)
-			}
-			return &msg, nil
-		}
-		req.Voice = v
-		err := b.Execute(req, &msg)
-		return &msg, err
-
-	case models.InputFile:
-		v.Field = "voice"
-		startTime := time.Now()
-		err := b.BaseRequestMultipart(context.Background(), "sendVoice", req, []models.InputFile{v}, &msg)
-		b.RecordLatency(time.Since(startTime))
-		if err != nil {
-			b.setErr(err)
-			b.RecordFailure()
-			if b.OnError != nil {
-				b.OnError(err, nil)
-			}
-			return nil, err
-		}
-		b.RecordMessage()
-		return &msg, err
-	}
-
-	return nil, fmt.Errorf("invalid voice type")
 }
 
 func (b *Bot) SendLocation(chatID any, latitude, longitude float64, opts ...Option) (*models.Message, error) {
@@ -1083,7 +594,7 @@ func (b *Bot) EditMessageText(chatID any, messageID int64, text string, opts ...
 	req := methods.EditMessageText{
 		ChatID:      b.ResolveChatID(chatID),
 		MessageID:   messageID,
-		Text:        text,
+		Text:        stretchText(text),
 		ParseMode:   config.ParseMode,
 		ReplyMarkup: config.ReplyMarkup,
 	}
@@ -1738,6 +1249,11 @@ func (b *Bot) StartWorkers(ctx context.Context) {
 
 func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
 	NormalizeUpdateDigits(update)
+
+	if update.Message != nil && update.Message.Text == "dummy" {
+		return
+	}
+
 	c := b.ctxPool.Get().(*Context)
 	c.Bot = b
 	c.Update = update
@@ -1766,24 +1282,28 @@ func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
 	var chain []HandlerFunc
 	chain = append(chain, b.middlewares...)
 
+	var matchedHandlers []HandlerFunc
+	var ok bool
+
 	if update.Message != nil {
 		text := update.Message.Text
 		chatID := update.Message.Chat.ID
 		userState := b.Sessions.Get(chatID).GetState()
 
+		b.muRoutes.RLock()
 		if text != "" && strings.HasPrefix(text, "/") {
 			cmd := strings.Fields(text)[0]
-			if handlers, ok := b.handlers[cmd]; ok {
-				chain = append(chain, handlers...)
+			if matchedHandlers, ok = b.handlers[cmd]; ok {
+				chain = append(chain, matchedHandlers...)
 			} else {
 				chain = append(chain, b.anyMessage...)
 			}
 		} else if userState != "" {
-			if handlers, ok := b.stateRoutes[userState]; ok {
-				chain = append(chain, handlers...)
+			if matchedHandlers, ok = b.stateRoutes[userState]; ok {
+				chain = append(chain, matchedHandlers...)
 			} else if text != "" {
-				if handlers, ok := b.textRoutes[text]; ok {
-					chain = append(chain, handlers...)
+				if matchedHandlers, ok = b.textRoutes[text]; ok {
+					chain = append(chain, matchedHandlers...)
 				} else {
 					chain = append(chain, b.anyMessage...)
 				}
@@ -1791,27 +1311,31 @@ func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
 				chain = append(chain, b.anyMessage...)
 			}
 		} else if text != "" {
-			if handlers, ok := b.textRoutes[text]; ok {
-				chain = append(chain, handlers...)
+			if matchedHandlers, ok = b.textRoutes[text]; ok {
+				chain = append(chain, matchedHandlers...)
 			} else {
 				chain = append(chain, b.anyMessage...)
 			}
 		} else {
 			chain = append(chain, b.anyMessage...)
 		}
+		b.muRoutes.RUnlock()
+
 	} else if update.CallbackQuery != nil {
 		c.Message = update.CallbackQuery.Message
 		data := update.CallbackQuery.Data
 		parts := strings.Split(data, ":")
 		prefix := parts[0]
 
-		if handlers, ok := b.callbackDataRoutes[data]; ok {
-			chain = append(chain, handlers...)
-		} else if handlers, ok := b.callbackDataRoutes[prefix]; ok {
-			chain = append(chain, handlers...)
+		b.muRoutes.RLock()
+		if matchedHandlers, ok = b.callbackDataRoutes[data]; ok {
+			chain = append(chain, matchedHandlers...)
+		} else if matchedHandlers, ok = b.callbackDataRoutes[prefix]; ok {
+			chain = append(chain, matchedHandlers...)
 		} else {
 			chain = append(chain, b.callbackHandlers...)
 		}
+		b.muRoutes.RUnlock()
 
 		chain = append(chain, func(c *Context) {
 			_ = c.Bot.ExecuteWithContext(c.ctx, methods.AnswerCallbackQuery{CallbackQueryID: update.CallbackQuery.ID}, nil)
@@ -1825,6 +1349,11 @@ func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
 		c.handlers = chain
 		c.Next()
 	}
+
+	c.handlers = nil
+	c.Update = nil
+	c.Message = nil
+	c.ctx = nil
 	b.ctxPool.Put(c)
 }
 
@@ -1877,16 +1406,28 @@ func (b *Bot) RunPolling() {
 	}
 }
 
-func (b *Bot) RunWebhook(addr string, path string) error {
+func (b *Bot) RunWebhook(addr string, path string, publicURL string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if !strings.HasSuffix(addr, ":443") && !strings.HasSuffix(addr, ":88") {
-		log.Printf("[Webhook Warning] Your address port in '%s' is not standard! Bale API only supports ports 443 and 88 for Webhook.", addr)
+		log.Printf("[Webhook Warning] Your address port in '%s' is not standard! Bale API only supports ports 443 and 88 for direct Webhooks (Note: You can safely ignore this if you are running behind a reverse proxy like Nginx or Cloudflare).", addr)
 	}
 
 	b.StartWorkers(ctx)
 	log.Printf("Bale Bot started in WEBHOOK mode on %s%s with %d workers...", addr, path, b.numWorkers)
+
+	if publicURL != "" {
+		log.Println("Registering Webhook on Bale servers...")
+		webhookURL := strings.TrimSuffix(publicURL, "/") + path
+		params := map[string]any{"url": webhookURL}
+		err := b.BaseRequest(ctx, "setWebhook", params, nil)
+		if err != nil {
+			log.Printf("Warning: failed to set webhook: %v", err)
+		} else {
+			log.Printf("Webhook set successfully to: %s", webhookURL)
+		}
+	}
 
 	http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1931,19 +1472,15 @@ func (b *Bot) RunWebhook(addr string, path string) error {
 		<-ctx.Done()
 		log.Println("Stopping Webhook server...")
 
-		// ۱. متوقف کردن فوری دریافت ترافیک جدید توسط وب‌سرور بله
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 
-		// ۲. بستن اتمیک کانال صف ورکرها (آغاز فرآیند تخلیه خودکار پیام‌های باقی‌مانده)
 		close(b.workerChan)
 
-		// ۳. مسدود ماندن نخ اصلی تا زمان اتمام کار آخرین ورکر فعال روی پیام‌های صف
 		log.Println("⏳ Waiting for active workers to drain the queue...")
 		b.workersWg.Wait()
 
-		// ۴. ذخیره اتمیک و امن نشست‌ها روی هارد دیسک
 		log.Println("Saving active sessions to disk...")
 		if saver, ok := b.Sessions.(interface{ Save() error }); ok {
 			_ = saver.Save()
@@ -1954,16 +1491,28 @@ func (b *Bot) RunWebhook(addr string, path string) error {
 	return server.ListenAndServeTLS("", "")
 }
 
-func (b *Bot) RunWebhookTLS(addr string, path string, certFile string, keyFile string) error {
+func (b *Bot) RunWebhookTLS(addr string, path string, publicURL string, certFile string, keyFile string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if !strings.HasSuffix(addr, ":443") && !strings.HasSuffix(addr, ":88") {
-		log.Printf("[Webhook Warning] Your address port in '%s' is not standard! Bale API only supports ports 443 and 88 for Webhook.", addr)
+		log.Printf("[Webhook Warning] Your address port in '%s' is not standard! Bale API only supports ports 443 and 88 for direct Webhooks (Note: You can safely ignore this if you are running behind a reverse proxy like Nginx or Cloudflare).", addr)
 	}
 
 	b.StartWorkers(ctx)
 	log.Printf("Bale Bot started in WEBHOOK TLS mode on %s%s with %d workers...", addr, path, b.numWorkers)
+
+	if publicURL != "" {
+		log.Println("Registering Webhook on Bale servers...")
+		webhookURL := strings.TrimSuffix(publicURL, "/") + path
+		params := map[string]any{"url": webhookURL}
+		err := b.BaseRequest(ctx, "setWebhook", params, nil)
+		if err != nil {
+			log.Printf("Warning: failed to set webhook: %v", err)
+		} else {
+			log.Printf("Webhook set successfully to: %s", webhookURL)
+		}
+	}
 
 	http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2179,11 +1728,15 @@ func (b *Bot) ScheduleDaily(hour, minute int, task func()) *ScheduledTask {
 }
 
 func (b *Bot) RemoveState(state string) {
+	b.muRoutes.Lock()
 	delete(b.stateRoutes, state)
+	b.muRoutes.Unlock()
 }
 
 func (b *Bot) RemoveCallbackData(data string) {
+	b.muRoutes.Lock()
 	delete(b.callbackDataRoutes, data)
+	b.muRoutes.Unlock()
 }
 
 func (b *Bot) GetMemoryStats() MemoryStats {
@@ -2307,6 +1860,9 @@ func (b *Bot) FreeMemory() {
 }
 
 func (b *Bot) RegisterSetting(key string, label string, ptr *bool) *Bot {
+	b.muSettings.Lock()
+	defer b.muSettings.Unlock()
+
 	b.settings = append(b.settings, SettingEntry{Key: key, Label: label, Ptr: ptr})
 	db := NewLocalDB("gobale_settings.db")
 	if val, ok := db.Get(key); ok {
@@ -2369,4 +1925,528 @@ func NormalizeUpdateDigits(u *models.Update) {
 	if u.CallbackQuery != nil && u.CallbackQuery.Data != "" {
 		u.CallbackQuery.Data = ToEnglishDigits(u.CallbackQuery.Data)
 	}
+}
+
+func (b *Bot) SendPhotoWithContext(ctx context.Context, chatID any, photo any, opts ...Option) (*models.Message, error) {
+	if b.Err() != nil {
+		return nil, b.Err()
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	resolvedChatID := b.ResolveChatID(chatID)
+	req := methods.SendPhoto{
+		ChatID:           resolvedChatID,
+		FromChatID:       config.FromChatID,
+		Caption:          config.Caption,
+		ReplyToMessageID: config.ReplyToMessageID,
+		ReplyMarkup:      config.ReplyMarkup,
+	}
+
+	var msg models.Message
+
+	switch p := photo.(type) {
+	case string:
+		if isLocalFile(p) {
+			if cached, ok := b.Client.fileCache.Load(p); ok {
+				req.Photo = cached.(string)
+				err := b.ExecuteWithContext(ctx, req, &msg)
+				return &msg, err
+			}
+
+			file, err := os.Open(p)
+			if err != nil {
+				b.setErr(err)
+				return nil, err
+			}
+			defer file.Close()
+
+			inputFile := models.InputFile{
+				FileName: filepath.Base(p),
+				Reader:   file,
+				Field:    "photo",
+			}
+			startTime := time.Now()
+			err = b.BaseRequestMultipart(ctx, "sendPhoto", req, []models.InputFile{inputFile}, &msg)
+			b.RecordLatency(time.Since(startTime))
+			if err != nil {
+				b.setErr(err)
+				b.RecordFailure()
+				if b.OnError != nil {
+					b.OnError(err, nil)
+				}
+				return nil, err
+			}
+
+			b.RecordMessage()
+			if len(msg.Photo) > 0 {
+				bestPhoto := msg.Photo[len(msg.Photo)-1]
+				b.Client.fileCache.Store(p, bestPhoto.FileID)
+			}
+			return &msg, nil
+		}
+		req.Photo = p
+		err := b.ExecuteWithContext(ctx, req, &msg)
+		return &msg, err
+
+	case models.InputFile:
+		p.Field = "photo"
+		startTime := time.Now()
+		err := b.BaseRequestMultipart(ctx, "sendPhoto", req, []models.InputFile{p}, &msg)
+		b.RecordLatency(time.Since(startTime))
+		if err != nil {
+			b.setErr(err)
+			b.RecordFailure()
+			if b.OnError != nil {
+				b.OnError(err, nil)
+			}
+			return nil, err
+		}
+		b.RecordMessage()
+		return &msg, err
+	}
+
+	return nil, fmt.Errorf("invalid photo type")
+}
+
+func (b *Bot) SendPhoto(chatID any, photo any, opts ...Option) (*models.Message, error) {
+	return b.SendPhotoWithContext(context.Background(), chatID, photo, opts...)
+}
+
+func (b *Bot) SendAudioWithContext(ctx context.Context, chatID any, audio any, opts ...Option) (*models.Message, error) {
+	if b.Err() != nil {
+		return nil, b.Err()
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	resolvedChatID := b.ResolveChatID(chatID)
+	req := methods.SendAudio{
+		ChatID:           resolvedChatID,
+		Caption:          config.Caption,
+		ReplyToMessageID: config.ReplyToMessageID,
+		ReplyMarkup:      config.ReplyMarkup,
+	}
+
+	var msg models.Message
+
+	switch a := audio.(type) {
+	case string:
+		if isLocalFile(a) {
+			if cached, ok := b.Client.fileCache.Load(a); ok {
+				req.Audio = cached.(string)
+				err := b.ExecuteWithContext(ctx, req, &msg)
+				return &msg, err
+			}
+
+			file, err := os.Open(a)
+			if err != nil {
+				b.setErr(err)
+				return nil, err
+			}
+			defer file.Close()
+
+			inputFile := models.InputFile{
+				FileName: filepath.Base(a),
+				Reader:   file,
+				Field:    "audio",
+			}
+			startTime := time.Now()
+			err = b.BaseRequestMultipart(ctx, "sendAudio", req, []models.InputFile{inputFile}, &msg)
+			b.RecordLatency(time.Since(startTime))
+			if err != nil {
+				b.setErr(err)
+				b.RecordFailure()
+				if b.OnError != nil {
+					b.OnError(err, nil)
+				}
+				return nil, err
+			}
+
+			b.RecordMessage()
+			if msg.Audio != nil {
+				b.Client.fileCache.Store(a, msg.Audio.FileID)
+			}
+			return &msg, nil
+		}
+		req.Audio = a
+		err := b.ExecuteWithContext(ctx, req, &msg)
+		return &msg, err
+
+	case models.InputFile:
+		a.Field = "audio"
+		startTime := time.Now()
+		err := b.BaseRequestMultipart(ctx, "sendAudio", req, []models.InputFile{a}, &msg)
+		b.RecordLatency(time.Since(startTime))
+		if err != nil {
+			b.setErr(err)
+			b.RecordFailure()
+			if b.OnError != nil {
+				b.OnError(err, nil)
+			}
+			return nil, err
+		}
+		b.RecordMessage()
+		return &msg, err
+	}
+
+	return nil, fmt.Errorf("invalid audio type")
+}
+
+func (b *Bot) SendAudio(chatID any, audio any, opts ...Option) (*models.Message, error) {
+	return b.SendAudioWithContext(context.Background(), chatID, audio, opts...)
+}
+
+func (b *Bot) SendDocumentWithContext(ctx context.Context, chatID any, document any, opts ...Option) (*models.Message, error) {
+	if b.Err() != nil {
+		return nil, b.Err()
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	resolvedChatID := b.ResolveChatID(chatID)
+	req := methods.SendDocument{
+		ChatID:           resolvedChatID,
+		Caption:          config.Caption,
+		ReplyToMessageID: config.ReplyToMessageID,
+		ReplyMarkup:      config.ReplyMarkup,
+	}
+
+	var msg models.Message
+
+	switch d := document.(type) {
+	case string:
+		if isLocalFile(d) {
+			if cached, ok := b.Client.fileCache.Load(d); ok {
+				req.Document = cached.(string)
+				err := b.ExecuteWithContext(ctx, req, &msg)
+				return &msg, err
+			}
+
+			file, err := os.Open(d)
+			if err != nil {
+				b.setErr(err)
+				return nil, err
+			}
+			defer file.Close()
+
+			inputFile := models.InputFile{
+				FileName: filepath.Base(d),
+				Reader:   file,
+				Field:    "document",
+			}
+			startTime := time.Now()
+			err = b.BaseRequestMultipart(ctx, "sendDocument", req, []models.InputFile{inputFile}, &msg)
+			b.RecordLatency(time.Since(startTime))
+			if err != nil {
+				b.setErr(err)
+				b.RecordFailure()
+				if b.OnError != nil {
+					b.OnError(err, nil)
+				}
+				return nil, err
+			}
+
+			b.RecordMessage()
+			if msg.Document != nil {
+				b.Client.fileCache.Store(d, msg.Document.FileID)
+			}
+			return &msg, nil
+		}
+		req.Document = d
+		err := b.ExecuteWithContext(ctx, req, &msg)
+		return &msg, err
+
+	case models.InputFile:
+		d.Field = "document"
+		startTime := time.Now()
+		err := b.BaseRequestMultipart(ctx, "sendDocument", req, []models.InputFile{d}, &msg)
+		b.RecordLatency(time.Since(startTime))
+		if err != nil {
+			b.setErr(err)
+			b.RecordFailure()
+			if b.OnError != nil {
+				b.OnError(err, nil)
+			}
+			return nil, err
+		}
+		b.RecordMessage()
+		return &msg, err
+	}
+
+	return nil, fmt.Errorf("invalid document type")
+}
+
+func (b *Bot) SendDocument(chatID any, document any, opts ...Option) (*models.Message, error) {
+	return b.SendDocumentWithContext(context.Background(), chatID, document, opts...)
+}
+
+func (b *Bot) SendVideoWithContext(ctx context.Context, chatID any, video any, opts ...Option) (*models.Message, error) {
+	if b.Err() != nil {
+		return nil, b.Err()
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	resolvedChatID := b.ResolveChatID(chatID)
+	req := methods.SendVideo{
+		ChatID:           resolvedChatID,
+		Caption:          config.Caption,
+		ReplyToMessageID: config.ReplyToMessageID,
+		ReplyMarkup:      config.ReplyMarkup,
+	}
+
+	var msg models.Message
+
+	switch v := video.(type) {
+	case string:
+		if isLocalFile(v) {
+			if cached, ok := b.Client.fileCache.Load(v); ok {
+				req.Video = cached.(string)
+				err := b.ExecuteWithContext(ctx, req, &msg)
+				return &msg, err
+			}
+
+			file, err := os.Open(v)
+			if err != nil {
+				b.setErr(err)
+				return nil, err
+			}
+			defer file.Close()
+
+			inputFile := models.InputFile{
+				FileName: filepath.Base(v),
+				Reader:   file,
+				Field:    "video",
+			}
+			startTime := time.Now()
+			err = b.BaseRequestMultipart(ctx, "sendVideo", req, []models.InputFile{inputFile}, &msg)
+			b.RecordLatency(time.Since(startTime))
+			if err != nil {
+				b.setErr(err)
+				b.RecordFailure()
+				if b.OnError != nil {
+					b.OnError(err, nil)
+				}
+				return nil, err
+			}
+
+			b.RecordMessage()
+			if msg.Video != nil {
+				b.Client.fileCache.Store(v, msg.Video.FileID)
+			}
+			return &msg, nil
+		}
+		req.Video = v
+		err := b.ExecuteWithContext(ctx, req, &msg)
+		return &msg, err
+
+	case models.InputFile:
+		v.Field = "video"
+		startTime := time.Now()
+		err := b.BaseRequestMultipart(ctx, "sendVideo", req, []models.InputFile{v}, &msg)
+		b.RecordLatency(time.Since(startTime))
+		if err != nil {
+			b.setErr(err)
+			b.RecordFailure()
+			if b.OnError != nil {
+				b.OnError(err, nil)
+			}
+			return nil, err
+		}
+		b.RecordMessage()
+		return &msg, err
+	}
+
+	return nil, fmt.Errorf("invalid video type")
+}
+
+func (b *Bot) SendVideo(chatID any, video any, opts ...Option) (*models.Message, error) {
+	return b.SendVideoWithContext(context.Background(), chatID, video, opts...)
+}
+
+func (b *Bot) SendAnimationWithContext(ctx context.Context, chatID any, animation any, opts ...Option) (*models.Message, error) {
+	if b.Err() != nil {
+		return nil, b.Err()
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	resolvedChatID := b.ResolveChatID(chatID)
+	req := methods.SendAnimation{
+		ChatID:           resolvedChatID,
+		Caption:          config.Caption,
+		ReplyToMessageID: config.ReplyToMessageID,
+		ReplyMarkup:      config.ReplyMarkup,
+	}
+
+	var msg models.Message
+
+	switch a := animation.(type) {
+	case string:
+		if isLocalFile(a) {
+			if cached, ok := b.Client.fileCache.Load(a); ok {
+				req.Animation = cached.(string)
+				err := b.ExecuteWithContext(ctx, req, &msg)
+				return &msg, err
+			}
+
+			file, err := os.Open(a)
+			if err != nil {
+				b.setErr(err)
+				return nil, err
+			}
+			defer file.Close()
+
+			inputFile := models.InputFile{
+				FileName: filepath.Base(a),
+				Reader:   file,
+				Field:    "animation",
+			}
+			startTime := time.Now()
+			err = b.BaseRequestMultipart(ctx, "sendAnimation", req, []models.InputFile{inputFile}, &msg)
+			b.RecordLatency(time.Since(startTime))
+			if err != nil {
+				b.setErr(err)
+				b.RecordFailure()
+				if b.OnError != nil {
+					b.OnError(err, nil)
+				}
+				return nil, err
+			}
+
+			b.RecordMessage()
+			if msg.Animation != nil {
+				b.Client.fileCache.Store(a, msg.Animation.FileID)
+			}
+			return &msg, nil
+		}
+		req.Animation = a
+		err := b.ExecuteWithContext(ctx, req, &msg)
+		return &msg, err
+
+	case models.InputFile:
+		a.Field = "animation"
+		startTime := time.Now()
+		err := b.BaseRequestMultipart(ctx, "sendAnimation", req, []models.InputFile{a}, &msg)
+		b.RecordLatency(time.Since(startTime))
+		if err != nil {
+			b.setErr(err)
+			b.RecordFailure()
+			if b.OnError != nil {
+				b.OnError(err, nil)
+			}
+			return nil, err
+		}
+		b.RecordMessage()
+		return &msg, err
+	}
+
+	return nil, fmt.Errorf("invalid animation type")
+}
+
+func (b *Bot) SendAnimation(chatID any, animation any, opts ...Option) (*models.Message, error) {
+	return b.SendAnimationWithContext(context.Background(), chatID, animation, opts...)
+}
+
+func (b *Bot) SendVoiceWithContext(ctx context.Context, chatID any, voice any, opts ...Option) (*models.Message, error) {
+	if b.Err() != nil {
+		return nil, b.Err()
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	resolvedChatID := b.ResolveChatID(chatID)
+	req := methods.SendVoice{
+		ChatID:           resolvedChatID,
+		Caption:          config.Caption,
+		ReplyToMessageID: config.ReplyToMessageID,
+		ReplyMarkup:      config.ReplyMarkup,
+	}
+
+	var msg models.Message
+
+	switch v := voice.(type) {
+	case string:
+		if isLocalFile(v) {
+			if cached, ok := b.Client.fileCache.Load(v); ok {
+				req.Voice = cached.(string)
+				err := b.ExecuteWithContext(ctx, req, &msg)
+				return &msg, err
+			}
+
+			file, err := os.Open(v)
+			if err != nil {
+				b.setErr(err)
+				return nil, err
+			}
+			defer file.Close()
+
+			inputFile := models.InputFile{
+				FileName: filepath.Base(v),
+				Reader:   file,
+				Field:    "voice",
+			}
+			startTime := time.Now()
+			err = b.BaseRequestMultipart(ctx, "sendVoice", req, []models.InputFile{inputFile}, &msg)
+			b.RecordLatency(time.Since(startTime))
+			if err != nil {
+				b.setErr(err)
+				b.RecordFailure()
+				if b.OnError != nil {
+					b.OnError(err, nil)
+				}
+				return nil, err
+			}
+
+			b.RecordMessage()
+			if msg.Voice != nil {
+				b.Client.fileCache.Store(v, msg.Voice.FileID)
+			}
+			return &msg, nil
+		}
+		req.Voice = v
+		err := b.ExecuteWithContext(ctx, req, &msg)
+		return &msg, err
+
+	case models.InputFile:
+		v.Field = "voice"
+		startTime := time.Now()
+		err := b.BaseRequestMultipart(ctx, "sendVoice", req, []models.InputFile{v}, &msg)
+		b.RecordLatency(time.Since(startTime))
+		if err != nil {
+			b.setErr(err)
+			b.RecordFailure()
+			if b.OnError != nil {
+				b.OnError(err, nil)
+			}
+			return nil, err
+		}
+		b.RecordMessage()
+		return &msg, err
+	}
+
+	return nil, fmt.Errorf("invalid voice type")
+}
+
+func (b *Bot) SendVoice(chatID any, voice any, opts ...Option) (*models.Message, error) {
+	return b.SendVoiceWithContext(context.Background(), chatID, voice, opts...)
 }

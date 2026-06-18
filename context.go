@@ -99,7 +99,7 @@ func (c *Context) Send(text string, opts ...Option) (*models.Message, error) {
 
 	req := methods.SendMessage{
 		ChatID:           c.Bot.ResolveChatID(chatID),
-		Text:             text,
+		Text:             stretchText(text),
 		ParseMode:        config.ParseMode,
 		ReplyToMessageID: config.ReplyToMessageID,
 		ReplyMarkup:      config.ReplyMarkup,
@@ -309,447 +309,6 @@ func (c *Context) IsOldCallbackClient() bool {
 		return false
 	}
 	return strings.HasPrefix(c.Update.CallbackQuery.ID, "1")
-}
-
-func (c *Context) SendPhoto(photo any, opts ...Option) (*models.Message, error) {
-	if c.err != nil {
-		return nil, c.err
-	}
-	chatID, err := c.DetermineChatID()
-	if err != nil {
-		c.err = err
-		return nil, err
-	}
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-	if config.ReplyToMessageID == -1 && c.Message != nil {
-		config.ReplyToMessageID = c.Message.MessageID
-	}
-
-	req := methods.SendPhoto{
-		ChatID:           chatID,
-		FromChatID:       config.FromChatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-	var errSend error
-
-	switch p := photo.(type) {
-	case string:
-		if isLocalFile(p) {
-			if cached, ok := c.Bot.Client.fileCache.Load(p); ok {
-				req.Photo = cached.(string)
-				errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-			} else {
-				file, err := os.Open(p)
-				if err != nil {
-					c.err = err
-					return nil, err
-				}
-				defer file.Close()
-
-				inputFile := models.InputFile{
-					FileName: filepath.Base(p),
-					Reader:   file,
-					Field:    "photo",
-				}
-
-				errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendPhoto", req, []models.InputFile{inputFile}, &msg)
-				if errSend == nil && len(msg.Photo) > 0 {
-					bestPhoto := msg.Photo[len(msg.Photo)-1]
-					c.Bot.Client.fileCache.Store(p, bestPhoto.FileID)
-				}
-			}
-		} else {
-			req.Photo = p
-			errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-		}
-
-	case models.InputFile:
-		p.Field = "photo"
-		errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendPhoto", req, []models.InputFile{p}, &msg)
-	default:
-		errSend = errors.New("invalid photo type")
-	}
-
-	if errSend != nil {
-		c.err = errSend
-		if c.Bot.OnError != nil {
-			c.Bot.OnError(errSend, c)
-		}
-		return nil, errSend
-	}
-	return &msg, nil
-}
-
-func (c *Context) SendAudio(audio any, opts ...Option) (*models.Message, error) {
-	if c.err != nil {
-		return nil, c.err
-	}
-	chatID, err := c.DetermineChatID()
-	if err != nil {
-		c.err = err
-		return nil, err
-	}
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-	if config.ReplyToMessageID == -1 && c.Message != nil {
-		config.ReplyToMessageID = c.Message.MessageID
-	}
-
-	req := methods.SendAudio{
-		ChatID:           chatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-	var errSend error
-
-	switch a := audio.(type) {
-	case string:
-		if isLocalFile(a) {
-			if cached, ok := c.Bot.Client.fileCache.Load(a); ok {
-				req.Audio = cached.(string)
-				errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-			} else {
-				file, err := os.Open(a)
-				if err != nil {
-					c.err = err
-					return nil, err
-				}
-				defer file.Close()
-
-				inputFile := models.InputFile{
-					FileName: filepath.Base(a),
-					Reader:   file,
-					Field:    "audio",
-				}
-
-				errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendAudio", req, []models.InputFile{inputFile}, &msg)
-				if errSend == nil && msg.Audio != nil {
-					c.Bot.Client.fileCache.Store(a, msg.Audio.FileID)
-				}
-			}
-		} else {
-			req.Audio = a
-			errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-		}
-	case models.InputFile:
-		a.Field = "audio"
-		errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendAudio", req, []models.InputFile{a}, &msg)
-	default:
-		errSend = errors.New("invalid audio type")
-	}
-
-	if errSend != nil {
-		c.err = errSend
-		if c.Bot.OnError != nil {
-			c.Bot.OnError(errSend, c)
-		}
-		return nil, errSend
-	}
-	return &msg, nil
-}
-
-func (c *Context) SendDocument(document any, opts ...Option) (*models.Message, error) {
-	if c.err != nil {
-		return nil, c.err
-	}
-	chatID, err := c.DetermineChatID()
-	if err != nil {
-		c.err = err
-		return nil, err
-	}
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-	if config.ReplyToMessageID == -1 && c.Message != nil {
-		config.ReplyToMessageID = c.Message.MessageID
-	}
-
-	req := methods.SendDocument{
-		ChatID:           chatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-	var errSend error
-
-	switch d := document.(type) {
-	case string:
-		if isLocalFile(d) {
-			if cached, ok := c.Bot.Client.fileCache.Load(d); ok {
-				req.Document = cached.(string)
-				errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-			} else {
-				file, err := os.Open(d)
-				if err != nil {
-					c.err = err
-					return nil, err
-				}
-				defer file.Close()
-
-				inputFile := models.InputFile{
-					FileName: filepath.Base(d),
-					Reader:   file,
-					Field:    "document",
-				}
-
-				errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendDocument", req, []models.InputFile{inputFile}, &msg)
-				if errSend == nil && msg.Document != nil {
-					c.Bot.Client.fileCache.Store(d, msg.Document.FileID)
-				}
-			}
-		} else {
-			req.Document = d
-			errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-		}
-	case models.InputFile:
-		d.Field = "document"
-		errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendDocument", req, []models.InputFile{d}, &msg)
-	default:
-		errSend = errors.New("invalid document type")
-	}
-
-	if errSend != nil {
-		c.err = errSend
-		if c.Bot.OnError != nil {
-			c.Bot.OnError(errSend, c)
-		}
-		return nil, errSend
-	}
-	return &msg, nil
-}
-
-func (c *Context) SendVideo(video any, opts ...Option) (*models.Message, error) {
-	if c.err != nil {
-		return nil, c.err
-	}
-	chatID, err := c.DetermineChatID()
-	if err != nil {
-		c.err = err
-		return nil, err
-	}
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-	if config.ReplyToMessageID == -1 && c.Message != nil {
-		config.ReplyToMessageID = c.Message.MessageID
-	}
-
-	req := methods.SendVideo{
-		ChatID:           chatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-	var errSend error
-
-	switch v := video.(type) {
-	case string:
-		if isLocalFile(v) {
-			if cached, ok := c.Bot.Client.fileCache.Load(v); ok {
-				req.Video = cached.(string)
-				errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-			} else {
-				file, err := os.Open(v)
-				if err != nil {
-					c.err = err
-					return nil, err
-				}
-				defer file.Close()
-
-				inputFile := models.InputFile{
-					FileName: filepath.Base(v),
-					Reader:   file,
-					Field:    "video",
-				}
-
-				errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendVideo", req, []models.InputFile{inputFile}, &msg)
-				if errSend == nil && msg.Video != nil {
-					c.Bot.Client.fileCache.Store(v, msg.Video.FileID)
-				}
-			}
-		} else {
-			req.Video = v
-			errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-		}
-	case models.InputFile:
-		v.Field = "video"
-		errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendVideo", req, []models.InputFile{v}, &msg)
-	default:
-		errSend = errors.New("invalid video type")
-	}
-
-	if errSend != nil {
-		c.err = errSend
-		if c.Bot.OnError != nil {
-			c.Bot.OnError(errSend, c)
-		}
-		return nil, errSend
-	}
-	return &msg, nil
-}
-
-func (c *Context) SendAnimation(animation any, opts ...Option) (*models.Message, error) {
-	if c.err != nil {
-		return nil, c.err
-	}
-	chatID, err := c.DetermineChatID()
-	if err != nil {
-		c.err = err
-		return nil, err
-	}
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-	if config.ReplyToMessageID == -1 && c.Message != nil {
-		config.ReplyToMessageID = c.Message.MessageID
-	}
-
-	req := methods.SendAnimation{
-		ChatID:           chatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-	var errSend error
-
-	switch a := animation.(type) {
-	case string:
-		if isLocalFile(a) {
-			if cached, ok := c.Bot.Client.fileCache.Load(a); ok {
-				req.Animation = cached.(string)
-				errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-			} else {
-				file, err := os.Open(a)
-				if err != nil {
-					c.err = err
-					return nil, err
-				}
-				defer file.Close()
-
-				inputFile := models.InputFile{
-					FileName: filepath.Base(a),
-					Reader:   file,
-					Field:    "animation",
-				}
-
-				errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendAnimation", req, []models.InputFile{inputFile}, &msg)
-				if errSend == nil && msg.Animation != nil {
-					c.Bot.Client.fileCache.Store(a, msg.Animation.FileID)
-				}
-			}
-		} else {
-			req.Animation = a
-			errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-		}
-	case models.InputFile:
-		a.Field = "animation"
-		errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendAnimation", req, []models.InputFile{a}, &msg)
-	default:
-		errSend = errors.New("invalid animation type")
-	}
-
-	if errSend != nil {
-		c.err = errSend
-		if c.Bot.OnError != nil {
-			c.Bot.OnError(errSend, c)
-		}
-		return nil, errSend
-	}
-	return &msg, nil
-}
-
-func (c *Context) SendVoice(voice any, opts ...Option) (*models.Message, error) {
-	if c.err != nil {
-		return nil, c.err
-	}
-	chatID, err := c.DetermineChatID()
-	if err != nil {
-		c.err = err
-		return nil, err
-	}
-	config := &SendOptions{}
-	for _, opt := range opts {
-		opt(config)
-	}
-	if config.ReplyToMessageID == -1 && c.Message != nil {
-		config.ReplyToMessageID = c.Message.MessageID
-	}
-
-	req := methods.SendVoice{
-		ChatID:           chatID,
-		Caption:          config.Caption,
-		ReplyToMessageID: config.ReplyToMessageID,
-		ReplyMarkup:      config.ReplyMarkup,
-	}
-
-	var msg models.Message
-	var errSend error
-
-	switch v := voice.(type) {
-	case string:
-		if isLocalFile(v) {
-			if cached, ok := c.Bot.Client.fileCache.Load(v); ok {
-				req.Voice = cached.(string)
-				errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-			} else {
-				file, err := os.Open(v)
-				if err != nil {
-					c.err = err
-					return nil, err
-				}
-				defer file.Close()
-
-				inputFile := models.InputFile{
-					FileName: filepath.Base(v),
-					Reader:   file,
-					Field:    "voice",
-				}
-
-				errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendVoice", req, []models.InputFile{inputFile}, &msg)
-				if errSend == nil && msg.Voice != nil {
-					c.Bot.Client.fileCache.Store(v, msg.Voice.FileID)
-				}
-			}
-		} else {
-			req.Voice = v
-			errSend = c.Bot.ExecuteWithContext(c.activeCtx(), req, &msg)
-		}
-	case models.InputFile:
-		v.Field = "voice"
-		errSend = c.Bot.BaseRequestMultipart(c.activeCtx(), "sendVoice", req, []models.InputFile{v}, &msg)
-	default:
-		errSend = errors.New("invalid voice type")
-	}
-
-	if errSend != nil {
-		c.err = errSend
-		if c.Bot.OnError != nil {
-			c.Bot.OnError(errSend, c)
-		}
-		return nil, errSend
-	}
-	return &msg, nil
 }
 
 func (c *Context) SendLocation(latitude, longitude float64, opts ...Option) (*models.Message, error) {
@@ -1539,11 +1098,15 @@ func (c *Context) Edit(newText string, opts ...Option) (*models.Message, error) 
 	if err != nil {
 		return nil, err
 	}
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
 	msg, err := c.Bot.EditMessageText(chatID, c.Message.MessageID, newText, opts...)
 	if err != nil {
 		if strings.Contains(err.Error(), "can't parse entities") || strings.Contains(err.Error(), "bad description") {
-			log.Printf("⚠️ [GoBale Fallback] Markdown parsing failed in Edit. Falling back to PLAIN TEXT...\n")
-			msg, err = c.Bot.EditMessageText(chatID, c.Message.MessageID, newText)
+			log.Printf("⚠️ [GoBale Fallback] Markdown parsing failed in Edit. Falling back to plain text but preserving keyboard...\n")
+			msg, err = c.Bot.EditMessageText(chatID, c.Message.MessageID, newText, WithKeyboard(config.ReplyMarkup))
 		}
 	}
 	return msg, err
@@ -2272,6 +1835,7 @@ func (c *Context) EditToggle(text string, label string, isEnabled bool, callback
 
 func (c *Context) SendSettingsMenu(text string, adminID ...any) (*models.Message, error) {
 	if len(adminID) > 0 {
+		c.Bot.muSettings.Lock()
 		switch val := adminID[0].(type) {
 		case int64:
 			c.Bot.MaintenanceAdminID = val
@@ -2282,7 +1846,11 @@ func (c *Context) SendSettingsMenu(text string, adminID ...any) (*models.Message
 				c.Bot.MaintenanceAdminID = parsed
 			}
 		}
+		c.Bot.muSettings.Unlock()
 	}
+
+	c.Bot.muSettings.RLock()
+	defer c.Bot.muSettings.RUnlock()
 
 	builder := models.InlineMarkup()
 	for _, entry := range c.Bot.settings {
@@ -2297,6 +1865,7 @@ func (c *Context) SendSettingsMenu(text string, adminID ...any) (*models.Message
 
 func (c *Context) EditSettingsMenu(text string, adminID ...any) (*models.Message, error) {
 	if len(adminID) > 0 {
+		c.Bot.muSettings.Lock()
 		switch val := adminID[0].(type) {
 		case int64:
 			c.Bot.MaintenanceAdminID = val
@@ -2307,7 +1876,11 @@ func (c *Context) EditSettingsMenu(text string, adminID ...any) (*models.Message
 				c.Bot.MaintenanceAdminID = parsed
 			}
 		}
+		c.Bot.muSettings.Unlock()
 	}
+
+	c.Bot.muSettings.RLock()
+	defer c.Bot.muSettings.RUnlock()
 
 	builder := models.InlineMarkup()
 	for _, entry := range c.Bot.settings {
@@ -2353,4 +1926,190 @@ func (c *Context) IsSuperGroup() bool {
 		return false
 	}
 	return c.Message.Chat.Type == "supergroup"
+}
+
+func (c *Context) SendPhoto(photo any, opts ...Option) (*models.Message, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		c.err = err
+		return nil, err
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	finalOpts := opts
+	if config.ReplyToMessageID == -1 && c.Message != nil {
+		finalOpts = append(opts, WithReplyTo(c.Message.MessageID))
+	}
+
+	msg, errSend := c.Bot.SendPhotoWithContext(c.activeCtx(), chatID, photo, finalOpts...)
+	if errSend != nil {
+		c.err = errSend
+		if c.Bot.OnError != nil {
+			c.Bot.OnError(errSend, c)
+		}
+		return nil, errSend
+	}
+	return msg, nil
+}
+
+func (c *Context) SendAudio(audio any, opts ...Option) (*models.Message, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		c.err = err
+		return nil, err
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	finalOpts := opts
+	if config.ReplyToMessageID == -1 && c.Message != nil {
+		finalOpts = append(opts, WithReplyTo(c.Message.MessageID))
+	}
+
+	msg, errSend := c.Bot.SendAudioWithContext(c.activeCtx(), chatID, audio, finalOpts...)
+	if errSend != nil {
+		c.err = errSend
+		if c.Bot.OnError != nil {
+			c.Bot.OnError(errSend, c)
+		}
+		return nil, errSend
+	}
+	return msg, nil
+}
+
+func (c *Context) SendDocument(document any, opts ...Option) (*models.Message, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		c.err = err
+		return nil, err
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	finalOpts := opts
+	if config.ReplyToMessageID == -1 && c.Message != nil {
+		finalOpts = append(opts, WithReplyTo(c.Message.MessageID))
+	}
+
+	msg, errSend := c.Bot.SendDocumentWithContext(c.activeCtx(), chatID, document, finalOpts...)
+	if errSend != nil {
+		c.err = errSend
+		if c.Bot.OnError != nil {
+			c.Bot.OnError(errSend, c)
+		}
+		return nil, errSend
+	}
+	return msg, nil
+}
+
+func (c *Context) SendVideo(video any, opts ...Option) (*models.Message, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		c.err = err
+		return nil, err
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	finalOpts := opts
+	if config.ReplyToMessageID == -1 && c.Message != nil {
+		finalOpts = append(opts, WithReplyTo(c.Message.MessageID))
+	}
+
+	msg, errSend := c.Bot.SendVideoWithContext(c.activeCtx(), chatID, video, finalOpts...)
+	if errSend != nil {
+		c.err = errSend
+		if c.Bot.OnError != nil {
+			c.Bot.OnError(errSend, c)
+		}
+		return nil, errSend
+	}
+	return msg, nil
+}
+
+func (c *Context) SendAnimation(animation any, opts ...Option) (*models.Message, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		c.err = err
+		return nil, err
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	finalOpts := opts
+	if config.ReplyToMessageID == -1 && c.Message != nil {
+		finalOpts = append(opts, WithReplyTo(c.Message.MessageID))
+	}
+
+	msg, errSend := c.Bot.SendAnimationWithContext(c.activeCtx(), chatID, animation, finalOpts...)
+	if errSend != nil {
+		c.err = errSend
+		if c.Bot.OnError != nil {
+			c.Bot.OnError(errSend, c)
+		}
+		return nil, errSend
+	}
+	return msg, nil
+}
+
+func (c *Context) SendVoice(voice any, opts ...Option) (*models.Message, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		c.err = err
+		return nil, err
+	}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	finalOpts := opts
+	if config.ReplyToMessageID == -1 && c.Message != nil {
+		finalOpts = append(opts, WithReplyTo(c.Message.MessageID))
+	}
+
+	msg, errSend := c.Bot.SendVoiceWithContext(c.activeCtx(), chatID, voice, finalOpts...)
+	if errSend != nil {
+		c.err = errSend
+		if c.Bot.OnError != nil {
+			c.Bot.OnError(errSend, c)
+		}
+		return nil, errSend
+	}
+	return msg, nil
 }
