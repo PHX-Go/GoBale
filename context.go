@@ -1727,33 +1727,6 @@ func (c *Context) ReplyWithInline(text string, buttons []string, cols int, callb
 	return c.Send(text, WithReply(), WithKeyboard(markup))
 }
 
-func parseDurationWithDays(s string) (time.Duration, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, errors.New("empty duration")
-	}
-
-	if strings.HasSuffix(s, "d") {
-		daysStr := strings.TrimSuffix(s, "d")
-		days, err := strconv.Atoi(daysStr)
-		if err != nil {
-			return 0, err
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-
-	if strings.HasSuffix(s, "w") {
-		weeksStr := strings.TrimSuffix(s, "w")
-		weeks, err := strconv.Atoi(weeksStr)
-		if err != nil {
-			return 0, err
-		}
-		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
-	}
-
-	return time.ParseDuration(s)
-}
-
 func ScanValues(args []string, sep string, targets ...any) error {
 	if len(args) < len(targets) {
 		return fmt.Errorf("not enough arguments: expected %d, got %d", len(targets), len(args))
