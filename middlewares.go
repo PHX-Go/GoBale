@@ -168,10 +168,14 @@ func ChatRateLimitMiddleware(rate float64, capacity float64, onLimit HandlerFunc
 	}
 }
 
-func BlacklistMiddleware(blacklist map[int64]bool) HandlerFunc {
+func BlacklistMiddleware(bot *Bot) HandlerFunc {
 	return func(c *Context) {
 		if c.Message != nil && c.Message.From != nil {
-			if blacklist[c.Message.From.ID] {
+			bot.muSettings.RLock()
+			isBlacklisted := bot.Blacklist[c.Message.From.ID]
+			bot.muSettings.RUnlock()
+
+			if isBlacklisted {
 				c.Abort()
 				return
 			}
@@ -199,6 +203,24 @@ func MaintenanceMiddleware(enabled *bool, adminID int64, alertText string) Handl
 
 func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 	var userLimits sync.Map
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now().UnixNano()
+			windowNs := int64(window)
+			userLimits.Range(func(key, value any) bool {
+				ul := value.(*userLimit)
+				ul.mu.Lock()
+				if now-ul.windowStart > windowNs*10 {
+					userLimits.Delete(key)
+				}
+				ul.mu.Unlock()
+				return true
+			})
+		}
+	}()
 
 	return func(c *Context) {
 		if limit > 0 && c.Message != nil && c.Message.From != nil {
