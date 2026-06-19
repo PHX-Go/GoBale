@@ -2255,16 +2255,13 @@ func FillForm[T any](c *Context, form *T, onComplete func(*Context, *T)) {
 	}
 
 	wizard.OnComplete(func(c *Context) {
-		//fmt.Println("🔍 [DEBUG] متد OnComplete فرم‌ساز آغاز شد")
 		for i := 0; i < numFields; i++ {
 			structField := t.Field(i)
 			fieldVal := val.Field(i)
 			fieldName := structField.Name
-			//fmt.Printf("🔍 [DEBUG] در حال پردازش فیلد: %s\n", fieldName)
 
 			if cachedVal, ok := c.GetData("form_field_" + fieldName); ok {
 				strVal := cachedVal.(string)
-				//fmt.Printf("🔍 [DEBUG] مقدار خوانده شده از سشن برای فیلد فوق: %s\n", strVal)
 				switch fieldVal.Kind() {
 				case reflect.String:
 					fieldVal.SetString(strVal)
@@ -2277,7 +2274,6 @@ func FillForm[T any](c *Context, form *T, onComplete func(*Context, *T)) {
 				}
 			}
 		}
-		//fmt.Println("🔍 [DEBUG] تمام فیلدها با موفقیت رفلکت شدند. اجرای تابع نهایی...")
 		onComplete(c, form)
 	})
 
