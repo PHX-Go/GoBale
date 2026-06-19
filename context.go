@@ -1528,33 +1528,33 @@ func (w *Wizard) OnComplete(handler func(*Context)) *Wizard {
 }
 
 func (w *Wizard) Run() {
-	w.runStep(0)
+	w.runStep(w.ctx, 0)
 }
 
-func (w *Wizard) runStep(index int) {
+func (w *Wizard) runStep(c *Context, index int) {
 	if index >= len(w.steps) {
 		if w.onComplete != nil {
-			w.onComplete(w.ctx)
+			w.onComplete(c)
 		}
 		return
 	}
 
 	step := w.steps[index]
 
-	_, _ = w.ctx.Ask(step.Prompt, func(c *Context) {
-		if step.Validation != nil && !step.Validation(c.MessageText()) {
+	_, _ = c.Ask(step.Prompt, func(activeCtx *Context) {
+		if step.Validation != nil && !step.Validation(activeCtx.MessageText()) {
 			if step.OnError != "" {
-				c.Reply(step.OnError)
+				activeCtx.Reply(step.OnError)
 			} else {
-				c.Reply("⚠️ مقدار وارد شده نامعتبر است. لطفاً مجدداً ارسال کنید.")
+				activeCtx.Reply("⚠️ مقدار وارد شده نامعتبر است. لطفاً مجدداً ارسال کنید.")
 			}
-			w.runStep(index)
+			w.runStep(activeCtx, index)
 			return
 		}
 
-		step.Handler(c)
+		step.Handler(activeCtx)
 
-		w.runStep(index + 1)
+		w.runStep(activeCtx, index+1)
 	})
 }
 
@@ -2255,16 +2255,16 @@ func FillForm[T any](c *Context, form *T, onComplete func(*Context, *T)) {
 	}
 
 	wizard.OnComplete(func(c *Context) {
-		fmt.Println("🔍 [DEBUG] متد OnComplete فرم‌ساز آغاز شد")
+		//fmt.Println("🔍 [DEBUG] متد OnComplete فرم‌ساز آغاز شد")
 		for i := 0; i < numFields; i++ {
 			structField := t.Field(i)
 			fieldVal := val.Field(i)
 			fieldName := structField.Name
-			fmt.Printf("🔍 [DEBUG] در حال پردازش فیلد: %s\n", fieldName)
+			//fmt.Printf("🔍 [DEBUG] در حال پردازش فیلد: %s\n", fieldName)
 
 			if cachedVal, ok := c.GetData("form_field_" + fieldName); ok {
 				strVal := cachedVal.(string)
-				fmt.Printf("🔍 [DEBUG] مقدار خوانده شده از سشن برای فیلد فوق: %s\n", strVal)
+				//fmt.Printf("🔍 [DEBUG] مقدار خوانده شده از سشن برای فیلد فوق: %s\n", strVal)
 				switch fieldVal.Kind() {
 				case reflect.String:
 					fieldVal.SetString(strVal)
@@ -2277,7 +2277,7 @@ func FillForm[T any](c *Context, form *T, onComplete func(*Context, *T)) {
 				}
 			}
 		}
-		fmt.Println("🔍 [DEBUG] تمام فیلدها با موفقیت رفلکت شدند. اجرای تابع نهایی...")
+		//fmt.Println("🔍 [DEBUG] تمام فیلدها با موفقیت رفلکت شدند. اجرای تابع نهایی...")
 		onComplete(c, form)
 	})
 
