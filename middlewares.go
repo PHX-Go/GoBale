@@ -6,11 +6,11 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
 	"github.com/PHX-Go/GoBale/models"
+	"github.com/PHX-Go/GoBale/utils"
 )
 
 type tokenBucket struct {
@@ -220,7 +220,7 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 			ul.mu.Unlock()
 
 			activeLimit := limit
-			if atomic.LoadUint32(&c.Bot.shieldMode) == 1 {
+			if c.Bot.Shield.IsActive() {
 				activeLimit = limit / 3
 				if activeLimit < 1 {
 					activeLimit = 1
@@ -235,7 +235,7 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 					if c.Message.From.Username != "" {
 						mention = "@" + c.Message.From.Username
 					} else {
-						mention = Bold(c.Message.From.FirstName)
+						mention = utils.Bold(c.Message.From.FirstName)
 					}
 
 					var warningText string
@@ -275,7 +275,7 @@ func AntiLinkMiddleware(warnDuration time.Duration, customTLDs ...string) Handle
 					if c.Message.From.Username != "" {
 						mention = "@" + c.Message.From.Username
 					} else {
-						mention = Bold(c.Message.From.FirstName)
+						mention = utils.Bold(c.Message.From.FirstName)
 					}
 
 					warningText := fmt.Sprintf("⚠️ کاربر %s، ارسال هرگونه لینک تبلیغاتی در این گروه ممنوع است!", mention)
@@ -545,5 +545,32 @@ func AntiCrashMiddleware() HandlerFunc {
 			}
 		}
 		c.Next()
+	}
+}
+
+func RequireJoin(channelUsername string, alertText string, next HandlerFunc) HandlerFunc {
+	return func(c *Context) {
+		userID := c.SenderID()
+		if userID == 0 {
+			c.Next()
+			return
+		}
+
+		member, err := c.Bot.GetChatMember(channelUsername, userID)
+		if err != nil || member.Status == "left" || member.Status == "kicked" {
+
+			cleanChannel := strings.TrimPrefix(channelUsername, "@")
+			joinURL := fmt.Sprintf("https://ble.ir/%s", cleanChannel)
+
+			markup := models.InlineMarkup().
+				Row(models.Btn("📢 عضویت در کانال").URL(joinURL)).
+				Build()
+
+			_, _ = c.Send(alertText, WithKeyboard(markup))
+			c.Abort()
+			return
+		}
+
+		next(c)
 	}
 }

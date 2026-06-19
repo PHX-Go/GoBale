@@ -1,4 +1,4 @@
-package gobale
+package utils
 
 import (
 	"strings"

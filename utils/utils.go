@@ -1,4 +1,4 @@
-package gobale
+package utils
 
 import (
 	"bufio"
@@ -249,33 +249,6 @@ func LoadEnv(filePath string) error {
 	return scanner.Err()
 }
 
-func GetEnv[T any](key string) T {
-	val := os.Getenv(key)
-	var result T
-
-	switch ptr := any(&result).(type) {
-	case *string:
-		*ptr = val
-	case *int:
-		if v, err := strconv.Atoi(val); err == nil {
-			*ptr = v
-		}
-	case *int64:
-		if v, err := strconv.ParseInt(val, 10, 64); err == nil {
-			*ptr = v
-		}
-	case *bool:
-		if v, err := strconv.ParseBool(val); err == nil {
-			*ptr = v
-		}
-	case *time.Duration:
-		if v, err := parseDurationWithDays(val); err == nil {
-			*ptr = v
-		}
-	}
-	return result
-}
-
 var digitReplacer = strings.NewReplacer(
 	"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
 	"۵", "5", "۶", "6", "۷", "7", "۸", "8", "۹", "9",
@@ -351,4 +324,61 @@ func VerifyWebAppData(token string, initData string) (bool, error) {
 
 	isValid := subtle.ConstantTimeCompare([]byte(hash), []byte(expectedHash)) == 1
 	return isValid, nil
+}
+
+// GoBale/utils/utils.go
+
+// ParseDurationWithDays parses standard duration strings including custom 'd' (days) and 'w' (weeks) suffixes
+func ParseDurationWithDays(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+
+	if strings.HasSuffix(s, "d") {
+		daysStr := strings.TrimSuffix(s, "d")
+		days, err := strconv.Atoi(daysStr)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+
+	if strings.HasSuffix(s, "w") {
+		weeksStr := strings.TrimSuffix(s, "w")
+		weeks, err := strconv.Atoi(weeksStr)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
+	}
+
+	return time.ParseDuration(s)
+}
+
+func GetEnv[T any](key string) T {
+	val := os.Getenv(key)
+	var result T
+
+	switch ptr := any(&result).(type) {
+	case *string:
+		*ptr = val
+	case *int:
+		if v, err := strconv.Atoi(val); err == nil {
+			*ptr = v
+		}
+	case *int64:
+		if v, err := strconv.ParseInt(val, 10, 64); err == nil {
+			*ptr = v
+		}
+	case *bool:
+		if v, err := strconv.ParseBool(val); err == nil {
+			*ptr = v
+		}
+	case *time.Duration:
+		if v, err := ParseDurationWithDays(val); err == nil { // Changed to capital P
+			*ptr = v
+		}
+	}
+	return result
 }

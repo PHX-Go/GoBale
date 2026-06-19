@@ -11,15 +11,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/PHX-Go/GoBale/logger"
 	"github.com/PHX-Go/GoBale/methods"
 	"github.com/PHX-Go/GoBale/models"
 	"github.com/PHX-Go/GoBale/session"
+	"github.com/PHX-Go/GoBale/utils"
 )
 
 type HandlerFunc func(*Context)
@@ -97,6 +100,34 @@ func (c *Context) Send(text string, opts ...Option) (*models.Message, error) {
 		config.ReplyToMessageID = c.Message.MessageID
 	}
 
+	if _, ok := config.ReplyMarkup.(*models.InlineKeyboardMarkup); ok {
+		if lastIDVal, ok := c.GetData("last_menu_id"); ok {
+			if lastID, ok := lastIDVal.(int64); ok && lastID > 0 {
+				go func(cid, mid int64) {
+					_, _ = c.Bot.DeleteMessage(cid, mid)
+				}(chatID, lastID)
+			}
+		}
+	}
+
+	if inlineKB, ok := config.ReplyMarkup.(*models.InlineKeyboardMarkup); ok {
+		var flatButtons []models.InlineKeyboardButton
+		for _, row := range inlineKB.InlineKeyboard {
+			for _, btn := range row {
+				flatButtons = append(flatButtons, btn)
+			}
+		}
+
+		limit := c.Bot.AutoPageLimit
+		if limit <= 0 {
+			limit = 8
+		}
+
+		if len(flatButtons) > 10 {
+			return c.SendAutoPaginated(text, flatButtons, limit, opts...)
+		}
+	}
+
 	req := methods.SendMessage{
 		ChatID:           c.Bot.ResolveChatID(chatID),
 		Text:             stretchText(text),
@@ -114,7 +145,7 @@ func (c *Context) Send(text string, opts ...Option) (*models.Message, error) {
 	err = c.Bot.ExecuteWithContext(activeCtx, req, &result)
 	if err != nil {
 		if strings.Contains(err.Error(), "can't parse entities") || strings.Contains(err.Error(), "bad description") {
-			log.Printf("⚠️ [GoBale Fallback] Markdown parsing failed due to syntax error. Falling back to PLAIN TEXT for safe delivery...\n")
+			log.Printf("⚠️ [GoBale Fallback] Markdown parsing failed due to syntax error. Falling back to PLAIN TEXT...\n")
 			req.ParseMode = ""
 			err = c.Bot.ExecuteWithContext(activeCtx, req, &result)
 		}
@@ -127,6 +158,11 @@ func (c *Context) Send(text string, opts ...Option) (*models.Message, error) {
 		}
 		return nil, err
 	}
+
+	if _, ok := config.ReplyMarkup.(*models.InlineKeyboardMarkup); ok {
+		c.SetData("last_menu_id", result.MessageID)
+	}
+
 	return &result, nil
 }
 
@@ -1162,6 +1198,9 @@ func (c *Context) CallbackArgs() []string {
 }
 
 func (c *Context) activeCtx() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
 	if c.Logger {
 		return context.WithValue(c.ctx, loggerKey, true)
 	}
@@ -1758,7 +1797,7 @@ func ScanValues(args []string, sep string, targets ...any) error {
 			}
 			*ptr = val
 		case *time.Duration:
-			val, err := parseDurationWithDays(arg)
+			val, err := utils.ParseDurationWithDays(arg)
 			if err != nil {
 				return fmt.Errorf("argument %d is not a valid duration: %w", i+1, err)
 			}
@@ -1793,7 +1832,7 @@ func (c *Context) ReplyMemoryStats() (*models.Message, error) {
 🔹 رم رزرو شده از سیستم (Sys): %.2f مگابایت
 🔸 دفعات اجرای زباله‌روب (NumGC): %d بار
 🔹 حد مجاز تعیین‌شده رم ربات: %s`,
-		Bold("گزارش مصرف حافظه رم سرور"),
+		utils.Bold("گزارش مصرف حافظه رم سرور"),
 		stats.AllocMegabytes,
 		stats.SysMegabytes,
 		stats.NumGC,
@@ -1909,16 +1948,13 @@ func (c *Context) SenderID() int64 {
 	return 0
 }
 
-func (c *Context) Log() *ContextLogger {
+func (c *Context) Log() *logger.ContextLogger {
 	chatID, _ := c.DetermineChatID()
 	var prefix string
 	if chatID > 0 {
 		prefix = fmt.Sprintf("[Chat: %d] ", chatID)
 	}
-	return &ContextLogger{
-		logger: c.Bot.Log,
-		prefix: prefix,
-	}
+	return logger.NewContextLogger(c.Bot.Log, prefix)
 }
 
 func (c *Context) IsSuperGroup() bool {
@@ -2112,4 +2148,134 @@ func (c *Context) SendVoice(voice any, opts ...Option) (*models.Message, error) 
 		return nil, errSend
 	}
 	return msg, nil
+}
+
+func (c *Context) SendAutoPaginated(text string, items []models.InlineKeyboardButton, itemsPerPage int, opts ...Option) (*models.Message, error) {
+	c.registerGlobalPagination()
+
+	id := atomic.AddUint64(&autoPageCounter, 1)
+	menuID := fmt.Sprintf("auto_p_%d", id)
+
+	provider := func(page int, limit int) ([]models.InlineKeyboardButton, int, error) {
+		start := (page - 1) * limit
+		end := start + limit
+		if start > len(items) {
+			return nil, len(items), nil
+		}
+		if end > len(items) {
+			end = len(items)
+		}
+		return items[start:end], len(items), nil
+	}
+
+	globalPaginationRegistry.Set(menuID, provider, itemsPerPage, 15*time.Minute)
+
+	buttons, _, _ := provider(1, itemsPerPage)
+	var rows [][]models.InlineKeyboardButton
+	for _, btn := range buttons {
+		rows = append(rows, []models.InlineKeyboardButton{btn})
+	}
+
+	var navRow []models.InlineKeyboardButton
+	totalPages := (len(items) + itemsPerPage - 1) / itemsPerPage
+	if totalPages > 1 {
+		navRow = append(navRow, models.NewInlineKeyboardButtonData("بعدی ➡️", fmt.Sprintf("_sys_page:%s:2", menuID)))
+		rows = append(rows, navRow)
+	}
+
+	markup := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+
+	config := &SendOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		return nil, err
+	}
+
+	req := methods.SendMessage{
+		ChatID:           c.Bot.ResolveChatID(chatID),
+		Text:             stretchText(text),
+		ParseMode:        config.ParseMode,
+		ReplyToMessageID: config.ReplyToMessageID,
+		ReplyMarkup:      markup,
+	}
+
+	var result models.Message
+	err = c.Bot.ExecuteWithContext(c.activeCtx(), req, &result)
+	if err == nil {
+		c.SetData("last_menu_id", result.MessageID)
+	}
+	return &result, err
+}
+
+func FillForm[T any](c *Context, form *T, onComplete func(*Context, *T)) {
+	val := reflect.ValueOf(form).Elem()
+	t := val.Type()
+	numFields := val.NumField()
+
+	wizard := c.NewWizard()
+
+	for i := 0; i < numFields; i++ {
+		structField := t.Field(i)
+
+		prompt := structField.Tag.Get("prompt")
+		if prompt == "" {
+			continue
+		}
+
+		validateType := structField.Tag.Get("validate")
+		errorMsg := structField.Tag.Get("error")
+		if errorMsg == "" {
+			errorMsg = "⚠️ ورودی وارد شده معتبر نیست. لطفاً مجدداً ارسال کنید."
+		}
+
+		fieldName := structField.Name
+
+		var validator func(string) bool
+		if validateType == "numeric" {
+			validator = func(text string) bool {
+				_, err := strconv.Atoi(text)
+				return err == nil
+			}
+		}
+
+		stepHandler := func(c *Context) {
+			inputText := c.MessageText()
+			c.SetData("form_field_"+fieldName, inputText)
+		}
+
+		if validator != nil {
+			wizard.StepWithValidation(prompt, validator, errorMsg, stepHandler)
+		} else {
+			wizard.Step(prompt, stepHandler)
+		}
+	}
+
+	wizard.OnComplete(func(c *Context) {
+		for i := 0; i < numFields; i++ {
+			structField := t.Field(i)
+			fieldVal := val.Field(i)
+			fieldName := structField.Name
+
+			if cachedVal, ok := c.GetData("form_field_" + fieldName); ok {
+				strVal := cachedVal.(string)
+				switch fieldVal.Kind() {
+				case reflect.String:
+					fieldVal.SetString(strVal)
+				case reflect.Int:
+					intVal, _ := strconv.Atoi(strVal)
+					fieldVal.SetInt(int64(intVal))
+				case reflect.Int64:
+					intVal, _ := strconv.ParseInt(strVal, 10, 64)
+					fieldVal.SetInt(intVal)
+				}
+			}
+		}
+		onComplete(c, form)
+	})
+
+	wizard.Run()
 }

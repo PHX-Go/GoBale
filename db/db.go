@@ -1,4 +1,4 @@
-package gobale
+package db
 
 import (
 	"encoding/gob"
@@ -66,13 +66,7 @@ func (db *LocalDB) save() error {
 		return err
 	}
 
-	err = os.Rename(tmpPath, db.filePath)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-
-	return nil
+	return os.Rename(tmpPath, db.filePath)
 }
 
 func (db *LocalDB) load() error {

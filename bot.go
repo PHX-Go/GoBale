@@ -26,10 +26,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/PHX-Go/GoBale/db"
+	"github.com/PHX-Go/GoBale/logger"
 	"github.com/PHX-Go/GoBale/methods"
 	"github.com/PHX-Go/GoBale/middleware"
 	"github.com/PHX-Go/GoBale/models"
 	"github.com/PHX-Go/GoBale/session"
+	"github.com/PHX-Go/GoBale/utils"
 )
 
 type Request interface {
@@ -84,8 +87,10 @@ type Metrics struct {
 
 type Bot struct {
 	*Client
+	Shield              *SystemShield
 	muRoutes            sync.RWMutex
 	muSettings          sync.RWMutex
+	AutoPageLimit       int
 	handlers            map[string][]HandlerFunc
 	anyMessage          []HandlerFunc
 	textRoutes          map[string][]HandlerFunc
@@ -116,7 +121,7 @@ type Bot struct {
 	bgSemaphore         chan struct{}
 	shieldMode          uint32
 	settings            []SettingEntry
-	Log                 *Logger
+	Log                 *logger.Logger
 }
 
 func NewBot(token string, numWorkers int) *Bot {
@@ -138,7 +143,8 @@ func NewBot(token string, numWorkers int) *Bot {
 
 	bot = &Bot{
 		Client:             NewClient(token),
-		Log:                NewLogger(LevelInfo, "bot.log", true),
+		AutoPageLimit:      8,
+		Log:                logger.NewLogger(logger.LevelInfo, "bot.log", true),
 		handlers:           make(map[string][]HandlerFunc),
 		textRoutes:         make(map[string][]HandlerFunc),
 		callbackDataRoutes: make(map[string][]HandlerFunc),
@@ -173,33 +179,33 @@ func NewBot(token string, numWorkers int) *Bot {
 		})
 	})
 
+	bot.Use(func(c *Context) {
+		userID := c.SenderID()
 
-bot.Use(func(c *Context) {
-	userID := c.SenderID()
+		if userID > 0 {
+			bot.muSettings.RLock()
+			isBlacklisted := bot.Blacklist[userID]
+			isMaintenance := bot.Maintenance
+			maintenanceAdminID := bot.MaintenanceAdminID
+			maintenanceText := bot.MaintenanceText
+			bot.muSettings.RUnlock()
 
-	if userID > 0 {
-		bot.muSettings.RLock()
-		isBlacklisted := bot.Blacklist[userID]
-		isMaintenance := bot.Maintenance
-		maintenanceAdminID := bot.MaintenanceAdminID
-		maintenanceText := bot.MaintenanceText
-		bot.muSettings.RUnlock()
-
-		if isBlacklisted {
-			c.Abort()
-			return
+			if isBlacklisted {
+				c.Abort()
+				return
+			}
+			if isMaintenance && userID != maintenanceAdminID {
+				c.Reply(maintenanceText)
+				c.Abort()
+				return
+			}
 		}
-		if isMaintenance && userID != maintenanceAdminID {
-			c.Reply(maintenanceText)
-			c.Abort()
-			return
-		}
-	}
-	c.Next()
-})
+		c.Next()
+	})
 
 	bot.bgSemaphore = make(chan struct{}, 100)
 	bot.shieldMode = 0
+	bot.Shield = NewSystemShield(bot)
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
@@ -215,6 +221,7 @@ bot.Use(func(c *Context) {
 			queueDepth := len(bot.workerChan)
 
 			if queueDepth > 800 || ups > 150 {
+				bot.Shield.Activate()
 				if atomic.CompareAndSwapUint32(&bot.shieldMode, 0, 1) {
 					anomalyErr := fmt.Errorf("🚨 TRAFFIC ANOMALY DETECTED! UPS: %.2f | Queue: %d/1000", ups, queueDepth)
 					if bot.OnError != nil {
@@ -222,6 +229,7 @@ bot.Use(func(c *Context) {
 					}
 				}
 			} else if queueDepth < 100 && ups < 10 {
+				bot.Shield.Deactivate()
 				if atomic.CompareAndSwapUint32(&bot.shieldMode, 1, 0) {
 					log.Println("🛡️ [Traffic Shield] Deactivated. Bot returned to normal mode.")
 				}
@@ -230,28 +238,28 @@ bot.Use(func(c *Context) {
 	}()
 
 	bot.OnCallbackData("_sys_cfg", func(c *Context) {
-	args := c.CallbackArgs()
-	if len(args) == 0 {
-		return
-	}
-	key := args[0]
-
-	_ = c.Answer("تغییرات اعمال شد", false)
-
-	db := NewLocalDB("gobale_settings.db")
-	
-	bot.muSettings.Lock()
-	for _, entry := range bot.settings {
-		if entry.Key == key {
-			*entry.Ptr = !*entry.Ptr
-			_ = db.Set(key, *entry.Ptr)
-			break
+		args := c.CallbackArgs()
+		if len(args) == 0 {
+			return
 		}
-	}
-	bot.muSettings.Unlock()
+		key := args[0]
 
-	_, _ = c.EditSettingsMenu("⚙️ منوی تنظیمات سیستمی:")
-})
+		_ = c.Answer("تغییرات اعمال شد", false)
+
+		db := db.NewLocalDB("gobale_settings.db")
+
+		bot.muSettings.Lock()
+		for _, entry := range bot.settings {
+			if entry.Key == key {
+				*entry.Ptr = !*entry.Ptr
+				_ = db.Set(key, *entry.Ptr)
+				break
+			}
+		}
+		bot.muSettings.Unlock()
+
+		_, _ = c.EditSettingsMenu("⚙️ منوی تنظیمات سیستمی:")
+	})
 
 	bot.OptimizeForHardware()
 
@@ -1250,6 +1258,14 @@ func (b *Bot) StartWorkers(ctx context.Context) {
 func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
 	NormalizeUpdateDigits(update)
 
+	if update.Message != nil && strings.HasPrefix(update.Message.Text, "/start ") {
+		parts := strings.Fields(update.Message.Text)
+		if len(parts) > 1 {
+			deepLink := parts[1]
+			b.Sessions.Get(update.Message.Chat.ID).SetData("deep_link", deepLink)
+		}
+	}
+
 	if update.Message != nil && update.Message.Text == "dummy" {
 		return
 	}
@@ -1811,9 +1827,9 @@ func (b *Bot) ReportErrorToAdmin(botName string, targetChatID any) {
 		if c != nil && c.Message != nil && c.Message.From != nil {
 			userInfo = fmt.Sprintf(
 				"👤 فرستنده: %s (%d)\n📍 چت: %s (%d)\n💬 متن پیام: %q",
-				Bold(c.Message.From.FirstName),
+				utils.Bold(c.Message.From.FirstName),
 				c.Message.From.ID,
-				Bold(c.Message.Chat.Title),
+				utils.Bold(c.Message.Chat.Title),
 				c.Message.Chat.ID,
 				c.Message.Text,
 			)
@@ -1823,7 +1839,7 @@ func (b *Bot) ReportErrorToAdmin(botName string, targetChatID any) {
 
 		report := fmt.Sprintf(
 			"🤖 %s\n\n❌ خطا:\n`%v`\n\n%s",
-			Bold(fmt.Sprintf("[%s] گزارش خطای رانتایم", botName)),
+			utils.Bold(fmt.Sprintf("[%s] گزارش خطای رانتایم", botName)),
 			err,
 			userInfo,
 		)
@@ -1864,7 +1880,7 @@ func (b *Bot) RegisterSetting(key string, label string, ptr *bool) *Bot {
 	defer b.muSettings.Unlock()
 
 	b.settings = append(b.settings, SettingEntry{Key: key, Label: label, Ptr: ptr})
-	db := NewLocalDB("gobale_settings.db")
+	db := db.NewLocalDB("gobale_settings.db")
 	if val, ok := db.Get(key); ok {
 		if bVal, ok := val.(bool); ok {
 			*ptr = bVal
@@ -1908,22 +1924,22 @@ func NormalizeUpdateDigits(u *models.Update) {
 	}
 	if u.Message != nil {
 		if u.Message.Text != "" {
-			u.Message.Text = ToEnglishDigits(u.Message.Text)
+			u.Message.Text = utils.ToEnglishDigits(u.Message.Text)
 		}
 		if u.Message.Caption != "" {
-			u.Message.Caption = ToEnglishDigits(u.Message.Caption)
+			u.Message.Caption = utils.ToEnglishDigits(u.Message.Caption)
 		}
 	}
 	if u.EditedMessage != nil {
 		if u.EditedMessage.Text != "" {
-			u.EditedMessage.Text = ToEnglishDigits(u.EditedMessage.Text)
+			u.EditedMessage.Text = utils.ToEnglishDigits(u.EditedMessage.Text)
 		}
 		if u.EditedMessage.Caption != "" {
-			u.EditedMessage.Caption = ToEnglishDigits(u.EditedMessage.Caption)
+			u.EditedMessage.Caption = utils.ToEnglishDigits(u.EditedMessage.Caption)
 		}
 	}
 	if u.CallbackQuery != nil && u.CallbackQuery.Data != "" {
-		u.CallbackQuery.Data = ToEnglishDigits(u.CallbackQuery.Data)
+		u.CallbackQuery.Data = utils.ToEnglishDigits(u.CallbackQuery.Data)
 	}
 }
 

@@ -4,18 +4,22 @@ import (
 	"fmt"
 )
 
+// NewKeyboardButton ساخت دکمه معمولی ساده
 func NewKeyboardButton(text string) KeyboardButton {
 	return KeyboardButton{Text: text}
 }
 
+// NewContactButton ساخت دکمه ارسال مخاطب
 func NewContactButton(text string) KeyboardButton {
 	return KeyboardButton{Text: text, RequestContact: true}
 }
 
+// NewLocationButton ساخت دکمه ارسال موقعیت
 func NewLocationButton(text string) KeyboardButton {
 	return KeyboardButton{Text: text, RequestLocation: true}
 }
 
+// NewReplyKeyboardMarkup ساخت کیبورد معمولی
 func NewReplyKeyboardMarkup(rows ...[]KeyboardButton) *ReplyKeyboardMarkup {
 	return &ReplyKeyboardMarkup{
 		Keyboard:       rows,
@@ -23,20 +27,24 @@ func NewReplyKeyboardMarkup(rows ...[]KeyboardButton) *ReplyKeyboardMarkup {
 	}
 }
 
+// NewInlineKeyboardButtonURL ساخت دکمه شیشه‌ای لینک‌دار
 func NewInlineKeyboardButtonURL(text, url string) InlineKeyboardButton {
 	return InlineKeyboardButton{Text: text, URL: url}
 }
 
+// NewInlineKeyboardButtonData ساخت دکمه شیشه‌ای حاوی کال‌بک دیتا
 func NewInlineKeyboardButtonData(text, callbackData string) InlineKeyboardButton {
 	return InlineKeyboardButton{Text: text, CallbackData: callbackData}
 }
 
+// NewInlineKeyboardMarkup ساخت کیبورد شیشه‌ای مستقیم
 func NewInlineKeyboardMarkup(rows ...[]InlineKeyboardButton) *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{
 		InlineKeyboard: rows,
 	}
 }
 
+// NewWebAppButton ساخت دکمه وب‌اپ معمولی
 func NewWebAppButton(text string, url string) KeyboardButton {
 	return KeyboardButton{
 		Text:   text,
@@ -44,6 +52,7 @@ func NewWebAppButton(text string, url string) KeyboardButton {
 	}
 }
 
+// NewInlineKeyboardButtonWebApp ساخت دکمه وب‌اپ شیشه‌ای تکی
 func NewInlineKeyboardButtonWebApp(text, url string) InlineKeyboardButton {
 	return InlineKeyboardButton{
 		Text:   text,
@@ -51,6 +60,7 @@ func NewInlineKeyboardButtonWebApp(text, url string) InlineKeyboardButton {
 	}
 }
 
+// NewInlineKeyboardButtonCopy ساخت دکمه کپی متن شیشه‌ای تکی
 func NewInlineKeyboardButtonCopy(text, textToCopy string) InlineKeyboardButton {
 	return InlineKeyboardButton{
 		Text:     text,
@@ -58,16 +68,20 @@ func NewInlineKeyboardButtonCopy(text, textToCopy string) InlineKeyboardButton {
 	}
 }
 
+// NewReplyKeyboardRemove ساخت دستور حذف کیبورد
 func NewReplyKeyboardRemove() *ReplyKeyboardRemove {
 	return &ReplyKeyboardRemove{
 		RemoveKeyboard: true,
 	}
 }
 
+// --- سازنده هوشمند دکمه شیشه‌ای (Inline Button Builder) ---
+
 type InlineButtonBuilder struct {
 	btn InlineKeyboardButton
 }
 
+// Btn ساخت دکمه شیشه‌ای هوشمند با نام دلخواه
 func Btn(text string) *InlineButtonBuilder {
 	return &InlineButtonBuilder{
 		btn: InlineKeyboardButton{
@@ -100,10 +114,13 @@ func (b *InlineButtonBuilder) WebApp(url string) *InlineButtonBuilder {
 	return b
 }
 
+// --- سازنده هوشمند دکمه معمولی (Reply Button Builder) ---
+
 type ReplyButtonBuilder struct {
 	btn KeyboardButton
 }
 
+// ReplyBtn ساخت دکمه معمولی هوشمند با نام دلخواه
 func ReplyBtn(text string) *ReplyButtonBuilder {
 	return &ReplyButtonBuilder{
 		btn: KeyboardButton{Text: text},
@@ -120,6 +137,8 @@ func (b *ReplyButtonBuilder) Location() *ReplyButtonBuilder {
 	return b
 }
 
+// --- پترن بیلدرهای هوشمند کیبورد ---
+
 type InlineMarkupBuilder struct {
 	markup *InlineKeyboardMarkup
 }
@@ -132,6 +151,7 @@ func InlineMarkup() *InlineMarkupBuilder {
 	}
 }
 
+// Row اضافه کردن ردیف دکمه شیشه‌ای (پشتیبانی همزمان از متن ساده و دکمه‌های هوشمند Btn)
 func (b *InlineMarkupBuilder) Row(buttons ...any) *InlineMarkupBuilder {
 	var row []InlineKeyboardButton
 	for _, item := range buttons {
@@ -165,6 +185,7 @@ func ReplyMarkup() *ReplyMarkupBuilder {
 	}
 }
 
+// Row اضافه کردن ردیف دکمه معمولی (پشتیبانی همزمان از متن ساده و دکمه‌های هوشمند ReplyBtn)
 func (b *ReplyMarkupBuilder) Row(buttons ...any) *ReplyMarkupBuilder {
 	var row []KeyboardButton
 	for _, item := range buttons {
@@ -189,6 +210,8 @@ func (b *ReplyMarkupBuilder) OneTime(val bool) *ReplyMarkupBuilder {
 func (b *ReplyMarkupBuilder) Build() *ReplyKeyboardMarkup {
 	return b.markup
 }
+
+// --- متدهای کمکی صفحه‌بندی و تبدیل اسلایس‌های شما ---
 
 func NewPaginatedKeyboard(items []InlineKeyboardButton, page int, itemsPerPage int, callbackPrefix string) *InlineKeyboardMarkup {
 	if page < 1 {
