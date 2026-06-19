@@ -161,9 +161,6 @@ func NewBot(token string, numWorkers int) *Bot {
 			if err != nil && strings.Contains(err.Error(), "query is too old") {
 				return
 			}
-			if (c != nil && c.Logger) || (bot != nil && bot.Logger) {
-				return
-			}
 			log.Printf("[Bale Bot Error]: %v", err)
 		},
 	}
