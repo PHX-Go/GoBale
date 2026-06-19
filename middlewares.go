@@ -201,7 +201,14 @@ func MaintenanceMiddleware(enabled *bool, adminID int64, alertText string) Handl
 	}
 }
 
-func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
+type AntiSpamConfig struct {
+	Limit        int
+	Window       time.Duration
+	BypassOwner  bool
+	BypassAdmins bool
+}
+
+func AntiSpamMiddleware(config AntiSpamConfig) HandlerFunc {
 	var userLimits sync.Map
 
 	go func() {
@@ -209,7 +216,7 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 		defer ticker.Stop()
 		for range ticker.C {
 			now := time.Now().UnixNano()
-			windowNs := int64(window)
+			windowNs := int64(config.Window)
 			userLimits.Range(func(key, value any) bool {
 				ul := value.(*userLimit)
 				ul.mu.Lock()
@@ -223,10 +230,20 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 	}()
 
 	return func(c *Context) {
-		if limit > 0 && c.Message != nil && c.Message.From != nil {
+		if config.Limit > 0 && c.Message != nil && c.Message.From != nil {
+			if config.BypassOwner && c.Message.From.ID == c.Bot.MaintenanceAdminID {
+				c.Next()
+				return
+			}
+
+			if config.BypassAdmins && c.Message.Chat.Type != "private" && c.IsAdmin() {
+				c.Next()
+				return
+			}
+
 			userID := c.Message.From.ID
 			now := time.Now().UnixNano()
-			windowNs := int64(window)
+			windowNs := int64(config.Window)
 
 			val, _ := userLimits.LoadOrStore(userID, &userLimit{})
 			ul := val.(*userLimit)
@@ -241,9 +258,9 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 			count := ul.msgCount
 			ul.mu.Unlock()
 
-			activeLimit := limit
+			activeLimit := config.Limit
 			if c.Bot.Shield.IsActive() {
-				activeLimit = limit / 3
+				activeLimit = config.Limit / 3
 				if activeLimit < 1 {
 					activeLimit = 1
 				}
@@ -261,7 +278,7 @@ func AntiSpamMiddleware(limit int, window time.Duration) HandlerFunc {
 					}
 
 					var warningText string
-					if activeLimit < limit {
+					if activeLimit < config.Limit {
 						warningText = fmt.Sprintf("🛡️ کاربر %s، ربات در حالت سپر دفاعی (ترافیک شدید) قرار دارد! ارسال شما موقتاً مسدود شد.", mention)
 					} else {
 						warningText = fmt.Sprintf("⚠️ کاربر %s، شما به دلیل ارسال بیش از حد پیام مسدود شدید! پیام‌های شما موقتاً حذف خواهند شد.", mention)
