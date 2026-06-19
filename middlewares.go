@@ -201,6 +201,7 @@ func MaintenanceMiddleware(enabled *bool, adminID int64, alertText string) Handl
 	}
 }
 
+// AntiSpam
 type AntiSpamConfig struct {
 	Limit        int
 	Window       time.Duration
