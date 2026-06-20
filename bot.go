@@ -2463,3 +2463,5 @@ func (b *Bot) SendVoiceWithContext(ctx context.Context, chatID any, voice any, o
 func (b *Bot) SendVoice(chatID any, voice any, opts ...Option) (*models.Message, error) {
 	return b.SendVoiceWithContext(context.Background(), chatID, voice, opts...)
 }
+
+//
