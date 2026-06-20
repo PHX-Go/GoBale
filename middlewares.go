@@ -149,9 +149,19 @@ func ChatRateLimitMiddleware(rate float64, capacity float64, onLimit HandlerFunc
 			return
 		}
 
+		if c.Message != nil && c.Message.From != nil {
+			c.Bot.muSettings.RLock()
+			isAdminBypass := c.Message.From.ID == c.Bot.MaintenanceAdminID
+			c.Bot.muSettings.RUnlock()
+
+			if isAdminBypass || c.IsAdmin() {
+				c.Next()
+				return
+			}
+		}
+
 		tb := manager.getLimiter(chatID)
 		if !tb.allow() {
-
 			_ = c.Delete()
 
 			if tb.shouldWarn(5 * time.Second) {
@@ -300,33 +310,37 @@ var DefaultTLDs = []string{"com", "ir", "net", "org", "co", "biz", "info", "me",
 
 func AntiLinkMiddleware(warnDuration time.Duration, customTLDs ...string) HandlerFunc {
 	tldsList := append(DefaultTLDs, customTLDs...)
-
 	tldsPattern := strings.Join(tldsList, "|")
 	regexPattern := fmt.Sprintf(`(?i)(https?://)?([a-zA-Z0-9-]+\.)+(%s)(/[^\s]*)?`, tldsPattern)
 	linkRegex := regexp.MustCompile(regexPattern)
 
 	return func(c *Context) {
 		if c.Message != nil && c.Message.Text != "" && c.Message.From != nil {
+			userID := c.Message.From.ID
+
+			c.Bot.muSettings.RLock()
+			isAdminBypass := userID == c.Bot.MaintenanceAdminID
+			c.Bot.muSettings.RUnlock()
+
+			if isAdminBypass || c.IsAdmin() {
+				c.Next()
+				return
+			}
+
 			text := c.Message.Text
-
 			if linkRegex.MatchString(text) {
-				if !c.IsAdmin() {
-					var mention string
-					if c.Message.From.Username != "" {
-						mention = "@" + c.Message.From.Username
-					} else {
-						mention = utils.Bold(c.Message.From.FirstName)
-					}
-
-					warningText := fmt.Sprintf("⚠️ کاربر %s، ارسال هرگونه لینک تبلیغاتی در این گروه ممنوع است!", mention)
-
-					_, _ = c.SendTemp(warningText, warnDuration, WithMarkdown())
-
-					_ = c.Delete()
-
-					c.Abort()
-					return
+				var mention string
+				if c.Message.From.Username != "" {
+					mention = "@" + c.Message.From.Username
+				} else {
+					mention = utils.Bold(c.Message.From.FirstName)
 				}
+
+				warningText := fmt.Sprintf("⚠️ کاربر %s، ارسال هرگونه لینک تبلیغاتی در این گروه ممنوع است!", mention)
+				_, _ = c.SendTemp(warningText, warnDuration, WithMarkdown())
+				_ = c.Delete()
+				c.Abort()
+				return
 			}
 		}
 		c.Next()
@@ -464,10 +478,19 @@ func MandatoryJoinMulti(alertText string, channels ...string) HandlerFunc {
 		}
 
 		userID := c.Message.From.ID
+
+		c.Bot.muSettings.RLock()
+		isAdminBypass := userID == c.Bot.MaintenanceAdminID
+		c.Bot.muSettings.RUnlock()
+
+		if isAdminBypass || c.IsAdmin() {
+			c.Next()
+			return
+		}
+
 		var missingChannels []string
 
 		for _, channel := range channels {
-
 			checkID := channel
 			if strings.Contains(channel, "ble.ir") || strings.Contains(channel, "http") {
 				parts := strings.SplitN(channel, ":", 2)
@@ -489,12 +512,10 @@ func MandatoryJoinMulti(alertText string, channels ...string) HandlerFunc {
 
 		builder := models.InlineMarkup()
 		for _, ch := range missingChannels {
-
 			if strings.Contains(ch, "ble.ir") || strings.Contains(ch, "http") {
 				parts := strings.SplitN(ch, ":", 2)
 				if len(parts) == 2 {
 					joinLink := parts[1]
-
 					builder.Row(models.Btn("📢 عضویت در کانال خصوصی").URL(joinLink))
 				}
 				continue
@@ -502,12 +523,10 @@ func MandatoryJoinMulti(alertText string, channels ...string) HandlerFunc {
 
 			cleanUsername := strings.TrimPrefix(ch, "@")
 			linkURL := fmt.Sprintf("https://ble.ir/%s", cleanUsername)
-
 			builder.Row(models.Btn(fmt.Sprintf("📢 عضویت در کانال %s", ch)).URL(linkURL))
 		}
 
 		builder.Row(models.Btn("✅ در همه کانال‌ها عضو شدم! تایید مجدد").Callback("check_mandatory_join"))
-
 		markup := builder.Build()
 
 		_, _ = c.Send(alertText, WithKeyboard(markup))
