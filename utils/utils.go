@@ -36,17 +36,31 @@ func Tooltip(text, description string) string {
 }
 
 func FormatMoney(n int64) string {
+	isNegative := n < 0
+	if isNegative {
+		n = -n
+	}
+
 	s := fmt.Sprintf("%d", n)
 	if len(s) <= 3 {
+		if isNegative {
+			return "-" + s
+		}
 		return s
 	}
+
 	var res []string
 	for len(s) > 3 {
 		res = append([]string{s[len(s)-3:]}, res...)
 		s = s[:len(s)-3]
 	}
 	res = append([]string{s}, res...)
-	return strings.Join(res, ",")
+
+	result := strings.Join(res, ",")
+	if isNegative {
+		return "-" + result
+	}
+	return result
 }
 
 func LoadConfig(filePath string, target any) error {
