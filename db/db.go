@@ -23,9 +23,9 @@ func NewLocalDB(filePath string) *LocalDB {
 
 func (db *LocalDB) Set(key string, val any) error {
 	db.mu.Lock()
+	defer db.mu.Unlock()
 	db.store[key] = val
-	db.mu.Unlock()
-	return db.save()
+	return db.saveUnlocked()
 }
 
 func (db *LocalDB) Get(key string) (any, bool) {
@@ -37,15 +37,12 @@ func (db *LocalDB) Get(key string) (any, bool) {
 
 func (db *LocalDB) Delete(key string) error {
 	db.mu.Lock()
+	defer db.mu.Unlock()
 	delete(db.store, key)
-	db.mu.Unlock()
-	return db.save()
+	return db.saveUnlocked()
 }
 
-func (db *LocalDB) save() error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
+func (db *LocalDB) saveUnlocked() error {
 	tmpPath := db.filePath + ".tmp"
 	file, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
