@@ -1407,6 +1407,9 @@ func (b *Bot) RunPolling() {
 			var updates []models.Update
 			err := b.BaseRequest(ctx, "getUpdates", params, &updates)
 			if err != nil {
+				if ctx.Err() != nil {
+					continue
+				}
 				log.Printf("Polling API error: %v", err)
 				time.Sleep(3 * time.Second)
 				continue
