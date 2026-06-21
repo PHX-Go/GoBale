@@ -330,12 +330,11 @@ func (c *Context) Answer(text string, showAlert bool) error {
 	}
 	req := methods.AnswerCallbackQuery{CallbackQueryID: queryID, Text: text, ShowAlert: showAlert}
 	err := c.Bot.ExecuteWithContext(c.activeCtx(), req, nil)
-	if err != nil {
-		c.err = err
-		if c.Bot.OnError != nil {
-			c.Bot.OnError(err, c)
+	if err == nil {
+		if c.Keys == nil {
+			c.Keys = make(map[string]any)
 		}
-		return err
+		c.Keys["_sys_cb_answered"] = true
 	}
 	return err
 }

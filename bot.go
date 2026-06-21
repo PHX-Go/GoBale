@@ -1351,7 +1351,9 @@ func (b *Bot) processUpdate(ctx context.Context, update *models.Update) {
 		b.muRoutes.RUnlock()
 
 		chain = append(chain, func(c *Context) {
-			_ = c.Bot.ExecuteWithContext(c.ctx, methods.AnswerCallbackQuery{CallbackQueryID: update.CallbackQuery.ID}, nil)
+			if c.Keys == nil || c.Keys["_sys_cb_answered"] == nil {
+				_ = c.Bot.ExecuteWithContext(c.ctx, methods.AnswerCallbackQuery{CallbackQueryID: update.CallbackQuery.ID}, nil)
+			}
 			c.Next()
 		})
 	} else if update.PreCheckoutQuery != nil {
