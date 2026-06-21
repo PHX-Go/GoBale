@@ -276,26 +276,38 @@ func (b *Bot) OnState(state string, handlers ...HandlerFunc) {
 }
 
 func (b *Bot) Use(m ...HandlerFunc) {
+	b.muRoutes.Lock()
+	defer b.muRoutes.Unlock()
 	b.middlewares = append(b.middlewares, m...)
 }
 
 func (b *Bot) OnCommand(command string, handlers ...HandlerFunc) {
+	b.muRoutes.Lock()
+	defer b.muRoutes.Unlock()
 	b.handlers[command] = handlers
 }
 
 func (b *Bot) OnMessage(handlers ...HandlerFunc) {
+	b.muRoutes.Lock()
+	defer b.muRoutes.Unlock()
 	b.anyMessage = handlers
 }
 
 func (b *Bot) OnText(text string, handlers ...HandlerFunc) {
+	b.muRoutes.Lock()
+	defer b.muRoutes.Unlock()
 	b.textRoutes[text] = handlers
 }
 
 func (b *Bot) OnPreCheckout(handlers ...HandlerFunc) {
+	b.muRoutes.Lock()
+	defer b.muRoutes.Unlock()
 	b.preCheckoutHandlers = handlers
 }
 
 func (b *Bot) OnCallback(handlers ...HandlerFunc) {
+	b.muRoutes.Lock()
+	defer b.muRoutes.Unlock()
 	b.callbackHandlers = handlers
 }
 
