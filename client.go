@@ -464,7 +464,7 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 
 				if field.Kind() == reflect.String {
 					_ = writer.WriteField(fieldName, field.String())
-				} else if field.Kind() == reflect.Interface && field.Elem().Kind() == reflect.String {
+				} else if field.Kind() == reflect.Interface && !field.IsNil() && field.Elem().Kind() == reflect.String {
 					_ = writer.WriteField(fieldName, field.Elem().String())
 				} else {
 					jsonVal, err := json.Marshal(field.Interface())
