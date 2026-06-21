@@ -1482,7 +1482,11 @@ var autoCallbackCounter uint64
 func (c *Context) Btn(text string, handler HandlerFunc) models.InlineKeyboardButton {
 	id := atomic.AddUint64(&autoCallbackCounter, 1)
 	uniqueID := fmt.Sprintf("auto_cb_%d", id)
-	c.Bot.OnCallbackData(uniqueID, handler)
+
+	c.Bot.OnCallbackData(uniqueID, func(c *Context) {
+		c.Bot.RemoveCallbackData(uniqueID)
+		handler(c)
+	})
 	return models.NewInlineKeyboardButtonData(text, uniqueID)
 }
 
