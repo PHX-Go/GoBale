@@ -154,8 +154,9 @@ func (m *GOBStore) Save() error {
 			v.mu.RUnlock()
 
 			flatData[k] = &Session{
-				State: state,
-				Data:  copiedData,
+				State:        state,
+				Data:         copiedData,
+				LastAccessed: v.LastAccessed,
 			}
 		}
 		shard.mu.RUnlock()
