@@ -1104,10 +1104,18 @@ func (c *Context) PinTemporary(duration time.Duration) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+
+	chatID, err := c.DetermineChatID()
+	if err != nil {
+		return false, err
+	}
+
 	messageID := c.Message.MessageID
+
 	c.Bot.Schedule(duration, func() {
-		c.Unpin(messageID)
+		_, _ = c.Bot.UnPinChatMessage(chatID, messageID)
 	})
+
 	return ok, nil
 }
 
