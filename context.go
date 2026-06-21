@@ -539,13 +539,16 @@ func (c *Context) GetChatMember(userID int64) (*models.ChatMember, error) {
 }
 
 func (c *Context) IsAdmin() bool {
-	if c.Message == nil || c.Message.From == nil {
+	userID := c.SenderID()
+	if userID == 0 {
 		return false
 	}
-	if c.Message.Chat.Type == "private" {
+
+	if c.Message != nil && c.Message.Chat.Type == "private" {
 		return true
 	}
-	member, err := c.GetChatMember(c.Message.From.ID)
+
+	member, err := c.GetChatMember(userID)
 	if err != nil {
 		return false
 	}
