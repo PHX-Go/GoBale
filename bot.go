@@ -1258,7 +1258,7 @@ func (b *Bot) StartWorkers(ctx context.Context) {
 			defer b.workersWg.Done()
 
 			for update := range b.workerChan {
-				b.processUpdate(ctx, update)
+				b.processUpdate(context.Background(), update)
 			}
 		}()
 	}
