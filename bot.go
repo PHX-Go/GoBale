@@ -1123,7 +1123,7 @@ func (b *Bot) UploadStickerFile(userID int64, sticker models.InputFile) (*models
 			b.OnError(err, nil)
 		}
 	}
-	return &file, nil
+	return &file, err
 }
 
 func (b *Bot) CreateNewStickerSet(userID int64, name string, title string, stickers []models.InputSticker) (bool, error) {
@@ -2463,5 +2463,3 @@ func (b *Bot) SendVoiceWithContext(ctx context.Context, chatID any, voice any, o
 func (b *Bot) SendVoice(chatID any, voice any, opts ...Option) (*models.Message, error) {
 	return b.SendVoiceWithContext(context.Background(), chatID, voice, opts...)
 }
-
-//
