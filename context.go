@@ -1830,7 +1830,7 @@ func (c *Context) Go(task func()) {
 			<-c.Bot.bgSemaphore
 			if r := recover(); r != nil {
 				if c.Bot.OnError != nil {
-					c.Bot.OnError(fmt.Errorf("panic in background task: %v", r), c)
+					c.Bot.OnError(fmt.Errorf("panic in background task: %v", r), nil)
 				}
 			}
 		}()
