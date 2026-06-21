@@ -160,6 +160,9 @@ func (rl *RateLimiter) Wait(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		rl.mu.Lock()
+		rl.lastRefill -= sleepNs
+		rl.mu.Unlock()
 		return ctx.Err()
 	case <-time.After(time.Duration(sleepNs)):
 		return nil
