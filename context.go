@@ -531,7 +531,7 @@ func (fi *FileInfoChain) Go() (*File, error) {
 	return &info, err
 }
 
-// PrevText returns original message text before being edited
+// PrevText retrieves the cached original text of the edited message
 func (c *Ctx) PrevText() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
