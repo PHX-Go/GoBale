@@ -25,15 +25,15 @@ In typical bot frameworks, session storage relies on a single map guarded by a s
    └───────────┘         └───────────┘         └───────────┘
 ```
 
-* **Memory Partitioning (Sharding):** GoBale hashes each incoming `chatID` and routes it to one of **32 independent shards**. Reading or locking a session only locks its specific shard, allowing other worker threads to concurrently write to other shards without waiting [GoBale_v3.txt].
-* **Automatic Inactivity Sweeper:** A background routine runs hourly to clean up inactive sessions. If a session has not been accessed for more than 24 hours, it is swept from memory to prevent RAM exhaustion [GoBale_v3.txt].
-* **Durable Deep-Copy GOB Saves:** When saving states to disk, the store locks each shard sequentially, performs a deep copy of each session's data map under a read lock, and encodes them securely. This protects against race conditions where a worker tries to write to a session while a background auto-save is running [GoBale_v3.txt].
+* **Memory Partitioning (Sharding):** GoBale hashes each incoming `chatID` and routes it to one of **32 independent shards**. Reading or locking a session only locks its specific shard, allowing other worker threads to concurrently write to other shards without waiting.
+* **Automatic Inactivity Sweeper:** A background routine runs hourly to clean up inactive sessions. If a session has not been accessed for more than 24 hours, it is swept from memory to prevent RAM exhaustion.
+* **Durable Deep-Copy GOB Saves:** When saving states to disk, the store locks each shard sequentially, performs a deep copy of each session's data map under a read lock, and encodes them securely. This protects against race conditions where a worker tries to write to a session while a background auto-save is running.
 
 ---
 
 ## 2. API Reference & Code Examples
 
-Sessions are fetched using `c.Session()` inside the handler context or `bot.Sessions.Get(chatID)` from the main bot context [GoBale_v3.txt].
+Sessions are fetched using `c.Session()` inside the handler context or `bot.Sessions.Get(chatID)` from the main bot context.
 
 ### Standard Usage (FSM States and Custom Data)
 
@@ -80,7 +80,7 @@ func main() {
 
 ### Type-Safe Generics Helpers
 
-GoBale provides global generic helper functions (`SessionGet` and `SessionSet`) to write and retrieve custom types from sessions safely without doing tedious interface assertions or type switches [GoBale_v3.txt].
+GoBale provides global generic helper functions (`SessionGet` and `SessionSet`) to write and retrieve custom types from sessions safely without doing tedious interface assertions or type switches.
 
 ```go
 func HandleUserSession(sess *gobale.Session) {
