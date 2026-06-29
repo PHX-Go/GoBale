@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"encoding/gob"
 )
 
 // tokenBucket manages request limits for rate limiting thread-safely
