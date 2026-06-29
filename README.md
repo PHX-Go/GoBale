@@ -123,8 +123,6 @@ for _, u := range updates {
 
 The `setWebhook` API method can be used in **two distinct ways** depending on whether you want the framework to manage the HTTP server automatically, or if you prefer to manage the webhook registration manually.
 
----
-
 #### Method 1: Automatic Setup via the Webhook Runner (Recommended)
 
 This is the standard approach for production hosting. The framework automatically spins up a secure HTTPS server (or plain HTTP behind reverse proxies like ngrok/Nginx), handles incoming update routing, and registers the webhook URL on the Bale servers in a single builder chain.
@@ -146,8 +144,6 @@ if err != nil {
 ```
 
 *Note: For local tunnel testing (e.g., using ngrok), you can use the `.Insecure()` and `.Ngrok()` configurations to bypass SSL requirement checks and automatically resolve the forwarding URL.*
-
----
 
 #### Method 2: Manual Setup via the Webhook Chain
 
@@ -173,8 +169,6 @@ if ok {
 
 The `deleteWebhook` API method can be utilized in **two ways** within GoBale: automatically by the framework when switching to polling mode, or manually through the fluent webhook builder chain.
 
----
-
 #### Method 1: Automatic Webhook Deletion (Polling Mode)
 
 When you start the bot in long polling mode (`bot.Run().Polling().Go()`), GoBale automatically executes a `deleteWebhook` API call first. This ensures that any stale or active webhook registrations are cleared so they do not block or interfere with the polling update stream.
@@ -183,8 +177,6 @@ When you start the bot in long polling mode (`bot.Run().Polling().Go()`), GoBale
 // Starting polling mode automatically deletes any active webhook on startup
 bot.Run().Polling().Go()
 ```
-
----
 
 #### Method 2: Manual Webhook Deletion via the Webhook Chain
 
@@ -205,3 +197,48 @@ if ok {
 	log.Println("Webhook successfully removed from Bale servers")
 }
 ```
+
+---
+### WebhookInfo & getWebhookInfo
+
+The `WebhookInfo` struct represents the current configuration and diagnostic status of your active webhook registration on the Bale servers. You can retrieve this metadata using the fluent `getWebhookInfo` API chain (`bot.Webhook().Info().Go()`).
+
+#### WebhookInfo Struct
+
+```go
+type WebhookInfo struct {
+	URL                  string   `json:"url"`
+	HasCustomCertificate bool     `json:"has_custom_certificate"`
+	PendingUpdateCount   int      `json:"pending_update_count"`
+	IPAddress            string   `json:"ip_address,omitempty"`
+	LastErrorDate        int64    `json:"last_error_date,omitempty"`
+	LastErrorMessage     string   `json:"last_error_message,omitempty"`
+	MaxConnections       int      `json:"max_connections,omitempty"`
+	AllowedUpdates       []string `json:"allowed_updates,omitempty"`
+}
+```
+
+#### Usage
+
+To query the active webhook details and check for errors or pending updates, invoke the `.Info()` chain from the `Webhook` context:
+
+```go
+// Fetch active webhook configuration metadata from Bale servers
+info, err := bot.Webhook().
+	Info().
+	Go()
+
+if err != nil {
+	log.Printf("Failed to retrieve webhook status: %v", err)
+	return
+}
+
+// Log retrieved diagnostic metrics safely
+log.Printf("Registered Webhook URL: %s", info.URL)
+log.Printf("Pending Updates in Queue: %d", info.PendingUpdateCount)
+
+if info.LastErrorMessage != "" {
+	log.Printf("Recent Webhook Error: %s (occurred at Unix time: %d)", info.LastErrorMessage, info.LastErrorDate)
+}
+```
+---
