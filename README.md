@@ -242,3 +242,44 @@ if info.LastErrorMessage != "" {
 }
 ```
 ---
+### User
+
+The `User` struct represents a Bale user account or bot account identity. It contains basic profile fields and includes a built-in helper method `Mention()` to dynamically format user mentions.
+
+```go
+type User struct {
+	ID           int64  `json:"id"`
+	IsBot        bool   `json:"is_bot"`
+	FirstName    string `json:"first_name"`
+	LastName     string `json:"last_name,omitempty"`
+	Username     string `json:"username,omitempty"`
+	LanguageCode string `json:"language_code,omitempty"`
+}
+```
+
+#### Helper Methods
+
+* **`Mention() string`**: Returns a string formatted with the `@` prefix if the user has a registered username; otherwise, it returns the user's first name wrapped in Markdown bold tags (`*FirstName*`).
+
+#### Usage
+
+Typically accessed through incoming message updates via `c.Message.From`:
+
+```go
+bot.On().Msg().Do(func(c *gobale.Ctx) {
+	if c.Message != nil && c.Message.From != nil {
+		user := c.Message.From
+
+		// Log basic user metrics safely
+		log.Printf("Received message from user ID: %d (Username: %s)", user.ID, user.Username)
+
+		// Utilize built-in Mention helper to greet the user
+		userMention := user.Mention()
+		
+		_, _ = c.Send().
+			Text(fmt.Sprintf("Hello %s, how can I help you today?", userMention)).
+			Markdown().
+			Go()
+	}
+})
+```
