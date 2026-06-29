@@ -6,24 +6,24 @@ GoBale includes a suite of highly configurable group protection middlewares desi
 
 ## Middlewares Reference
 
-These middlewares are registered on routing groups or globally. They automatically inspect incoming updates, execute actions (such as deleting messages, muting users, or kicking bots), and abort the pipeline when violations are identified [GoBale_v3.txt].
+These middlewares are registered on routing groups or globally. They automatically inspect incoming updates, execute actions (such as deleting messages, muting users, or kicking bots), and abort the pipeline when violations are identified.
 
-* **`AntiSpam(limit, window, warnMsg...)`**: Tracks message frequency per user. If a user exceeds the limit within the timeframe, their messages are deleted, and a self-destroying warning is sent [GoBale_v3.txt].
-* **`AntiLink(warnDuration, customMsg, customTLDs...)`**: Scans text for URLs and automatically deletes matching links from non-admin users [GoBale_v3.txt].
-* **`AntiRepeat(warnDuration)`**: Detects and deletes duplicate identical messages sent sequentially by the same user within 1 minute [GoBale_v3.txt].
-* **`AntiForward(warnDuration)`**: Automatically deletes forwarded messages sent by non-admin members [GoBale_v3.txt].
-* **`AntiCaps(threshold, minLength, warnDuration)`**: Detects and deletes messages containing excessive uppercase letters (shouting) [GoBale_v3.txt].
-* **`AntiCharLimit(limit, warnDuration)`**: Deletes messages exceeding the specified character limit (to block massive advertising banners) [GoBale_v3.txt].
-* **`AntiNightMedia(startHour, endHour, warnDuration)`**: Restricts non-admin members from posting media files (photos, videos, voice notes, stickers, etc.) during specified night hours [GoBale_v3.txt].
-* **`AntiSpamProfile(banOnMatch, bannedKeywords)`**: Inspects newly joined members' profiles (names/usernames) and bans them instantly on keyword matches [GoBale_v3.txt].
-* **`AntiSelfBot(minInterval)`**: Tracks member join timestamps and bans automated user accounts (self-bots) that post faster than the allowed threshold [GoBale_v3.txt].
-* **`MandatoryAddGuard(defaultLimit)`**: Restricts non-admin members from sending messages unless they have invited a minimum number of users to the group [GoBale_v3.txt].
-* **`GroupLockGuard()`**: Standard gateway that deletes messages from muted/unverified users or when the group is locally locked in the database [GoBale_v3.txt].
-* **`AntiRaid(limit, window)`**: Monitors join frequency; if joins exceed the limit, it automatically locks the group in the WAL database and alerts the chat [GoBale_v3.txt].
-* **`AntiProfanity(warnDuration, bannedWords, customMsg...)`**: Automatically deletes messages containing specified banned words [GoBale_v3.txt].
-* **`AdminsOnly()`**: Restricts execution of subsequent handlers to group administrators only [GoBale_v3.txt].
-* **`AdminOnly(adminID, customMsg...)`**: Restricts execution of subsequent handlers to the global bot owner [GoBale_v3.txt].
-* **`SuperGroupOnly(alert)`**: Restricts execution of subsequent handlers to supergroups only [GoBale_v3.txt].
+* **`AntiSpam(limit, window, warnMsg...)`**: Tracks message frequency per user. If a user exceeds the limit within the timeframe, their messages are deleted, and a self-destroying warning is sent.
+* **`AntiLink(warnDuration, customMsg, customTLDs...)`**: Scans text for URLs and automatically deletes matching links from non-admin users.
+* **`AntiRepeat(warnDuration)`**: Detects and deletes duplicate identical messages sent sequentially by the same user within 1 minute.
+* **`AntiForward(warnDuration)`**: Automatically deletes forwarded messages sent by non-admin members.
+* **`AntiCaps(threshold, minLength, warnDuration)`**: Detects and deletes messages containing excessive uppercase letters (shouting.
+* **`AntiCharLimit(limit, warnDuration)`**: Deletes messages exceeding the specified character limit (to block massive advertising banners).
+* **`AntiNightMedia(startHour, endHour, warnDuration)`**: Restricts non-admin members from posting media files (photos, videos, voice notes, stickers, etc.) during specified night hours.
+* **`AntiSpamProfile(banOnMatch, bannedKeywords)`**: Inspects newly joined members' profiles (names/usernames) and bans them instantly on keyword matches.
+* **`AntiSelfBot(minInterval)`**: Tracks member join timestamps and bans automated user accounts (self-bots) that post faster than the allowed threshold.
+* **`MandatoryAddGuard(defaultLimit)`**: Restricts non-admin members from sending messages unless they have invited a minimum number of users to the group.
+* **`GroupLockGuard()`**: Standard gateway that deletes messages from muted/unverified users or when the group is locally locked in the database.
+* **`AntiRaid(limit, window)`**: Monitors join frequency; if joins exceed the limit, it automatically locks the group in the WAL database and alerts the chat.
+* **`AntiProfanity(warnDuration, bannedWords, customMsg...)`**: Automatically deletes messages containing specified banned words.
+* **`AdminsOnly()`**: Restricts execution of subsequent handlers to group administrators only.
+* **`AdminOnly(adminID, customMsg...)`**: Restricts execution of subsequent handlers to the global bot owner.
+* **`SuperGroupOnly(alert)`**: Restricts execution of subsequent handlers to supergroups only.
 
 ---
 
