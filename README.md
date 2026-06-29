@@ -169,3 +169,39 @@ if ok {
 }
 ```
 ---
+### deleteWebhook
+
+The `deleteWebhook` API method can be utilized in **two ways** within GoBale: automatically by the framework when switching to polling mode, or manually through the fluent webhook builder chain.
+
+---
+
+#### Method 1: Automatic Webhook Deletion (Polling Mode)
+
+When you start the bot in long polling mode (`bot.Run().Polling().Go()`), GoBale automatically executes a `deleteWebhook` API call first. This ensures that any stale or active webhook registrations are cleared so they do not block or interfere with the polling update stream.
+
+```go
+// Starting polling mode automatically deletes any active webhook on startup
+bot.Run().Polling().Go()
+```
+
+---
+
+#### Method 2: Manual Webhook Deletion via the Webhook Chain
+
+Use this approach if you need to manually deregister the active webhook on the Bale servers from the bot context without starting a long polling loop (e.g., during administrative scripts or deployment transitions).
+
+```go
+// Manually delete the active webhook registration on Bale servers
+ok, err := bot.Webhook().
+	Del().
+	Go()
+
+if err != nil {
+	log.Printf("Failed to manually delete webhook: %v", err)
+	return
+}
+
+if ok {
+	log.Println("Webhook successfully removed from Bale servers")
+}
+```
