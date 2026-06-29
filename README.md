@@ -93,3 +93,29 @@ bot.On().Msg().Do(func(c *gobale.Ctx) {
 })
 ```
 ---
+
+### getUpdates
+
+The `getUpdates` API method allows you to manually retrieve outstanding updates from the Bale servers using a fluent builder chain (`UpdatesChain`). This is useful for manual polling implementations or custom background tasks.
+
+#### Usage
+
+Call `.Updates()` from the `Bot` context, configure your `Offset` and `Limit` dynamically, and run the transaction using `.Go()`:
+
+```go
+// Fetch up to 50 updates starting from offset 100 manually
+updates, err := bot.Updates().
+	Offset(100).
+	Limit(50).
+	Go()
+
+if err != nil {
+	log.Printf("Failed to fetch manual updates: %v", err)
+	return
+}
+
+for _, u := range updates {
+	log.Printf("Manually retrieved update ID: %d", u.UpdateID)
+}
+```
+---
