@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 	"unicode"
-	"encoding/gob"
 )
 
 // tokenBucket manages request limits for rate limiting thread-safely
@@ -1026,17 +1025,7 @@ func CallbackRateLimit(rate, capacity float64, onLimit Handler) Handler {
 	}
 }
 
-// historyEntry stores unedited message content with TTL
-type historyEntry struct {
-	Text      string
-	ExpiresAt int64
-}
-
-func init() {
-	gob.Register(historyEntry{})
-}
-
-// EditHistory logs message texts to local DB to resolve previous text on edits
+// EditHistory saves message text with timestamp to local DB to track modifications
 func EditHistory(dbPath string, keepDuration time.Duration) Handler {
 	db := NewDatabase(dbPath)
 
@@ -1047,9 +1036,14 @@ func EditHistory(dbPath string, keepDuration time.Duration) Handler {
 			db.mu.Lock()
 			var keysToDelete []string
 			for k, v := range db.store {
-				if entry, ok := v.(historyEntry); ok {
-					if now > entry.ExpiresAt {
-						keysToDelete = append(keysToDelete, k)
+				if valStr, ok := v.(string); ok {
+					parts := strings.SplitN(valStr, "|", 2)
+					if len(parts) == 2 {
+						var exp int64
+						_, err := fmt.Sscanf(parts[0], "%d", &exp)
+						if err == nil && now > exp {
+							keysToDelete = append(keysToDelete, k)
+						}
 					}
 				}
 			}
@@ -1068,30 +1062,27 @@ func EditHistory(dbPath string, keepDuration time.Duration) Handler {
 
 		if c.Update.Message != nil && c.Update.Message.Text != "" {
 			key := fmt.Sprintf("msg:%d:%d", c.Update.Message.Chat.ID, c.Update.Message.MessageID)
-			entry := historyEntry{
-				Text:      c.Update.Message.Text,
-				ExpiresAt: time.Now().Add(keepDuration).UnixNano(),
-			}
-			_ = db.Set(key, entry)
+			val := fmt.Sprintf("%d|%s", time.Now().Add(keepDuration).UnixNano(), c.Update.Message.Text)
+			_ = db.Set(key, val)
 		} else if c.Update.EditedMessage != nil {
 			key := fmt.Sprintf("msg:%d:%d", c.Update.EditedMessage.Chat.ID, c.Update.EditedMessage.MessageID)
 			val, ok := db.Get(key)
 			if ok {
-				if entry, okEntry := val.(historyEntry); okEntry {
-					c.mu.Lock()
-					if c.Keys == nil {
-						c.Keys = make(map[string]any)
+				if valStr, okStr := val.(string); okStr {
+					parts := strings.SplitN(valStr, "|", 2)
+					if len(parts) == 2 {
+						c.mu.Lock()
+						if c.Keys == nil {
+							c.Keys = make(map[string]any)
+						}
+						c.Keys["_sys_prev_text"] = parts[1]
+						c.mu.Unlock()
 					}
-					c.Keys["_sys_prev_text"] = entry.Text
-					c.mu.Unlock()
 				}
 			}
 
-			entry := historyEntry{
-				Text:      c.Update.EditedMessage.Text,
-				ExpiresAt: time.Now().Add(keepDuration).UnixNano(),
-			}
-			_ = db.Set(key, entry)
+			valNew := fmt.Sprintf("%d|%s", time.Now().Add(keepDuration).UnixNano(), c.Update.EditedMessage.Text)
+			_ = db.Set(key, valNew)
 		}
 
 		c.Next()
