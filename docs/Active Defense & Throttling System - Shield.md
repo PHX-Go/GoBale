@@ -26,15 +26,15 @@ Under standard conditions, GoBale processes updates at its configured rate. Howe
      └──────────────────┘               └──────────────────┘
 ```
 
-* **Automated Sentinel Goroutine:** A background sentinel monitors the bot’s operation state every 10 seconds. It tracks the Updates-Per-Second (UPS) rate and the `workerChan` queue depth [GoBale_v3.txt].
-* **Proactive Throttling (Shield Activation):** If the queue depth exceeds 800 pending updates or the update rate exceeds 150 UPS, GoBale dynamically activates `Shield` mode [GoBale_v3.txt]. When active, the bot's central rate limiter `rateLimit` is throttled down from `30 requests/second` to `10 requests/second` to stabilize resources and prevent memory overflows [GoBale_v3.txt].
-* **Graceful Restoration:** Once the traffic subside, the queue depth drops below 100, and the update rate falls under 10 UPS, the sentinel automatically deactivates `Shield` mode, restoring standard rate-limiting metrics [GoBale_v3.txt].
+* **Automated Sentinel Goroutine:** A background sentinel monitors the bot’s operation state every 10 seconds. It tracks the Updates-Per-Second (UPS) rate and the `workerChan` queue depth.
+* **Proactive Throttling (Shield Activation):** If the queue depth exceeds 800 pending updates or the update rate exceeds 150 UPS, GoBale dynamically activates `Shield` mode. When active, the bot's central rate limiter `rateLimit` is throttled down from `30 requests/second` to `10 requests/second` to stabilize resources and prevent memory overflows.
+* **Graceful Restoration:** Once the traffic subside, the queue depth drops below 100, and the update rate falls under 10 UPS, the sentinel automatically deactivates `Shield` mode, restoring standard rate-limiting metrics.
 
 ---
 
 ## API Reference & Code Examples
 
-The defense system can be queried or manually overridden from both the main `Bot` context and the handler `Ctx` context [GoBale_v3.txt].
+The defense system can be queried or manually overridden from both the main `Bot` context and the handler `Ctx` context.
 
 ### Querying and Overriding Defense States
 
