@@ -25,6 +25,7 @@ type Ctx struct {
 	Keys     map[string]any
 	ctx      context.Context
 	err      error
+	prevText string
 }
 
 // Next executes the next handler in the execution chain
@@ -528,4 +529,8 @@ func (fi *FileInfoChain) Go() (*File, error) {
 		logErr(fi.fc.bot, "[File Info Error] ", err)
 	}
 	return &info, err
+}
+
+func (c *Ctx) PrevText() string {
+	return c.prevText
 }
