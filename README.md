@@ -325,3 +325,128 @@ bot.On().Msg().Do(func(c *gobale.Ctx) {
 	}
 })
 ```
+---
+### ChatFullInfo
+
+The `ChatFullInfo` struct represents detailed metadata returned for specific chats when querying the `getChat` API. It contains additional fields that are not returned in the standard `Chat` struct, such as bio, description, invite links, and photo metadata.
+
+```go
+type ChatFullInfo struct {
+	ID           int64      `json:"id"`
+	Type         string     `json:"type"`
+	Title        string     `json:"title,omitempty"`
+	Username     string     `json:"username,omitempty"`
+	FirstName    string     `json:"first_name,omitempty"`
+	LastName     string     `json:"last_name,omitempty"`
+	Photo        *ChatPhoto `json:"photo,omitempty"`
+	Bio          string     `json:"bio,omitempty"`
+	Description  string     `json:"description,omitempty"`
+	InviteLink   string     `json:"invite_link,omitempty"`
+	LinkedChatID int64      `json:"linked_chat_id,omitempty"`
+}
+
+type ChatPhoto struct {
+	SmallFileID       string `json:"small_file_id"`
+	SmallFileUniqueID string `json:"small_file_unique_id"`
+	BigFileID         string `json:"big_file_id"`
+	BigFileUniqueID   string `json:"big_file_unique_id"`
+}
+```
+
+#### Usage
+
+Typically queried using the `.Info()` chain from either the `Bot` or `Ctx` context:
+
+```go
+bot.On().Cmd("chatinfo").Do(func(c *gobale.Ctx) {
+	// Query detailed metadata of the current chat
+	info, err := c.Chat().Info().Go()
+	if err != nil {
+		log.Printf("Failed to retrieve chat full info: %v", err)
+		return
+	}
+
+	// Safely extract and check description metadata
+	chatDesc := info.Description
+	if chatDesc == "" {
+		chatDesc = "No description provided."
+	}
+
+	response := fmt.Sprintf("Chat Details:\nTitle: %s\nInvite Link: %s\nDescription: %s", 
+		info.Title, info.InviteLink, chatDesc)
+
+	_, _ = c.Send().
+		Text(response).
+		Go()
+})
+```
+---
+### Message
+
+The `Message` struct represents a single chat message. It is the central container for all text-based messages, media attachments (photos, videos, voice notes, stickers, etc.), replies, forwarded messages, service messages, and payment/invoice updates.
+
+```go
+type Message struct {
+	MessageID            int64                 `json:"message_id"`
+	Date                 int64                 `json:"date"`
+	Chat                 Chat                  `json:"chat"`
+	From                 *User                 `json:"from,omitempty"`
+	SenderChat           *Chat                 `json:"sender_chat,omitempty"`
+	ForwardFrom          *User                 `json:"forward_from,omitempty"`
+	ForwardFromChat      *Chat                 `json:"forward_from_chat,omitempty"`
+	ForwardFromMessageID int64                 `json:"forward_from_message_id,omitempty"`
+	ForwardDate          int64                 `json:"forward_date,omitempty"`
+	ReplyToMessage       *Message              `json:"reply_to_message,omitempty"`
+	EditDate             int64                 `json:"edit_date,omitempty"`
+	MediaGroupID         string                `json:"media_group_id,omitempty"`
+	Text                 string                `json:"text,omitempty"`
+	Entities             []MessageEntity       `json:"entities,omitempty"`
+	Animation            *Animation            `json:"animation,omitempty"`
+	Audio                *Audio                `json:"audio,omitempty"`
+	Document             *Document             `json:"document,omitempty"`
+	Photo                []PhotoSize           `json:"photo,omitempty"`
+	Sticker              *Sticker              `json:"sticker,omitempty"`
+	Video                *Video                `json:"video,omitempty"`
+	Voice                *Voice                `json:"voice,omitempty"`
+	Caption              string                `json:"caption,omitempty"`
+	CaptionEntities      []MessageEntity       `json:"caption_entities,omitempty"`
+	Contact              *Contact              `json:"contact,omitempty"`
+	Location             *Location             `json:"location,omitempty"`
+	NewChatMembers       []User                `json:"new_chat_members,omitempty"`
+	LeftChatMember       *User                 `json:"left_chat_member,omitempty"`
+	Invoice              *Invoice              `json:"invoice,omitempty"`
+	SuccessfulPayment    *SuccessfulPayment    `json:"successful_payment,omitempty"`
+	WebAppData           *WebAppData           `json:"web_app_data,omitempty"`
+	ReplyMarkup          *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+}
+```
+
+#### Usage
+
+Typically accessed directly through the `Ctx` context using `c.Message`:
+
+```go
+bot.On().Msg().Do(func(c *gobale.Ctx) {
+	msg := c.Message
+	if msg == nil {
+		return
+	}
+
+	// Verify if the incoming message is a reply to another message
+	if msg.ReplyToMessage != nil {
+		repliedMsg := msg.ReplyToMessage
+		
+		// Log replied message details safely
+		log.Printf("User replied to message ID %d containing text: %q", repliedMsg.MessageID, repliedMsg.Text)
+		
+		_, _ = c.Send().
+			Text(fmt.Sprintf("Replying to your previous message: %q", repliedMsg.Text)).
+			Reply(repliedMsg.MessageID).
+			Go()
+		return
+	}
+
+	// Log standard incoming message metrics
+	log.Printf("Received Message ID: %d, Text: %q", msg.MessageID, msg.Text)
+})
+```
