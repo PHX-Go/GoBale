@@ -24,7 +24,7 @@ import gobale "github.com/PHX-Go/GoBale"
 
 Create a `.env` file in your project root:
 ```env
-BALE_TOKEN="YOUR_BALE_BOT_TOKEN"
+BALE_TOKEN=YOUR_BALE_BOT_TOKEN
 ADMIN_ID=99999999
 ```
 
