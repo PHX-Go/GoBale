@@ -63,3 +63,33 @@ func main() {
 	bot.Run().Polling().Go()
 }
 ```
+---
+### Update
+
+The `Update` struct represents the root incoming envelope received from the Bale API servers. Every event (e.g., text messages, edits, callback queries, payment validations) is wrapped inside this structure.
+
+```go
+type Update struct {
+	UpdateID         int               `json:"update_id"`
+	Message          *Message          `json:"message,omitempty"`
+	EditedMessage    *Message          `json:"edited_message,omitempty"`
+	CallbackQuery    *CallbackQuery    `json:"callback_query,omitempty"`
+	PreCheckoutQuery *PreCheckoutQuery `json:"pre_checkout_query,omitempty"`
+}
+```
+
+#### Usage
+
+Within any route handler or middleware, you can access the raw `Update` structure directly from the handler context (`Ctx`):
+
+```go
+bot.On().Msg().Do(func(c *gobale.Ctx) {
+	// Log the incoming update ID and message details safely
+	log.Printf("Processing Update ID: %d", c.Update.UpdateID)
+
+	if c.Update.Message != nil {
+		log.Printf("Message text received: %s", c.Update.Message.Text)
+	}
+})
+```
+---
