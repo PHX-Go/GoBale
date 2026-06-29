@@ -1024,3 +1024,75 @@ func CallbackRateLimit(rate, capacity float64, onLimit Handler) Handler {
 		c.Next()
 	}
 }
+
+// historyEntry stores unedited message content with TTL
+type historyEntry struct {
+	Text      string
+	ExpiresAt int64
+}
+
+func init() {
+	gob.Register(historyEntry{})
+}
+
+// EditHistory logs message texts to local DB to resolve previous text on edits
+func EditHistory(dbPath string, keepDuration time.Duration) Handler {
+	db := NewDatabase(dbPath)
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			now := time.Now().UnixNano()
+			db.mu.Lock()
+			var keysToDelete []string
+			for k, v := range db.store {
+				if entry, ok := v.(historyEntry); ok {
+					if now > entry.ExpiresAt {
+						keysToDelete = append(keysToDelete, k)
+					}
+				}
+			}
+			db.mu.Unlock()
+			for _, k := range keysToDelete {
+				_ = db.Del(k)
+			}
+		}
+	}()
+
+	return func(c *Ctx) {
+		if c.Update == nil {
+			c.Next()
+			return
+		}
+
+		if c.Update.Message != nil && c.Update.Message.Text != "" {
+			key := fmt.Sprintf("msg:%d:%d", c.Update.Message.Chat.ID, c.Update.Message.MessageID)
+			entry := historyEntry{
+				Text:      c.Update.Message.Text,
+				ExpiresAt: time.Now().Add(keepDuration).UnixNano(),
+			}
+			_ = db.Set(key, entry)
+		} else if c.Update.EditedMessage != nil {
+			key := fmt.Sprintf("msg:%d:%d", c.Update.EditedMessage.Chat.ID, c.Update.EditedMessage.MessageID)
+			val, ok := db.Get(key)
+			if ok {
+				if entry, okEntry := val.(historyEntry); okEntry {
+					c.mu.Lock()
+					if c.Keys == nil {
+						c.Keys = make(map[string]any)
+					}
+					c.Keys["_sys_prev_text"] = entry.Text
+					c.mu.Unlock()
+				}
+			}
+
+			entry := historyEntry{
+				Text:      c.Update.EditedMessage.Text,
+				ExpiresAt: time.Now().Add(keepDuration).UnixNano(),
+			}
+			_ = db.Set(key, entry)
+		}
+
+		c.Next()
+	}
+}
