@@ -119,3 +119,53 @@ for _, u := range updates {
 }
 ```
 ---
+### setWebhook
+
+The `setWebhook` API method can be used in **two distinct ways** depending on whether you want the framework to manage the HTTP server automatically, or if you prefer to manage the webhook registration manually.
+
+---
+
+#### Method 1: Automatic Setup via the Webhook Runner (Recommended)
+
+This is the standard approach for production hosting. The framework automatically spins up a secure HTTPS server (or plain HTTP behind reverse proxies like ngrok/Nginx), handles incoming update routing, and registers the webhook URL on the Bale servers in a single builder chain.
+
+```go
+// Start internal webhook server and automatically call setWebhook on Bale
+err := bot.Run().
+	Webhook().
+	Addr(":443").
+	Path("/bale-updates").
+	URL("https://yourdomain.com"). // Automatically registers https://yourdomain.com/bale-updates on Bale
+	Cert("cert.pem").             // Optional: SSL Certificate path
+	Key("key.pem").               // Optional: SSL Private Key path
+	Go()
+
+if err != nil {
+	log.Fatalf("Failed to run webhook runner: %v", err)
+}
+```
+
+*Note: For local tunnel testing (e.g., using ngrok), you can use the `.Insecure()` and `.Ngrok()` configurations to bypass SSL requirement checks and automatically resolve the forwarding URL.*
+
+---
+
+#### Method 2: Manual Setup via the Webhook Chain
+
+Use this approach if you are managing your own external HTTP server or reverse proxy, and only need to notify the Bale servers where to send the updates without starting GoBale's internal HTTP server.
+
+```go
+// Manually register a webhook URL on Bale servers from the Bot context
+ok, err := bot.Webhook().
+	Set("https://yourdomain.com/custom-endpoint").
+	Go()
+
+if err != nil {
+	log.Printf("Failed to manually register webhook: %v", err)
+	return
+}
+
+if ok {
+	log.Println("Webhook successfully registered on Bale servers")
+}
+```
+---
