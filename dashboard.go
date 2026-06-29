@@ -323,3 +323,7 @@ const htmlPage = `
 </body>
 </html>
 `
+
+func (b *Bot) GetCPU() float64 {
+	return getCPUUsage()
+}
