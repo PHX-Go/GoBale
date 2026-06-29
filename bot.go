@@ -823,6 +823,22 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		chain = append(chain, b.preCheckouts...)
 	} else if u.EditedMessage != nil {
 		c.Message = u.EditedMessage
+
+		// Get cached original text and update with new edited text <<<
+		key := fmt.Sprintf("msg:%d:%d", u.EditedMessage.Chat.ID, u.EditedMessage.MessageID)
+		b.cache.mu.RLock()
+		if item, ok := b.cache.store[key]; ok {
+			c.prevText, _ = item.value.(string)
+		}
+		b.cache.mu.RUnlock()
+
+		b.cache.mu.Lock()
+		b.cache.store[key] = &cacheItem{
+			value:     u.EditedMessage.Text,
+			expiresAt: time.Now().Add(24 * time.Hour),
+		}
+		b.cache.mu.Unlock()
+
 		chain = append(chain, b.editMsg...)
 	}
 	b.mu.RUnlock()

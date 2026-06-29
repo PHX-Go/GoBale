@@ -67,6 +67,9 @@ func (c *Ctx) SenderID() int64 {
 	if c.Update.Message != nil && c.Update.Message.From != nil {
 		return c.Update.Message.From.ID
 	}
+	if c.Update.EditedMessage != nil && c.Update.EditedMessage.From != nil {
+		return c.Update.EditedMessage.From.ID
+	}
 	if c.Update.CallbackQuery != nil {
 		return c.Update.CallbackQuery.From.ID
 	}
@@ -531,17 +534,7 @@ func (fi *FileInfoChain) Go() (*File, error) {
 	return &info, err
 }
 
-// PrevText retrieves the cached original text of the edited message
+// PrevText returns original message text before being edited
 func (c *Ctx) PrevText() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.Keys == nil {
-		return ""
-	}
-	if val, ok := c.Keys["_sys_prev_text"]; ok {
-		if str, okStr := val.(string); okStr {
-			return str
-		}
-	}
-	return ""
+	return c.prevText
 }
