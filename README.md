@@ -283,3 +283,45 @@ bot.On().Msg().Do(func(c *gobale.Ctx) {
 	}
 })
 ```
+---
+### Chat
+
+The `Chat` struct represents a private direct message conversation, a group, a supergroup, or a channel window.
+
+```go
+type Chat struct {
+	ID        int64  `json:"id"`
+	Type      string `json:"type"`
+	Title     string `json:"title,omitempty"`
+	Username  string `json:"username,omitempty"`
+	FirstName string `json:"first_name,omitempty"`
+	LastName  string `json:"last_name,omitempty"`
+}
+```
+
+#### Field Details
+
+* **`ID`**: Unique 64-bit integer identifier for this chat.
+* **`Type`**: Type of chat, which can be `"private"`, `"group"`, `"supergroup"`, or `"channel"`.
+* **`Title`**: Display title (for channels and group chats).
+* **`Username`**: Optional username (prefixed with `@` for public groups and channels).
+
+#### Usage
+
+Typically accessed through incoming message updates via `c.Message.Chat`:
+
+```go
+bot.On().Msg().Do(func(c *gobale.Ctx) {
+	if c.Message != nil {
+		chat := c.Message.Chat
+
+		// Log basic incoming chat metadata safely
+		log.Printf("Processing message in Chat ID: %d (Type: %s)", chat.ID, chat.Type)
+
+		// Check if the chat is a public channel or group with a username
+		if chat.Type == "channel" || chat.Type == "supergroup" {
+			log.Printf("Active public channel/group username: %s", chat.Username)
+		}
+	}
+})
+```
