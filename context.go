@@ -25,6 +25,7 @@ type Ctx struct {
 	Keys     map[string]any
 	ctx      context.Context
 	err      error
+	prevText string
 }
 
 // Next executes the next handler in the execution chain
@@ -530,6 +531,7 @@ func (fi *FileInfoChain) Go() (*File, error) {
 	return &info, err
 }
 
+// PrevText returns original message text before being edited
 func (c *Ctx) PrevText() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
