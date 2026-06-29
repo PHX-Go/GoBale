@@ -756,6 +756,17 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		// Dynamically normalize message text on-the-fly to keep original raw field untouched
 		text := ToEnDigits(u.Message.Text)
 
+		// Saving a new message text to cache
+		if u.Message.Text != "" {
+			key := fmt.Sprintf("msg:%d:%d", u.Message.Chat.ID, u.Message.MessageID)
+			b.cache.mu.Lock()
+			b.cache.store[key] = &cacheItem{
+				value:     u.Message.Text,
+				expiresAt: time.Now().Add(24 * time.Hour),
+			}
+			b.cache.mu.Unlock()
+		}
+
 		// Automatically capture Deep Link parameter inside GOB store session on startup
 		if text != "" && strings.HasPrefix(text, "/start ") {
 			parts := strings.Fields(text)
@@ -826,11 +837,20 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 
 		// Get cached original text and update with new edited text <<<
 		key := fmt.Sprintf("msg:%d:%d", u.EditedMessage.Chat.ID, u.EditedMessage.MessageID)
+
+		b.cache.mu.RLock()
+		item, ok := b.cache.store[key]
+		b.cache.mu.RUnlock()
+
 		b.cache.mu.RLock()
 		if item, ok := b.cache.store[key]; ok {
 			c.prevText, _ = item.value.(string)
 		}
 		b.cache.mu.RUnlock()
+
+		if ok && item != nil {
+			c.prevText, _ = item.value.(string)
+		}
 
 		b.cache.mu.Lock()
 		b.cache.store[key] = &cacheItem{
@@ -855,6 +875,7 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 	c.err = nil
 	c.index = -1
 	c.ctx = nil // Prevent stale context references from leaking in GC memory
+	c.prevText = "" // clear previous text value before pool recycling
 	b.ctxPool.Put(c)
 }
 
