@@ -49,6 +49,9 @@ func (c *Ctx) ChatID() (int64, error) {
 	if c.Update.Message != nil {
 		return c.Update.Message.Chat.ID, nil
 	}
+	if c.Update.EditedMessage != nil {
+		return c.Update.EditedMessage.Chat.ID, nil
+	}
 	if c.Update.CallbackQuery != nil && c.Update.CallbackQuery.Message != nil {
 		return c.Update.CallbackQuery.Message.Chat.ID, nil
 	}
