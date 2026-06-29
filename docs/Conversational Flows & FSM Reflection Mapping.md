@@ -1,6 +1,6 @@
 # Conversational Flows & FSM Reflection Mapping
 
-GoBale features an advanced Finite State Machine (FSM) that simplifies multi-step user conversations. It supports sequential step-by-step guided flows (`WizardChain`), automated structural form mapping utilizing Go reflection (`FormChain`), and automated bot verification overlays (`CaptchaChain`) [GoBale_v3.txt].
+GoBale features an advanced Finite State Machine (FSM) that simplifies multi-step user conversations. It supports sequential step-by-step guided flows (`WizardChain`), automated structural form mapping utilizing Go reflection (`FormChain`), and automated bot verification overlays (`CaptchaChain`).
 
 ---
 
@@ -8,7 +8,7 @@ GoBale features an advanced Finite State Machine (FSM) that simplifies multi-ste
 
 The `WizardChain` guides users sequentially through a series of questions. 
 * **State Isolation:** Session states are registered on the fly using unique random tokens to prevent race conditions.
-* **Auto-Cleanup:** Inactive states are automatically cleared from the memory after 15 minutes to prevent memory leaks if a user abandons the conversation [GoBale_v3.txt].
+* **Auto-Cleanup:** Inactive states are automatically cleared from the memory after 15 minutes to prevent memory leaks if a user abandons the conversation.
 
 ```go
 bot.On().Cmd("survey").Do(func(c *gobale.Ctx) {
@@ -44,12 +44,12 @@ bot.On().Cmd("survey").Do(func(c *gobale.Ctx) {
 
 ## Reflective Struct Forms (`FormChain`)
 
-Instead of writing verbose step-by-step wizard logic, you can map conversation states directly to a custom Go struct. GoBale uses reflection to read field tags (`prompt`, `validate`, `error`), automatically compile the wizard prompts, validate inputs, and cast types safely [GoBale_v3.txt].
+Instead of writing verbose step-by-step wizard logic, you can map conversation states directly to a custom Go struct. GoBale uses reflection to read field tags (`prompt`, `validate`, `error`), automatically compile the wizard prompts, validate inputs, and cast types safely.
 
 ### Supported Field Tags:
-* `prompt`: The text message sent to the user requesting input [GoBale_v3.txt].
-* `validate`: Automated validation rule. Supported: `"phone"` (Iranian phone format), `"nationalcode"` (Iranian national code validation), and `"numeric"` [GoBale_v3.txt].
-* `error`: Custom error message dispatched to the user upon validation failure [GoBale_v3.txt].
+* `prompt`: The text message sent to the user requesting input.
+* `validate`: Automated validation rule. Supported: `"phone"` (Iranian phone format), `"nationalcode"` (Iranian national code validation), and `"numeric"`.
+* `error`: Custom error message dispatched to the user upon validation failure.
 
 ```go
 type UserRegistration struct {
@@ -74,7 +74,7 @@ bot.On().Cmd("register").Do(func(c *gobale.Ctx) {
 
 ## Automated Verification Captchas (`CaptchaChain`)
 
-`CaptchaChain` provides a fully automated self-bot verification loop to guard group chats. It mutes new members, generates a verification captcha overlay, and kicks unverified users automatically upon timeout [GoBale_v3.txt].
+`CaptchaChain` provides a fully automated self-bot verification loop to guard group chats. It mutes new members, generates a verification captcha overlay, and kicks unverified users automatically upon timeout.
 
 ```go
 func SetupCaptcha(bot *gobale.Bot) {
