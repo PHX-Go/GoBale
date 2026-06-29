@@ -1000,3 +1000,949 @@ bot.On().Cmd("getavatar").Do(func(c *gobale.Ctx) {
 })
 ```
 ---
+### ResponseParameters
+
+The `ResponseParameters` struct is returned by the Bale API when a request fails due to rate-limiting (HTTP 429). It contains a directive on how long the bot must wait before retrying the action.
+
+```go
+type ResponseParameters struct {
+	RetryAfter int `json:"retry_after,omitempty"`
+}
+```
+
+*Note: GoBale's internal API client (`client.go`) handles `ResponseParameters` automatically. When an HTTP 429 error occurs, it parses `RetryAfter`, sleeps for the directed duration, and replays the request without throwing errors to the parent handler.*
+
+---
+
+### InputMedia Interface & Types
+
+The `InputMedia` interface defines the standard contract for elements inside media group albums. GoBale provides concrete struct implementations for photos, videos, animations, audios, and documents.
+
+```go
+type InputMedia interface {
+	MediaType() string
+}
+```
+
+#### Struct Definitions
+
+```go
+type InputMediaPhoto struct {
+	Type    string `json:"type"`
+	Media   string `json:"media"`
+	Caption string `json:"caption,omitempty"`
+}
+
+type InputMediaVideo struct {
+	Type      string `json:"type"`
+	Media     string `json:"media"`
+	Thumbnail string `json:"thumbnail,omitempty"`
+	Caption   string `json:"caption,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Duration  int    `json:"duration,omitempty"`
+}
+
+type InputMediaAnimation struct {
+	Type      string `json:"type"`
+	Media     string `json:"media"`
+	Thumbnail string `json:"thumbnail,omitempty"`
+	Caption   string `json:"caption,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Duration  int    `json:"duration,omitempty"`
+}
+
+type InputMediaAudio struct {
+	Type      string `json:"type"`
+	Media     string `json:"media"`
+	Thumbnail string `json:"thumbnail,omitempty"`
+	Caption   string `json:"caption,omitempty"`
+	Duration  int    `json:"duration,omitempty"`
+	Title     string `json:"title,omitempty"`
+}
+
+type InputMediaDocument struct {
+	Type      string `json:"type"`
+	Media     string `json:"media"`
+	Thumbnail string `json:"thumbnail,omitempty"`
+	Caption   string `json:"caption,omitempty"`
+}
+```
+
+#### Usage
+
+To send a group of media objects as an album, utilize the `.Album()` chain from the `Send` context:
+
+```go
+bot.On().Cmd("album").Do(func(c *gobale.Ctx) {
+	// Send an album group containing multiple photo and video files
+	messages, err := c.Send().
+		Album().
+		Photo("./images/banner.jpg", "Check out the first banner").
+		Video("./videos/promo.mp4", "Watch the promo video clip").
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to send album group: %v", err)
+		return
+	}
+
+	log.Printf("Successfully sent album containing %d messages", len(messages))
+})
+```
+
+---
+
+### InputFile
+
+The `InputFile` struct represents a file stream ready to be uploaded to Bale servers via a multipart/form-data request. It is used when transmitting local disk files, in-memory buffers, or remote byte streams.
+
+```go
+type InputFile struct {
+	Field    string
+	FileName string
+	Reader   io.Reader
+}
+```
+
+#### Usage
+
+To upload an arbitrary file from a local disk stream or any custom reader, construct an `InputFile` and pass it directly to the media sending chain:
+
+```go
+bot.On().Cmd("sendpdf").Do(func(c *gobale.Ctx) {
+	file, err := os.Open("./reports/annual_report.pdf")
+	if err != nil {
+		log.Printf("Failed to open report file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	// Construct an InputFile wrapper around the active file reader stream
+	inputFile := gobale.InputFile{
+		FileName: "annual_report.pdf",
+		Reader:   file,
+	}
+
+	// Stream and upload the document directly
+	_, err = c.Send().
+		Doc(inputFile).
+		Caption("Here is the requested annual report document:").
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to upload document file: %v", err)
+		return
+	}
+})
+```
+---
+## Sending Files
+
+GoBale provides a unified, polymorphic media sending pipeline. When you call media methods (such as `.Photo()`, `.Doc()`, `.Audio()`, `.Video()`, `.Voice()`, or `.Sticker()`), the framework automatically detects the transmission method based on the input type. 
+
+There are **three distinct methods** supported by the Bale platform to transmit files:
+
+---
+
+### 1. Sending by `file_id` (Server Resending)
+
+If a file has already been uploaded and stored on the Bale servers, it is highly recommended to reuse its unique `file_id`. 
+* **Pros:** Blazing fast, consumes zero bandwidth, and has **no size limits**.
+* **How to use:** Pass the raw `file_id` string directly to any media sender method.
+
+```go
+bot.On().Cmd("resend").Do(func(c *gobale.Ctx) {
+	// Resend an existing photo already stored on Bale servers using its File ID
+	_, err := c.Send().
+		Photo("AgACAgIAAxkBAAEY_mock_file_id_string"). // Raw file_id string
+		Caption("Here is the resent image using server cache").
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to resend photo: %v", err)
+	}
+})
+```
+
+#### Technical Constraints for `file_id`:
+* **Type Conservation:** You cannot change the file type during resending. For example, a video cannot be resent as a photo, and a photo cannot be sent as a document.
+* **No Thumbnail Resending:** You cannot resend or reuse photo thumbnails using a file ID.
+* **Uniqueness:** A `file_id` is unique per bot. You cannot copy or transfer a `file_id` directly from one bot account to another.
+* **Single File, Multiple IDs:** A single physical file can have multiple valid file IDs even within the same bot.
+
+---
+
+### 2. Sending by HTTP URL (Remote Download)
+
+You can pass a public HTTP/HTTPS URL of the target file. The Bale servers will automatically download and transmit the file to the chat.
+* **Size Limits:** Maximum **5 MB** for images, and **20 MB** for other media types.
+* **How to use:** Pass the remote URL string directly to any media sender method.
+
+```go
+bot.On().Cmd("sendbyurl").Do(func(c *gobale.Ctx) {
+	// Send an audio file via a remote HTTP URL
+	_, err := c.Send().
+		Audio("https://example.com/music/track1.mp3"). // Remote file URL
+		Caption("Music track downloaded and sent by Bale").
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to send audio via URL: %v", err)
+	}
+})
+```
+
+#### Technical Constraints for URLs:
+* **MIME Types:** The remote file must serve the correct MIME type (e.g., `audio/mpeg` for `sendAudio`).
+* **Documents restriction:** In `sendDocument`, sending via URL is restricted to **GIF**, **PDF**, and **ZIP** files only.
+* **Voice messages:** In `sendVoice`, the URL file must be of type `audio/ogg` and must not exceed **1 MB**. Voice files between 1 MB and 20 MB will be delivered as generic audio document files instead of playable voice bubbles.
+
+---
+
+### 3. Sending by Multipart Upload (Local File)
+
+You can upload a local file from your disk or an in-memory buffer using standard `multipart/form-data` POST requests.
+* **Size Limits:** Maximum **10 MB** for images, and **50 MB** for other file types.
+* **How to use:** Pass a local file path string (e.g., `"./images/poster.png"`) or an `InputFile` struct. GoBale automatically detects local files and handles the streaming headers.
+
+```go
+bot.On().Cmd("upload").Do(func(c *gobale.Ctx) {
+	// Send a local photo. GoBale automatically detects the local path and uploads it.
+	_, err := c.Send().
+		Photo("./images/local_poster.jpg"). // Local file path on disk
+		Caption("Uploaded directly from local disk").
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to upload local file: %v", err)
+	}
+})
+```
+---
+## Text Formatting Helpers
+
+GoBale provides native helper functions in `utils.go` to safely format text using Bale's Markdown rules without manually managing asterisks, underscores, or spaces.
+
+---
+
+### Built-in Formatting Helpers
+
+* **`gobale.Bold(text string) string`**: Safely wraps text in bold formatting with appropriate spaces (` *text* `).
+* **`gobale.Italic(text string) string`**: Safely wraps text in italic formatting with appropriate spaces (` _text_ `).
+* **`gobale.Link(text, url string) string`**: Safely compiles bracketed hyperlink Markdown (`[text](url)`).
+* **`gobale.Tooltip(text, desc string) string`**: Compiles an instant view hover tooltip utilizing monospaced backticks.
+
+```go
+bot.On().Cmd("hello").Do(func(c *gobale.Ctx) {
+	// Format text dynamically using native GoBale formatting helpers
+	welcomeMessage := fmt.Sprintf("Hello %s, welcome to %s! Please check the %s.",
+		gobale.Bold("Tester"),
+		gobale.Italic("GoBale Framework"),
+		gobale.Link("Online Manual", "https://bale.ai"),
+	)
+
+	_, _ = c.Send().
+		Text(welcomeMessage).
+		Markdown(). // Enables Markdown parsing for the formatted helpers
+		Go()
+})
+```
+
+---
+
+### Advanced Multi-line Text Builder (`TextChain`)
+
+GoBale includes a fluent, multi-line string builder (`TextChain`) that allows compiling clean messages and dynamically binding variables with zero string concatenation overhead.
+
+```go
+bot.On().Cmd("status").Do(func(c *gobale.Ctx) {
+	// Compile multi-line text dynamically and bind variables safely
+	report := gobale.Text().
+		Line("📊 ", gobale.Bold("System Report")).
+		Line().
+		Line("👤 Target User: {mention}").
+		Line("🚀 Version: ", gobale.Italic("v1.0.0-stable")).
+		Line("🔗 Resource: ", gobale.Link("GoBale Repo", "https://github.com/PHX-Go/GoBale")).
+		Bind("mention", c.Message.From.Mention()).
+		Go()
+
+	_, _ = c.Send().
+		Text(report).
+		Markdown().
+		Go()
+})
+```
+
+---
+
+## API Methods Reference Mapping
+
+GoBale maps every official Bale API endpoint to intuitive, fluent chaining methods. Below is the comprehensive API reference mapping:
+
+### 1. Identity & Diagnostics
+
+| Bale API Method | GoBale Fluent Chain | Description |
+| :--- | :--- | :--- |
+| `getMe` | `bot.Me().Go()` | Retrieves the bot's own profile and identity. |
+| `getFile` | `c.File(id).Info().Go()` | Retrieves metadata of a stored file (size, path). |
+| `askReview` | `c.Review().Delay(s).Go()` | Prompts the user with Bale's native rating/review form. |
+
+#### Notes on `askReview`:
+* **Timing:** Best triggered immediately after a successful transaction or when a useful service is delivered.
+* **Server Constraints:** Dispatching the review form does not guarantee its display. Bale applies internal checks to prevent spamming users. Developers do not need to manage these limits manually.
+* **Visibility:** The review form is only visible to the user while they are actively inside your bot's chat window or Mini App interface.
+* **Audience:** Highly recommended for engaged, returning users; avoid triggering it for newly joined users.
+
+```go
+bot.On().Cmd("done").Do(func(c *gobale.Ctx) {
+	// Query bot identity and prompt for a review after 5 seconds
+	me, _ := c.Me().Go()
+	log.Printf("Bot username: %s", me.Username)
+
+	_, _ = c.Review().Delay(5).Go()
+})
+```
+
+---
+
+### 2. Messaging & Media Dispatching
+
+| Bale API Method | GoBale Fluent Chain | Description |
+| :--- | :--- | :--- |
+| `sendMessage` | `c.Send().Text(str).Go()` | Sends a text message to the chat. |
+| `forwardMessage` | `c.Send().Forward(from, msgID).Go()` | Forwards an existing message to another chat. |
+| `copyMessage` | `c.Send().Copy(from, msgID).Go()` | Copies a message without the original author link. |
+| `sendPhoto` | `c.Send().Photo(any).Go()` | Sends a photo (File ID, URL, or local path). |
+| `sendAudio` | `c.Send().Audio(any).Go()` | Sends an audio file. |
+| `sendDocument` | `c.Send().Doc(any).Go()` | Sends a generic document/file. |
+| `sendVideo` | `c.Send().Video(any).Go()` | Sends a video. |
+| `sendAnimation` | `c.Send().Anim(any).Go()` | Sends a silent loop animation (GIF). |
+| `sendVoice` | `c.Send().Voice(any).Go()` | Sends a voice note (OGG format). |
+| `sendMediaGroup` | `c.Send().Album().Photo().Go()` | Sends a grouped album of photos or videos. |
+| `sendLocation` | `c.Send().Location(lat, lon).Go()` | Sends geographic map coordinates. |
+| `sendContact` | `c.Send().Contact(phone, first, last).Go()` | Sends a directory contact card. |
+| `sendChatAction` | `c.Action().Typing().Go()` | Sends a chat state indicator (typing, uploading). |
+
+```go
+bot.On().Cmd("share").Do(func(c *gobale.Ctx) {
+	// Trigger typing state and send location map
+	_, _ = c.Action().Typing().Go()
+	_, _ = c.Send().Location(35.6892, 51.3890).Go()
+})
+```
+
+---
+
+### 3. Callbacks
+
+| Bale API Method | GoBale Fluent Chain | Description |
+| :--- | :--- | :--- |
+| `answerCallbackQuery` | `c.Answer().Text(str).Go()` | Clears the loading spinner on inline button clicks. |
+
+```go
+bot.On().Callback("btn_click").Do(func(c *gobale.Ctx) {
+	_ = c.Answer().Text("Action processed!").Alert().Go()
+})
+```
+
+---
+
+### 4. Chat Administration & Management
+
+| Bale API Method | GoBale Fluent Chain | Description |
+| :--- | :--- | :--- |
+| `banChatMember` | `c.Chat().Ban(userID).Go()` | Bans a member from the group. |
+| `unbanChatMember` | `c.Chat().Unban(userID).Go()` | Unbans a restricted or kicked group member. |
+| `promoteChatMember` | `c.Chat().Promote(userID).Go()` | Promotes a user and configures administrator privileges. |
+| `setChatPhoto` | `c.Chat().SetPhoto(any).Go()` | Changes the chat's avatar photo. |
+| `deleteChatPhoto` | `c.Chat().DelPhoto().Go()` | Deletes the active chat avatar photo. |
+| `setChatTitle` | `c.Chat().Title(str).Go()` | Edits the title of the chat. |
+| `setChatDescription` | `c.Chat().Desc(str).Go()` | Edits the description text of the chat. |
+| `pinChatMessage` | `c.Chat().Pin(msgID).Go()` | Pins a message at the top of the chat window. |
+| `unPinChatMessage` | `c.Chat().Unpin(msgID).Go()` | Unpins a specific pinned message. |
+| `unpinAllChatMessages`| `c.Chat().UnpinAll().Go()` | Unpins all pinned messages in the chat. |
+| `leaveChat` | `c.Chat().Leave().Go()` | Instructs the bot to leave the group or channel. |
+| `getChat` | `c.Chat().Info().Go()` | Retrieves full chat metadata (`ChatFullInfo`). |
+| `getChatMember` | `c.Chat().Member(userID).Go()` | Retrieves membership status of a specific user. |
+| `getChatAdministrators`| `c.Chat().Admins().Go()` | Retrieves a list of administrators in the group. |
+| `getChatMembersCount` | `c.Chat().MembersCount().Go()`| Retrieves total count of members in the group/channel. |
+| `createChatInviteLink`| `c.Chat().InviteLink().Go()` | Generates a new invitation link for the chat. |
+| `revokeChatInviteLink`| `c.Chat().RevokeLink(link).Go()`| Revokes an active invitation link. |
+| `exportChatInviteLink`| `c.Chat().ExportLink().Go()` | Exports the primary invitation link of the chat. |
+
+```go
+bot.On().Cmd("cleanup").Do(func(c *gobale.Ctx) {
+	// Restrict to admins, unpin all messages, and change description
+	isAdmin, _ := c.Chat().IsAdmin().Go()
+	if isAdmin {
+		_ = c.Chat().UnpinAll().Go()
+		_ = c.Chat().Desc("Cleaned up group chat").Go()
+	}
+})
+```
+---
+## Modifying & Deleting Messages
+
+GoBale provides a unified fluent API (`EditChain` and `DelChain`) to dynamically update text, media captions, or keyboard markups, as well as schedule message deletions.
+
+---
+
+### Editing Messages (`editMessageText` / `editMessageCaption` / `editMessageReplyMarkup`)
+
+Instead of calling separate endpoints, GoBale unifies all edit actions under the `.Edit()` builder. The framework dynamically detects which fields are updated and dispatches the corresponding API call.
+
+#### Usage
+
+Invoke `.Edit()` from the handler context to modify the message that triggered the event (essential for inline keyboard callback updates):
+
+```go
+bot.On().Callback("update_panel").Do(func(c *gobale.Ctx) {
+	// Dynamically edit the text and inline keyboard markup of the active message
+	_, err := c.Edit().
+		Text("This is the updated text panel.").
+		Markup(gobale.InlineMarkup().
+			Row(gobale.Btn("Option A").Callback("opt_a")).
+			Build(),
+		).
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to edit active message: %v", err)
+	}
+})
+```
+
+---
+
+### Deleting Messages (`deleteMessage`)
+
+GoBale offers three ways to delete messages:
+1. **Immediate deletion:** Delete the incoming message using `.Del().Go()`.
+2. **Delayed deletion:** Schedule a delayed deletion in the background using `.Del().Delay(duration).Go()`.
+3. **By Message ID:** Delete a specific message by its ID using `c.Chat().DelMsg(messageID).Go()`.
+
+#### Usage
+
+The following example demonstrates sending a self-destructing message and deleting the user's triggering command after a delay:
+
+```go
+bot.On().Cmd("temp").Do(func(c *gobale.Ctx) {
+	// 1. Send a temporary message that automatically deletes itself after 10 seconds
+	_, err := c.Send().
+		Text("This message will automatically delete in 10 seconds.").
+		Temp(10 * time.Second). // Utilizing SendChain's built-in Temp helper
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to send temporary message: %v", err)
+	}
+
+	// 2. Schedule the deletion of the user's incoming command after a 5-second delay
+	err = c.Del().
+		Delay(5 * time.Second). // Utilizing Ctx's built-in Del delayed helper
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to schedule command deletion: %v", err)
+	}
+})
+```
+---
+## Stickers & Custom Sets
+
+GoBale provides a comprehensive fluent API (`StickerChain`) to upload, create, retrieve, and manage sticker packs. It includes a polymorphic `StickerInput` interface to dynamically accept local files, URLs, or file IDs.
+
+---
+
+### Sticker & StickerSet Structs
+
+```go
+type Sticker struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int    `json:"file_size,omitempty"`
+}
+
+type StickerSet struct {
+	Name      string     `json:"name"`
+	Title     string     `json:"title"`
+	Stickers  []Sticker  `json:"stickers"`
+	Thumbnail *PhotoSize `json:"thumbnail,omitempty"`
+}
+```
+
+#### Input Polymorphism (`StickerInput`)
+Any method requiring sticker files accepts the `StickerInput` interface. You can pass:
+* **`StickerFilePath("path")`**: For local image files on disk.
+* **`StickerFileID("file_id")`**: For pre-uploaded file IDs on Bale servers.
+* **`StickerURL("url")`**: For remote HTTP URLs.
+
+---
+
+### 1. Uploading a Sticker File (`uploadStickerFile`)
+
+Upload a raw static file (PNG/WEBP format) to the Bale servers to generate an active `File` reference.
+
+```go
+bot.On().Cmd("uploadstk").Do(func(c *gobale.Ctx) {
+	// Upload a local PNG file as a sticker file
+	file, err := c.Sticker().
+		Upload(c.SenderID(), gobale.StickerFilePath("./assets/smile.png")).
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to upload sticker file: %v", err)
+		return
+	}
+
+	log.Printf("Sticker successfully uploaded. File ID: %s", file.FileID)
+})
+```
+
+---
+
+### 2. Creating a Sticker Set (`createNewStickerSet`)
+
+Build a brand-new, customized sticker package containing one or multiple stickers.
+
+```go
+bot.On().Cmd("createset").Do(func(c *gobale.Ctx) {
+	// Create a new sticker set with a single initial sticker
+	ok, err := c.Sticker().
+		Create(c.SenderID(), "my_pack_by_phx", "My Custom Pack Title").
+		Add(gobale.StickerFileID("uploaded_file_id_123"), []string{"😊", "👍"}).
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to create sticker set: %v", err)
+		return
+	}
+
+	if ok {
+		log.Println("Sticker set successfully created!")
+	}
+})
+```
+
+---
+
+### 3. Adding a Sticker to a Set (`addStickerToSet`)
+
+Add a new sticker item directly to your previously created sticker set.
+
+```go
+bot.On().Cmd("addsticker").Do(func(c *gobale.Ctx) {
+	// Prepare the input sticker item with emoji configurations
+	inputSticker := gobale.InputSticker{
+		Sticker:   gobale.StickerFileID("another_uploaded_file_id"),
+		EmojiList: []string{"🔥"},
+	}
+
+	// Add the sticker item to the existing package
+	ok, err := c.Sticker().
+		Add(c.SenderID(), "my_pack_by_phx", inputSticker).
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to add sticker to set: %v", err)
+		return
+	}
+
+	if ok {
+		log.Println("Sticker successfully added to the pack!")
+	}
+})
+```
+---
+## Bale Wallet & E-Commerce Payments
+
+The Bale Messenger platform provides a secure, fast, and integrated **Electronic Wallet (E-Wallet)** service for developers. This allows bots to send "Request Money" messages that users can instantly pay using their Bale E-Wallet, eliminating the need to type card numbers, expiration dates, or CVV2/OTPs.
+
+> ⚠️ **Important Architecture Notice:** The legacy Card-to-Card (کارت به کارت) payment method has been **deprecated and removed** by Bale. The official, stable, and secure standard for e-commerce transactions on Bale is strictly the **Electronic Wallet (E-Wallet)**.
+
+---
+
+### Wallet Provider Tokens & Testing
+* **Production Tokens:** Generated through `@botfather` by registering your business wallet.
+* **Sandbox / Testing Token:** Utilize the official mock token `WALLET-TEST-1111111111111111`. It functions identically to production tokens but does not perform actual monetary transfers.
+
+---
+
+### E-Commerce Struct Definitions
+
+```go
+type LabeledPrice struct {
+	Label  string `json:"label"`
+	Amount int64  `json:"amount"` // Amount in IRR (Rials)
+}
+
+type PreCheckoutQuery struct {
+	ID             string `json:"id"`
+	From           User   `json:"from"`
+	Currency       string `json:"currency"`
+	TotalAmount    int64  `json:"total_amount"`
+	InvoicePayload string `json:"invoice_payload"`
+}
+
+type SuccessfulPayment struct {
+	Currency                string `json:"currency"`
+	TotalAmount             int64  `json:"total_amount"`
+	InvoicePayload          string `json:"invoice_payload"`
+	ShippingOptionID        string `json:"shipping_option_id,omitempty"`
+	BalePaymentChargeID     string `json:"bale_payment_charge_id,omitempty"`
+	ProviderPaymentChargeID string `json:"provider_payment_charge_id,omitempty"`
+}
+
+type Transaction struct {
+	TransactionID string `json:"transaction_id"`
+	Status        string `json:"status"`
+	Amount        int64  `json:"amount"`
+	UserID        int64  `json:"userID"`
+	CreatedAt     int64  `json:"createdAt"`
+}
+```
+
+---
+
+### 1. Sending an Invoice (`sendInvoice`)
+
+Generate and send an interactive invoice bubble. Users can click the button to pay directly from their Bale E-Wallet balance.
+
+```go
+bot.On().Cmd("checkout").Do(func(c *gobale.Ctx) {
+	// Build and dispatch an invoice utilizing the secure mock e-wallet provider token
+	_, err := c.Pay().
+		Invoice("Gold Premium Account", "Access all premium features for 1 year", "pay_payload_id_101", "WALLET-TEST-1111111111111111").
+		Price("Annual Membership", 850000). // 850,000 Rials (IRR)
+		Price("Value Added Tax (VAT)", 85000).
+		NeedName(true).
+		NeedPhone(true).
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to dispatch invoice: %v", err)
+	}
+})
+```
+
+---
+
+### 2. Generating a Payment Link (`createInvoiceLink`)
+
+Compile a digital payment gateway URL that can be embedded inside inline keyboard buttons or web mini-apps.
+
+```go
+bot.On().Cmd("paylink").Do(func(c *gobale.Ctx) {
+	// Compile a secure payments URL link
+	link, err := c.Pay().
+		Link("Custom Merchandise", "Payment for custom designed mug", "pay_payload_id_102", "WALLET-TEST-1111111111111111").
+		Price("Mug & Print Work", 350000).
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to generate payment gateway link: %v", err)
+		return
+	}
+
+	// Send the compiled link embedded inside an inline keyboard row
+	inlineKeyboard := gobale.InlineMarkup().
+		Row(gobale.Btn("💳 Pay with Wallet").URL(link)).
+		Build()
+
+	_, _ = c.Send().
+		Text("Your payment invoice is ready. Please use the button below:").
+		Markup(inlineKeyboard).
+		Go()
+})
+```
+
+---
+
+### 3. Answering Pre-Checkout Validation (`answerPreCheckoutQuery`)
+
+Before a user's wallet is debited, the Bale servers send a `PreCheckoutQuery` to your bot. You must validate item availability within 10 seconds and return either success (`OK(true)`) or a failure warning message to halt the transaction.
+
+```go
+bot.On().PreCheckout(func(c *gobale.Ctx) {
+	query := c.Update.PreCheckoutQuery
+	if query == nil {
+		return
+	}
+
+	log.Printf("Validating purchase limit for Invoice Payload: %s, Total: %d IRR", 
+		query.InvoicePayload, query.TotalAmount)
+
+	// Perform internal inventory checks. If stock is available:
+	_ = c.PreCheckout().OK(true).Go()
+})
+```
+
+---
+
+### 4. Handling Successful Payment Confirmation
+
+Once the transaction is successfully completed, the user's client app posts a confirmation `SuccessfulPayment` message into the chat room.
+
+```go
+bot.On().Msg().Do(func(c *gobale.Ctx) {
+	msg := c.Message
+	if msg == nil || msg.SuccessfulPayment == nil {
+		return
+	}
+
+	payment := msg.SuccessfulPayment
+	log.Printf("Payment Verified! Transaction ID: %s, Total: %d IRR", 
+		payment.BalePaymentChargeID, payment.TotalAmount)
+
+	_, _ = c.Send().
+		Text(fmt.Sprintf("✅ Thank you for your payment! Transaction ID: %s", payment.BalePaymentChargeID)).
+		Go()
+})
+```
+
+---
+
+### 5. Querying Transactions (`getTransaction` & `inquireTransaction`)
+
+You can retrieve transaction details or inquire about a pending transaction status directly:
+
+```go
+bot.On().Cmd("checktx").Do(func(c *gobale.Ctx) {
+	args, ok := c.Arg().([]string)
+	if !ok || len(args) == 0 {
+		return
+	}
+	transactionID := args[0]
+
+	// Inquire transaction status directly on Bale servers
+	tx, err := c.Pay().InquireTx(transactionID).Go()
+	if err != nil {
+		log.Printf("Inquiry failed: %v", err)
+		return
+	}
+
+	log.Printf("Transaction ID: %s, Status: %s, Amount: %d IRR", tx.ID, tx.Status, tx.Amount)
+})
+```
+---
+## Bale Mini Apps Integration
+
+GoBale provides native structures, fluent button builders, cryptographic verifiers, and context parsers to handle interactions with Bale Mini Apps entirely on the backend.
+
+---
+
+### 1. Launching Mini Apps via Fluent Keyboards
+
+To launch a Mini App from a button, utilize the `.WebApp(url)` builder on either inline or reply keyboard builders:
+
+```go
+bot.On().Cmd("launch").Do(func(c *gobale.Ctx) {
+	// Launch WebApp from an inline button
+	inlineKeyboard := gobale.InlineMarkup().
+		Row(gobale.Btn("🌐 Open Mini App").WebApp("https://your-app-domain.com")).
+		Build()
+
+	// Launch WebApp from a reply keyboard button
+	replyKeyboard := gobale.ReplyMarkup().
+		Row(gobale.ReplyBtn("🌐 Launch App").WebApp("https://your-app-domain.com")).
+		Build()
+
+	_, _ = c.Send().
+		Text("Select an entry point:").
+		Markup(inlineKeyboard).
+		Go()
+
+	_ = replyKeyboard // Retain reference to suppress unused variable warning
+})
+```
+
+---
+
+### 2. Launch Data Verification (`WebappChain`)
+
+Before trusting any launch payload from your Mini App frontend, use GoBale’s cryptographic `Webapp` helper to verify the signature of `initData` using the bot's secret token and prevent replay attacks:
+
+```go
+// Verify WebApp initData on your Go backend API endpoint
+func VerifyLaunchData(bot *gobale.Bot, rawInitData string) {
+	// Verify signature and reject payloads older than 2 hours to prevent replay attacks
+	isValid, err := bot.Webapp().
+		Verify(rawInitData).
+		Expire(2 * time.Hour).
+		Go()
+
+	if err != nil || !isValid {
+		log.Printf("Authentication failed: %v", err)
+		return
+	}
+
+	log.Println("WebApp launch parameters successfully verified!")
+}
+```
+
+---
+
+### 3. Handling Deep Links & WebApp Submissions
+
+When a user launches a Mini App using a deep link parameter or submits data using the SDK, GoBale parses these payloads directly inside the handler context:
+
+```go
+bot.On().Msg().Do(func(c *gobale.Ctx) {
+	msg := c.Message
+	if msg == nil {
+		return
+	}
+
+	// 1. Process data submitted directly from the Mini App
+	if msg.WebAppData != nil {
+		submittedData := msg.WebAppData.Data
+		log.Printf("WebApp submitted data: %s", submittedData)
+		return
+	}
+
+	// 2. Extract startapp parameter if the user entered via a ?startapp link
+	if strings.HasPrefix(msg.Text, "/start ") {
+		startParam := c.DeepLink()
+		log.Printf("Mini App entry parameter: %s", startParam)
+	}
+})
+```
+---
+## Safir REST API (Enterprise Messaging)
+
+The **Safir** service is Bale's high-throughput, transactional enterprise messaging engine. It operates via a dedicated RESTful API, allowing organization accounts to dispatch text messages, One-Time Passcodes (OTPs), files, and inline keyboards directly to users. 
+
+Authentication is managed via an organization-specific header: `api-access-key`.
+
+---
+
+### Strict Phone Number Normalization
+To prevent delivery failures, Safir strictly rejects phone numbers containing spaces, dashes, or non-98 prefixes. Numbers **must** begin with `98` followed by exactly 10 digits (e.g., `989123456789`).
+* **Built-in Automation:** GoBale's `.Phone()` helper automatically runs the built-in `NormalizeSafirPhone` routine under the hood to sanitize standard Iranian formats (e.g., converting `09123456789` to `989123456789`) and strip invalid characters.
+
+---
+
+### Safir Struct Definitions
+
+```go
+type SafirResponse struct {
+	MessageID string     `json:"message_id"`
+	ErrorData []SafirErr `json:"error_data"`
+}
+
+type SafirErr struct {
+	PhoneNumber string `json:"phone_number"`
+	Code        int    `json:"code"`
+	Description string `json:"description"`
+}
+```
+
+---
+
+### 1. Sending Standard & Secure Messages
+
+You can dispatch standard text messages or enable password-locked secure encryption (`is_secure: true`) using the fluent `Safir()` chain:
+
+```go
+bot.On().Cmd("safirsend").Do(func(c *gobale.Ctx) {
+	// Dispatch a secure, password-locked transactional message via Safir
+	resp, err := c.Safir().
+		Phone("09123456789"). // GoBale automatically normalizes this to 989123456789
+		Text("Confidential: Your billing statement is ready for review.").
+		Secure(true).         // Enables secure password-locked bubble
+		Go()
+
+	if err != nil {
+		log.Printf("Safir transaction failed: %v", err)
+		return
+	}
+
+	log.Printf("Safir Message Dispatched. Message ID: %s", resp.MessageID)
+})
+```
+
+---
+
+### 2. Sending One-Time Passcodes (OTP)
+
+To transmit critical numerical security passcodes, use the `.OTP()` configuration. This routes the message through Bale's official OTP system, adding native copy buttons and secure sender tags automatically.
+
+```go
+bot.On().Cmd("sendotp").Do(func(c *gobale.Ctx) {
+	// Dispatch a secure numerical OTP code
+	resp, err := c.Safir().
+		Phone("09123456789").
+		OTP("123456"). // Sends 123456 inside Bale's official OTP bubble
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to dispatch OTP: %v", err)
+		return
+	}
+
+	log.Printf("OTP successfully dispatched. ID: %s", resp.MessageID)
+})
+```
+
+---
+
+### 3. File Uploading & Media Transactions
+
+To send files or images via Safir, upload the physical file first using the `.Upload()` chain to obtain a unique `file_id`, then pass the ID to the messaging pipeline:
+
+```go
+bot.On().Cmd("safirupload").Do(func(c *gobale.Ctx) {
+	file, err := os.Open("./assets/statement.pdf")
+	if err != nil {
+		log.Printf("Failed to open file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	inputFile := gobale.InputFile{
+		FileName: "statement.pdf",
+		Reader:   file,
+	}
+
+	// 1. Upload the file first to the Safir upload endpoint
+	safirChain := c.Safir()
+	fileID, err := safirChain.Upload(inputFile).Go()
+	if err != nil {
+		log.Printf("Failed to upload file to Safir: %v", err)
+		return
+	}
+
+	// 2. Dispatch the media message using the obtained file ID
+	resp, err := safirChain.
+		Phone("09123456789").
+		FileID(fileID).
+		Text("Here is your requested account statement:").
+		Go()
+
+	if err != nil {
+		log.Printf("Failed to send Safir document: %v", err)
+		return
+	}
+
+	log.Printf("Document sent successfully. Message ID: %s", resp.MessageID)
+})
+```
+
+---
+
+### 4. Idempotency Protection (`request_id`)
+To prevent duplicate message dispatches caused by temporary network retries, GoBale automatically generates a cryptographically random, 12-character hexadecimal token as the `request_id` for each Safir chain call. 
+
+If you prefer to enforce custom transaction IDs, specify them using the `.RequestID(id)` method:
+
+```go
+_, _ = c.Safir().
+	Phone("09123456789").
+	RequestID("unique_invoice_ref_456"). // Custom Idempotency Token
+	Text("Invoice payment acknowledged.").
+	Go()
+```
