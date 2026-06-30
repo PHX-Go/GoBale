@@ -2,7 +2,6 @@ package gobale
 
 import (
 	"fmt"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -360,27 +359,39 @@ func SuperGroupOnly(alert string) Handler {
 	}
 }
 
-// GroupLockGuard deletes all messages sent by non-admin members if the group is locally locked or the user is unverified
-func GroupLockGuard() Handler {
+// GroupLockGuard deletes messages from non-admins if group is locked, captcha unverified, or user is muted
+func GroupLockGuard(customAlerts ...string) Handler {
+	lockAlert := "⚠️ چت گروه در حال حاضر توسط مدیریت قفل شده است."
+	captchaAlert := "⚠️ کاربر عزیز {name}، چت شما تا زمان تایید هویت مسدود است! لطفاً روی دکمه تایید هویت در پیام خوش‌آمدگویی کلیک کنید."
+	adminMuteAlert := "⚠️ کاربر عزیز {name}، شما توسط مدیریت بی‌صدا (Mute) شده‌اید."
+
+	// override defaults if custom alerts are provided by the user
+	if len(customAlerts) > 0 {
+		lockAlert = customAlerts[0]
+	}
+	if len(customAlerts) > 1 {
+		captchaAlert = customAlerts[1]
+	}
+	if len(customAlerts) > 2 {
+		adminMuteAlert = customAlerts[2]
+	}
+
 	return func(c *Ctx) {
-		// Bypass callback queries (button clicks)
 		if c.Update != nil && c.Update.CallbackQuery != nil {
 			c.Next()
 			return
 		}
 
-		// Bypass service messages, joins, exits, or messages without a valid sender
 		if c.Message == nil || c.Message.From == nil || len(c.Message.NewChatMembers) > 0 || c.Message.LeftChatMember != nil {
 			c.Next()
 			return
 		}
 
-		if c.IsGroup() {
+		if c.IsGroup() || c.IsSuperGroup() {
 			id, err := c.ChatID()
 			if err == nil {
 				senderID := c.SenderID()
 
-				// Bypass global bot owner/administrator immediately
 				c.Bot.mu.RLock()
 				isOwner := senderID == c.Bot.MaintenanceAdminID
 				c.Bot.mu.RUnlock()
@@ -389,7 +400,6 @@ func GroupLockGuard() Handler {
 					return
 				}
 
-				// Query global group lock state from Database
 				dbKey := fmt.Sprintf("group_lock_%d", id)
 				val, ok := c.DB().Get(dbKey).Go()
 				locked := false
@@ -397,7 +407,15 @@ func GroupLockGuard() Handler {
 					locked, _ = val.(bool)
 				}
 
-				// Query individual user unverified/mute state from Database
+				captchaKey := fmt.Sprintf("captcha_mute_%d_%d", id, senderID)
+				valCaptcha, okCaptcha := c.DB().Get(captchaKey).Go()
+				captchaMuted := false
+				if okCaptcha && valCaptcha != nil {
+					if isMuted, ok := valCaptcha.(bool); ok {
+						captchaMuted = isMuted
+					}
+				}
+
 				muteKey := fmt.Sprintf("mute_user_%d_%d", id, senderID)
 				valMute, okMute := c.DB().Get(muteKey).Go()
 				muted := false
@@ -407,27 +425,29 @@ func GroupLockGuard() Handler {
 					}
 				}
 
-				// Print deep debug log on every text message captured by the guard
-				log.Printf("[GroupLock Debug] Message captured. Sender: %s (%d), ChatID: %d, MuteKey: %s, Locked: %t, Muted: %t", c.Message.From.FirstName, senderID, id, muteKey, locked, muted)
-
-				if locked || muted {
+				if locked || captchaMuted || muted {
 					isAdmin, errAdmin := c.Chat().IsAdmin().Go()
 					if errAdmin == nil {
-						// Only delete and abort if we are SURE the user is not a group admin
 						if !isAdmin {
 							_ = c.Del().Go()
 
-							if muted {
-								_, _ = c.Send().
-									Text(fmt.Sprintf("⚠️ کاربر عزیز %s، چت شما تا زمان تایید هویت مسدود است! لطفاً روی دکمه تایید هویت در پیام خوش‌آمدگویی کلیک کنید.", c.Message.From.Mention())).
-									Temp(5 * time.Second).
-									Go()
+							var alertText string
+							if locked && lockAlert != "" {
+								alertText = lockAlert
+							} else if captchaMuted && captchaAlert != "" {
+								alertText = strings.ReplaceAll(captchaAlert, "{name}", c.Message.From.Mention())
+							} else if muted && adminMuteAlert != "" {
+								alertText = strings.ReplaceAll(adminMuteAlert, "{name}", c.Message.From.Mention())
+							}
+
+							// only send alert message if the alert text is not empty
+							if alertText != "" {
+								_, _ = c.Send().Text(alertText).Temp(5 * time.Second).Go()
 							}
 							c.Abort()
 							return
 						}
 					} else {
-						// Log warning and allow the message if bot has no admin rights to call getChatMember
 						c.Log().Warn("Failed to check admin status: %v. Allowing message.", errAdmin).Go()
 					}
 				}
