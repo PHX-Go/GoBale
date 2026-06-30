@@ -818,8 +818,8 @@ func AntiSelfBot(minInterval time.Duration) Handler {
 	}
 }
 
-// AntiNightMedia restricts non-admin members from sending any media types during specified night hours
-func AntiNightMedia(startHour, endHour int, warnDuration time.Duration) Handler {
+// AntiNight restricts non-admin members from sending any messages during specified night hours
+func AntiNight(startHour, endHour int, warnDuration time.Duration) Handler {
 	return func(c *Ctx) {
 		if c.Message == nil {
 			c.Next()
@@ -834,27 +834,18 @@ func AntiNightMedia(startHour, endHour int, warnDuration time.Duration) Handler 
 			isNight = hour >= startHour && hour < endHour
 		}
 		if isNight {
-			isMedia := len(c.Message.Photo) > 0 ||
-				c.Message.Video != nil ||
-				c.Message.Audio != nil ||
-				c.Message.Document != nil ||
-				c.Message.Voice != nil ||
-				c.Message.Sticker != nil ||
-				c.Message.Animation != nil
-			if isMedia {
-				c.Bot.mu.RLock()
-				isOwner := c.Message.From.ID == c.Bot.MaintenanceAdminID
-				c.Bot.mu.RUnlock()
-				isAdmin, _ := c.Chat().IsAdmin().Go()
-				if !isOwner && !isAdmin {
-					_ = c.Del().Go()
-					_, _ = c.Send().
-						Text(fmt.Sprintf("⚠️ ارسال هرگونه فایل و رسانه در ساعات خاموشی شبانه گروه (%02d:00 الی %02d:00) ممنوع است!", startHour, endHour)).
-						Temp(warnDuration).
-						Go()
-					c.Abort()
-					return
-				}
+			c.Bot.mu.RLock()
+			isOwner := c.Message.From.ID == c.Bot.MaintenanceAdminID
+			c.Bot.mu.RUnlock()
+			isAdmin, _ := c.Chat().IsAdmin().Go()
+			if !isOwner && !isAdmin {
+				_ = c.Del().Go()
+				_, _ = c.Send().
+					Text(fmt.Sprintf("⚠️ گفتگو در ساعات خاموشی شبانه گروه (%02d:00 الی %02d:00) ممنوع است!", startHour, endHour)).
+					Temp(warnDuration).
+					Go()
+				c.Abort()
+				return
 			}
 		}
 		c.Next()
