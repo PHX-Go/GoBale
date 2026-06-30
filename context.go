@@ -538,3 +538,19 @@ func (fi *FileInfoChain) Go() (*File, error) {
 func (c *Ctx) PrevText() string {
 	return c.prevText
 }
+
+// ScanOptionalArgs parses up to the number of arguments provided without returning errors for missing ones
+func (c *Ctx) ScanOptionalArgs(targets ...any) int {
+	args, ok := c.Arg().([]string)
+	if !ok || len(args) == 0 {
+		return 0
+	}
+
+	limit := len(targets)
+	if len(args) < limit {
+		limit = len(args)
+	}
+
+	_ = ScanValues(args[:limit], " ", targets[:limit]...)
+	return limit
+}
