@@ -365,7 +365,6 @@ func GroupLockGuard(customAlerts ...string) Handler {
 	captchaAlert := "⚠️ کاربر عزیز {name}، چت شما تا زمان تایید هویت مسدود است! لطفاً روی دکمه تایید هویت در پیام خوش‌آمدگویی کلیک کنید."
 	adminMuteAlert := "⚠️ کاربر عزیز {name}، شما توسط مدیریت بی‌صدا (Mute) شده‌اید."
 
-	// override defaults if custom alerts are provided by the user
 	if len(customAlerts) > 0 {
 		lockAlert = customAlerts[0]
 	}
@@ -400,6 +399,7 @@ func GroupLockGuard(customAlerts ...string) Handler {
 					return
 				}
 
+				// query group lock state from DB
 				dbKey := fmt.Sprintf("group_lock_%d", id)
 				val, ok := c.DB().Get(dbKey).Go()
 				locked := false
@@ -407,6 +407,7 @@ func GroupLockGuard(customAlerts ...string) Handler {
 					locked, _ = val.(bool)
 				}
 
+				// query captcha mute state from DB
 				captchaKey := fmt.Sprintf("captcha_mute_%d_%d", id, senderID)
 				valCaptcha, okCaptcha := c.DB().Get(captchaKey).Go()
 				captchaMuted := false
@@ -416,12 +417,32 @@ func GroupLockGuard(customAlerts ...string) Handler {
 					}
 				}
 
+				// query administrative mute state with dynamic expiration check
 				muteKey := fmt.Sprintf("mute_user_%d_%d", id, senderID)
 				valMute, okMute := c.DB().Get(muteKey).Go()
 				muted := false
 				if okMute && valMute != nil {
 					if isMuted, ok := valMute.(bool); ok {
 						muted = isMuted
+					} else {
+						var exp int64
+						if v, ok := valMute.(int64); ok {
+							exp = v
+						} else if v, ok := valMute.(int); ok {
+							exp = int64(v)
+						}
+
+						if exp > 0 {
+							if time.Now().UnixNano() > exp {
+								// mute expired, automatically delete key from DB and allow chat
+								_ = c.DB().Del(muteKey).Go()
+								muted = false
+							} else {
+								muted = true
+							}
+						} else {
+							muted = true
+						}
 					}
 				}
 
