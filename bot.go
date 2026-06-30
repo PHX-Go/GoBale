@@ -59,6 +59,8 @@ type Bot struct {
 	defenseOnce        sync.Once
 	editMsg            []Handler
 	cache              *BotCache
+	socketInstance *SocketServer
+	socketMu       sync.Mutex
 }
 
 type BotBuilder struct {
@@ -1162,4 +1164,17 @@ func (b *BotBuilder) Safir(apiKey string, botID int64) *BotBuilder {
 	b.safirKey = apiKey
 	b.safirBotID = botID
 	return b
+}
+
+// Socket opens or retrieves the singleton socket.io server instance
+func (b *Bot) Socket() *SocketServer {
+	b.socketMu.Lock()
+	defer b.socketMu.Unlock()
+	if b.socketInstance == nil {
+		b.socketInstance = &SocketServer{
+			bot:  b,
+			addr: ":8081",
+		}
+	}
+	return b.socketInstance
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -291,24 +292,16 @@ func (db *Database) Tx(fn func(store map[string]any)) error {
 		before[k] = v
 	}
 
-	// Execute mutation closure
 	fn(db.store)
 
-	// Detect mutations and capture them while lock is active
 	var changes []walEntry
 	for k, v := range db.store {
-		if before[k] != v {
+		if !reflect.DeepEqual(before[k], v) {
 			changes = append(changes, walEntry{Op: walSet, Key: k, Val: v})
 		}
 	}
-	for k := range before {
-		if _, exists := db.store[k]; !exists {
-			changes = append(changes, walEntry{Op: walDel, Key: k})
-		}
-	}
-	db.mu.Unlock() // Safe unlock before writing file
+	db.mu.Unlock()
 
-	// Flush changes to write-ahead log safely
 	for _, entry := range changes {
 		db.appendWAL(entry)
 	}
