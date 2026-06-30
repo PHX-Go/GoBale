@@ -421,7 +421,8 @@ func (cc *CaptchaChain) Go() {
 			userID := user.ID
 			callbackData := fmt.Sprintf("%s:%d:%d", callbackPrefix, chatID, userID)
 
-			muteKey := fmt.Sprintf("mute_user_%d_%d", chatID, userID)
+			// use unique captcha_mute prefix to prevent conflict with admin mute
+			muteKey := fmt.Sprintf("captcha_mute_%d_%d", chatID, userID)
 			_ = c.DB().Set(muteKey, true).Go()
 
 			name := user.Mention()
@@ -506,8 +507,10 @@ func (cc *CaptchaChain) Go() {
 			return
 		}
 
-		muteKey := fmt.Sprintf("mute_user_%d_%d", chatID, userID)
+		// use unique captcha_mute prefix to verify and delete the captcha key
+		muteKey := fmt.Sprintf("captcha_mute_%d_%d", chatID, userID)
 		_, okMute := c.DB().Get(muteKey).Go()
+
 		if !okMute {
 			_ = c.Answer().Text("هویت شما قبلاً تایید شده است.").Go()
 			return
