@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -300,13 +301,17 @@ func IsCrashPayload(text string) bool {
 }
 
 // AdminsOnly restricts execution of the handler to group administrators and deletes access warning after 5s
-func AdminsOnly() Handler {
+func AdminsOnly(customMsg ...string) Handler {
 	return func(c *Ctx) {
 		isAdmin, err := c.Chat().IsAdmin().Go()
 		if err != nil || !isAdmin {
-			// Delete the access warning message after 5 seconds automatically
+			warn := "⚠️ دسترسی غیرمجاز! این دستور فقط مخصوص مدیران (ادمین‌ها) است."
+			if len(customMsg) > 0 && customMsg[0] != "" {
+				warn = customMsg[0]
+			}
+
 			_, _ = c.Send().
-				Text("⚠️ دسترسی غیرمجاز! این دستور فقط مخصوص مدیران (ادمین‌ها) است.").
+				Text(warn).
 				Temp(5 * time.Second).
 				Go()
 
@@ -459,7 +464,7 @@ func Recovery() Handler {
 }
 
 // AntiForward deletes any forwarded messages from non-admin members automatically
-func AntiForward(warnDuration time.Duration) Handler {
+func AntiForward(warnDuration time.Duration, customMsg ...string) Handler {
 	return func(c *Ctx) {
 		if c.Message != nil && (c.Message.ForwardFrom != nil || c.Message.ForwardFromChat != nil) {
 			c.Bot.mu.RLock()
@@ -471,8 +476,15 @@ func AntiForward(warnDuration time.Duration) Handler {
 				return
 			}
 			_ = c.Del().Go()
+
+			warn := "⚠️ ارسال پیام‌های بازارسال شده (Forward) در این گروه ممنوع است!"
+			if len(customMsg) > 0 && customMsg[0] != "" {
+				warn = customMsg[0]
+				warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+			}
+
 			_, _ = c.Send().
-				Text("⚠️ ارسال پیام‌های بازارسال شده (Forward) در این گروه ممنوع است!").
+				Text(warn).
 				Temp(warnDuration).
 				Go()
 			c.Abort()
@@ -605,7 +617,7 @@ type repeatState struct {
 }
 
 // AntiRepeat deletes duplicate identical messages sent by the same user in sequence thread-safely
-func AntiRepeat(warnDuration time.Duration) Handler {
+func AntiRepeat(warnDuration time.Duration, customMsg ...string) Handler {
 	var users sync.Map
 	return func(c *Ctx) {
 		if c.Message == nil || c.Message.From == nil || c.Message.Text == "" {
@@ -631,8 +643,15 @@ func AntiRepeat(warnDuration time.Duration) Handler {
 		rs.mu.Unlock()
 		if isDuplicate {
 			_ = c.Del().Go()
+
+			warn := fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام تکراری و کپی‌پست در این گروه ممنوع است!", c.Message.From.Mention())
+			if len(customMsg) > 0 && customMsg[0] != "" {
+				warn = customMsg[0]
+				warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+			}
+
 			_, _ = c.Send().
-				Text(fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام تکراری و کپی‌پست در این گروه ممنوع است!", c.Message.From.Mention())). // Updated
+				Text(warn).
 				Temp(warnDuration).
 				Go()
 			c.Abort()
@@ -706,7 +725,7 @@ func AntiRaid(limit int, window time.Duration) Handler {
 }
 
 // AntiCharLimit deletes messages exceeding the character limit from non-admin members automatically
-func AntiCharLimit(limit int, warnDuration time.Duration) Handler {
+func AntiCharLimit(limit int, warnDuration time.Duration, customMsg ...string) Handler {
 	return func(c *Ctx) {
 		if c.Message != nil && c.Message.Text != "" {
 			c.Bot.mu.RLock()
@@ -717,11 +736,18 @@ func AntiCharLimit(limit int, warnDuration time.Duration) Handler {
 				c.Next()
 				return
 			}
-			// Safe rune length evaluation to support Persian/UTF-8 characters correctly
 			if len([]rune(c.Message.Text)) > limit {
 				_ = c.Del().Go()
+
+				warn := fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال متون طولانی و بنرهای تبلیغاتی مجاز نیست! (سقف مجاز: %d کاراکتر)", c.Message.From.Mention(), limit)
+				if len(customMsg) > 0 && customMsg[0] != "" {
+					warn = customMsg[0]
+					warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+					warn = strings.ReplaceAll(warn, "{limit}", strconv.Itoa(limit))
+				}
+
 				_, _ = c.Send().
-					Text(fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال متون طولانی و بنرهای تبلیغاتی مجاز نیست! (سقف مجاز: %d کاراکتر)", c.Message.From.Mention(), limit)). // Updated
+					Text(warn).
 					Temp(warnDuration).
 					Go()
 				c.Abort()
@@ -819,7 +845,7 @@ func AntiSelfBot(minInterval time.Duration) Handler {
 }
 
 // AntiNight restricts non-admin members from sending any messages during specified night hours
-func AntiNight(startHour, endHour int, warnDuration time.Duration) Handler {
+func AntiNight(startHour, endHour int, warnDuration time.Duration, customMsg ...string) Handler {
 	return func(c *Ctx) {
 		if c.Message == nil {
 			c.Next()
@@ -840,8 +866,16 @@ func AntiNight(startHour, endHour int, warnDuration time.Duration) Handler {
 			isAdmin, _ := c.Chat().IsAdmin().Go()
 			if !isOwner && !isAdmin {
 				_ = c.Del().Go()
+
+				warn := fmt.Sprintf("⚠️ گفتگو در ساعات خاموشی شبانه گروه (%02d:00 الی %02d:00) ممنوع است!", startHour, endHour)
+				if len(customMsg) > 0 && customMsg[0] != "" {
+					warn = customMsg[0]
+					warn = strings.ReplaceAll(warn, "{start}", fmt.Sprintf("%02d:00", startHour))
+					warn = strings.ReplaceAll(warn, "{end}", fmt.Sprintf("%02d:00", endHour))
+				}
+
 				_, _ = c.Send().
-					Text(fmt.Sprintf("⚠️ گفتگو در ساعات خاموشی شبانه گروه (%02d:00 الی %02d:00) ممنوع است!", startHour, endHour)).
+					Text(warn).
 					Temp(warnDuration).
 					Go()
 				c.Abort()
