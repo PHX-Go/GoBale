@@ -61,6 +61,7 @@ type Bot struct {
 	cache              *BotCache
 	socketInstance *SocketServer
 	socketMu       sync.Mutex
+	AutoStretch        bool
 }
 
 type BotBuilder struct {

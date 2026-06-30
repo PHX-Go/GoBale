@@ -43,6 +43,13 @@ type SendChain struct {
 	width     int
 	height    int
 	title     string
+	stretch   bool
+}
+
+// Stretch enables or disables message stretching for this specific send action
+func (s *SendChain) Stretch(v bool) *SendChain {
+	s.stretch = v
+	return s
 }
 
 // Title sets the display title of the audio or music player fluidly
@@ -314,9 +321,13 @@ func (s *SendChain) Go() (*Message, error) {
 	} else if s.anim != nil {
 		err = s.uploadMedia("sendAnimation", "animation", s.anim, &msg)
 	} else if s.text != "" {
+		text := s.text
+		if s.bot.AutoStretch || s.stretch {
+			text = stretchText(text)
+		}
 		err = s.bot.BaseRequest(s.ctx, "sendMessage", map[string]any{
 			"chat_id":             resolved,
-			"text":                stretchText(s.text),
+			"text":                text,
 			"parse_mode":          s.pm,
 			"reply_to_message_id": s.replyTo,
 			"reply_markup":        s.markup,
@@ -708,6 +719,13 @@ type EditChain struct {
 	caption string
 	markup  any
 	pm      string
+	stretch bool
+}
+
+// Stretch enables or disables message stretching for this specific edit action
+func (e *EditChain) Stretch(v bool) *EditChain {
+	e.stretch = v
+	return e
 }
 
 // Edit opens fluent editing dot system inside context
@@ -782,7 +800,11 @@ func (e *EditChain) Go() (*Message, error) {
 	switch {
 	case e.text != "":
 		method = "editMessageText"
-		payload["text"] = stretchText(e.text) // Automatically stretch edited text to keep buttons wide
+		text := e.text
+		if e.c.Bot.AutoStretch || e.stretch {
+			text = stretchText(text)
+		}
+		payload["text"] = text
 		payload["parse_mode"] = e.pm
 		payload["reply_markup"] = e.markup
 	case e.caption != "":
