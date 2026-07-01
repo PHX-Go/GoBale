@@ -485,6 +485,9 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 			}
 		}
 
+		// Debug Log: Print out active restrictions inside terminal for analysis
+		c.Log().Info("🔎 [Guard Check] Sender: %d | Chat: %d | Active Blocks: %v", senderID, chatID, blockedMap).Go()
+
 		if len(blockedMap) == 0 {
 			c.Next()
 			return
