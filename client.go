@@ -204,26 +204,6 @@ func (f *FC) Load(k string) (string, bool) {
 	return val, ok
 }
 
-// save writes cache storage to disk safely
-func (f *FC) save() error {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	tmp := f.path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return err
-	}
-	err = gob.NewEncoder(file).Encode(f.store)
-	if err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	_ = file.Sync()
-	_ = file.Close()
-	return os.Rename(tmp, f.path)
-}
-
 // load reads cache storage from disk
 func (f *FC) load() error {
 	file, err := os.Open(f.path)

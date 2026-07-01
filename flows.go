@@ -334,15 +334,6 @@ func (s *SurveyChain) runStep(c *Ctx, idx int, answers []string) {
 	})
 }
 
-// captchaEntry holds pending verification state for a single user
-type captchaEntry struct {
-	mu        sync.Mutex
-	messageID int64
-	chatID    int64
-	timer     *time.Timer
-	done      bool
-}
-
 // CaptchaChain manages fluent captcha verification configuration
 type CaptchaChain struct {
 	bot     *Bot
