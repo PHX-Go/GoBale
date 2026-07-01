@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -64,7 +65,7 @@ func NewGOBStore(filePath string) *GOBStore {
 	// Start background cleanup and periodic auto-save loops
 	go func() {
 		cleanupTicker := time.NewTicker(1 * time.Hour)
-		saveTicker := time.NewTicker(10 * time.Minute) // Auto-save sessions every 10 minutes
+		saveTicker := time.NewTicker(10 * time.Minute) // Auto-save sessions periodically
 		defer cleanupTicker.Stop()
 		defer saveTicker.Stop()
 
@@ -86,7 +87,7 @@ func NewGOBStore(filePath string) *GOBStore {
 					s.mu.Unlock()
 				}
 			case <-saveTicker.C:
-				// Auto-save active sessions periodically to prevent state loss on unexpected crashes
+				// Auto-save active sessions periodically to prevent state loss
 				_ = m.Save()
 			case <-m.stop:
 				return
@@ -287,6 +288,171 @@ func (dc *DataChain) Go() (any, error) {
 		return nil, nil
 	}
 	return v, nil
+}
+
+// String retrieves a string value from session safely with an optional fallback default
+func (s *Session) String(key string, defaultVal ...string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	fallback := ""
+	if len(defaultVal) > 0 {
+		fallback = defaultVal[0]
+	}
+
+	if s.DataMap == nil {
+		return fallback
+	}
+	val, ok := s.DataMap[key]
+	if !ok {
+		return fallback
+	}
+
+	str, ok := val.(string)
+	if !ok {
+		return fallback
+	}
+	return str
+}
+
+// Int retrieves an integer value supporting safe type-coercion and optional default fallback
+func (s *Session) Int(key string, defaultVal ...int) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	fallback := 0
+	if len(defaultVal) > 0 {
+		fallback = defaultVal[0]
+	}
+
+	if s.DataMap == nil {
+		return fallback
+	}
+	val, ok := s.DataMap[key]
+	if !ok {
+		return fallback
+	}
+
+	switch v := val.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case int32:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	case string:
+		if parsed, err := strconv.Atoi(v); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+// Int64 retrieves an int64 value supporting safe type-coercion and optional default fallback
+func (s *Session) Int64(key string, defaultVal ...int64) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var fallback int64
+	if len(defaultVal) > 0 {
+		fallback = defaultVal[0]
+	}
+
+	if s.DataMap == nil {
+		return fallback
+	}
+	val, ok := s.DataMap[key]
+	if !ok {
+		return fallback
+	}
+
+	switch v := val.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case string:
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+// Bool retrieves a boolean value supporting safe type-coercion and optional default fallback
+func (s *Session) Bool(key string, defaultVal ...bool) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	fallback := false
+	if len(defaultVal) > 0 {
+		fallback = defaultVal[0]
+	}
+
+	if s.DataMap == nil {
+		return fallback
+	}
+	val, ok := s.DataMap[key]
+	if !ok {
+		return fallback
+	}
+
+	switch v := val.(type) {
+	case bool:
+		return v
+	case string:
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			return parsed
+		}
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	}
+	return fallback
+}
+
+// Float64 retrieves a float64 value supporting safe type-coercion and optional default fallback
+func (s *Session) Float64(key string, defaultVal ...float64) float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var fallback float64
+	if len(defaultVal) > 0 {
+		fallback = defaultVal[0]
+	}
+
+	if s.DataMap == nil {
+		return fallback
+	}
+	val, ok := s.DataMap[key]
+	if !ok {
+		return fallback
+	}
+
+	switch v := val.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case string:
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+			return parsed
+		}
+	}
+	return fallback
 }
 
 func init() {
