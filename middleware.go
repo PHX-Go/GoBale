@@ -2,6 +2,7 @@ package gobale
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -359,7 +360,7 @@ func SuperGroupOnly(alert string) Handler {
 	}
 }
 
-// ChatGuard is a unified single-pass protection middleware with panic-proof checks
+// ChatGuard is a unified single-pass protection middleware with panic-proof checks and direct terminal logs
 func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handler {
 	defaultWarn := "⚠️ کاربر عزیز {name}، شما اجازه ارسال رسانه از نوع [{type}] را در این چت ندارید!"
 	if customMsg != "" {
@@ -526,7 +527,12 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 		if detected != "" {
 			isBlocked := blockedMap[string(detected)] || blockedMap[string(MediaAll)]
 			if isBlocked {
-				_ = c.Del().Go()
+				// Attempt to delete message natively and print error on failure to console
+				errDel := c.Del().Go()
+				if errDel != nil {
+					log.Printf("[DEBUG ERROR] Failed to delete message: %v", errDel)
+				}
+
 				if !silent && warnDuration > 0 {
 					warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
 					warn = strings.ReplaceAll(warn, "{type}", matchedTypeFarsi)

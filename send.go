@@ -225,17 +225,19 @@ func (s *SendChain) Confirm(yesCallback, noCallback string) *SendChain {
 	return s
 }
 
-// Settings builds the dynamic system configuration keyboard automatically supporting local states
-func (s *SendChain) Settings() *SendChain {
+// Settings builds the dynamic configuration keyboard natively supporting remote group IDs
+func (s *SendChain) Settings(chatID ...any) *SendChain {
 	resolved := s.bot.ResolveChatID(s.chat)
+	if len(chatID) > 0 {
+		resolved = s.bot.ResolveChatID(chatID[0])
+	}
 	builder := InlineMarkup()
 
 	s.bot.mu.RLock()
-	db := s.bot.dbInstance // Fixed: Read from consolidated dbInstance instead of uninitialized settingsDB
+	db := s.bot.dbInstance
 	for _, entry := range s.bot.settings {
 		status := "🔴 خاموش"
 		if entry.IsLocal {
-			// Read group-isolated config dynamically in-place
 			dbKey := fmt.Sprintf("group_config_%v_%s", resolved, entry.Key)
 			val, ok := db.Get(dbKey)
 			active := entry.Default
@@ -248,13 +250,13 @@ func (s *SendChain) Settings() *SendChain {
 				status = "🟢 روشن"
 			}
 		} else {
-			// Read global pointer configuration state
 			if entry.Ptr != nil && *entry.Ptr {
 				status = "🟢 روشن"
 			}
 		}
 
-		callbackKey := "_sys_cfg:" + entry.Key
+		// Encode the targeted group ID directly into the callback data (e.g. _sys_cfg:g_lock:-100123)
+		callbackKey := fmt.Sprintf("_sys_cfg:%s:%v", entry.Key, resolved)
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
 	}
 	s.bot.mu.RUnlock()
@@ -784,21 +786,28 @@ func (e *EditChain) Paginated(items []InlineKeyboardButton, page, perPage int, p
 	return e
 }
 
-// Settings builds the dynamic system configuration keyboard inside Edit supporting local states
-func (e *EditChain) Settings() *EditChain {
+// Settings builds the dynamic system configuration keyboard automatically inside Edit supporting remote group targets
+func (e *EditChain) Settings(chatID ...any) *EditChain {
 	id, err := e.c.ChatID()
-	if err != nil {
+	if err != nil && len(chatID) == 0 {
 		return e
+	}
+
+	var resolved any
+	if len(chatID) > 0 {
+		resolved = e.c.Bot.ResolveChatID(chatID[0])
+	} else {
+		resolved = e.c.Bot.ResolveChatID(id)
 	}
 
 	builder := InlineMarkup()
 	e.c.Bot.mu.RLock()
-	db := e.c.Bot.dbInstance // Fixed: Read from consolidated dbInstance instead of uninitialized settingsDB
+	db := e.c.Bot.dbInstance
 	for _, entry := range e.c.Bot.settings {
 		status := "🔴 خاموش"
 		if entry.IsLocal {
 			// Read group-isolated config dynamically in-place
-			dbKey := fmt.Sprintf("group_config_%v_%s", id, entry.Key)
+			dbKey := fmt.Sprintf("group_config_%v_%s", resolved, entry.Key)
 			val, ok := db.Get(dbKey)
 			active := entry.Default
 			if ok {
@@ -816,7 +825,8 @@ func (e *EditChain) Settings() *EditChain {
 			}
 		}
 
-		callbackKey := "_sys_cfg:" + entry.Key
+		// Encode the targeted group ID directly into the callback data (e.g. _sys_cfg:g_lock:-100123)
+		callbackKey := fmt.Sprintf("_sys_cfg:%s:%v", entry.Key, resolved)
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
 	}
 	e.c.Bot.mu.RUnlock()

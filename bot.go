@@ -205,31 +205,63 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 	bot.On().Use(Recovery())
 
-	// Register the automatic, secure unified global/local settings toggle handler
+	// Unifies global, local, and remote settings processing with maximum security and owner bypass
 	bot.On().Callback("_sys_cfg").Do(func(c *Ctx) {
 		if c.Update == nil || c.Update.CallbackQuery == nil {
 			return
 		}
 
-		// Security: Verify if the user who clicked is a group administrator
-		isAdmin, err := c.Chat().IsAdmin().Go()
-		if err != nil || !isAdmin {
-			_ = c.Answer().Text("❌ تغییر تنظیمات فقط مخصوص مدیران گروه است!").Alert().Go()
-			c.Abort()
-			return
+		var key string
+		var targetChat string // Fixed: Declare as string so ScanCallbackArgs can parse it successfully
+		_ = c.ScanCallbackArgs(&key, &targetChat)
+
+		// 1. Identify setting scope (local vs global)
+		isLocal := false
+		c.Bot.mu.RLock()
+		for _, s := range c.Bot.settings {
+			if s.Key == key {
+				isLocal = s.IsLocal
+				break
+			}
+		}
+		c.Bot.mu.RUnlock()
+
+		// 2. Resolve target chat ID
+		var resolved any
+		if targetChat != "" { // Fixed: Check string empty
+			resolved = c.Bot.ResolveChatID(targetChat)
+		} else {
+			id, _ := c.ChatID()
+			resolved = c.Bot.ResolveChatID(id)
 		}
 
-		var key string
-		_ = c.ScanCallbackArgs(&key)
+		// 3. Security: Bypass immediately for Owner, verify group Admins for localized settings
+		isOwner := c.IsOwner()
+		if !isOwner {
+			if !isLocal {
+				// Non-owners cannot modify global settings (e.g. maintenance)
+				_ = c.Answer().Text("❌ تغییر تنظیمات سراسری فقط مخصوص مدیریت کل ربات است!").Alert().Go()
+				c.Abort()
+				return
+			}
 
-		// Toggle state (supports both global variables and chat-isolated GOB records)
-		errToggle := c.Settings().Toggle(key).Go()
+			// Non-owners must be validated as group admins for local settings
+			isAdmin, err := c.Bot.Chat(resolved).IsAdmin(c.SenderID()).Go()
+			if err != nil || !isAdmin {
+				_ = c.Answer().Text("❌ تغییر تنظیمات گروه فقط مخصوص مدیران است!").Alert().Go()
+				c.Abort()
+				return
+			}
+		}
+
+		// 4. Toggle state in memory and GOB database natively
+		errToggle := c.Settings(resolved).Toggle(key).Go()
 		if errToggle != nil {
 			return
 		}
 
-		// Dynamically edit settings menu in-place and answer callback
-		_, _ = c.Edit().Settings().Go()
+		// Edit the settings keyboard in-place dynamically
+		_, _ = c.Edit().Settings(resolved).Go()
 		_ = c.Answer().Go()
 	})
 

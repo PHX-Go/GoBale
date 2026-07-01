@@ -7,10 +7,11 @@ import (
 
 // SettingsChain manages dynamic global variables and dynamic config UI toggles
 type SettingsChain struct {
-	bot *Bot
-	ctx *Ctx
-	key string
-	op  string
+	bot  *Bot
+	ctx  *Ctx
+	key  string
+	op   string
+	chat any // Optional target chat override for remote management
 }
 
 // SettingsGetChain handles safe concurrent read transactions on settings variables
@@ -24,9 +25,13 @@ func (b *Bot) Settings() *SettingsChain {
 	return &SettingsChain{bot: b}
 }
 
-// Settings opens fluent dynamic configuration settings dot system from Ctx context
-func (c *Ctx) Settings() *SettingsChain {
-	return &SettingsChain{bot: c.Bot, ctx: c}
+// Settings opens fluent dynamic configuration settings dot system from Ctx context supporting optional target chats
+func (c *Ctx) Settings(chatID ...any) *SettingsChain {
+	var target any
+	if len(chatID) > 0 {
+		target = chatID[0]
+	}
+	return &SettingsChain{bot: c.Bot, ctx: c, chat: target}
 }
 
 // Register maps a boolean config key directly with its pointer and consolidated dbInstance
@@ -98,15 +103,21 @@ func (s *SettingsChain) Go() error {
 		db := s.bot.dbInstance
 		s.bot.mu.Lock()
 		defer s.bot.mu.Unlock()
-		
+
 		found := false
 		for i := range s.bot.settings {
 			if s.bot.settings[i].Key == s.key {
 				if s.bot.settings[i].IsLocal {
-					// Toggle chat-isolated GOB record dynamically
-					chatID, _ := s.ctx.ChatID()
-					dbKey := fmt.Sprintf("group_config_%v_%s", chatID, s.key)
-					
+					// Toggle chat-isolated GOB record dynamically (supports target chat override)
+					var targetChat any
+					if s.chat != nil {
+						targetChat = s.chat
+					} else {
+						targetChat, _ = s.ctx.ChatID()
+					}
+					resolved := s.bot.ResolveChatID(targetChat)
+					dbKey := fmt.Sprintf("group_config_%v_%s", resolved, s.key)
+
 					current := s.bot.settings[i].Default
 					val, ok := db.Get(dbKey)
 					if ok {
