@@ -2,6 +2,7 @@ package gobale
 
 import (
 	"errors"
+	"fmt"
 )
 
 // SettingsChain manages dynamic global variables and dynamic config UI toggles
@@ -28,14 +29,8 @@ func (c *Ctx) Settings() *SettingsChain {
 	return &SettingsChain{bot: c.Bot, ctx: c}
 }
 
-// Register maps a boolean config key directly with its pointer and local DB
+// Register maps a boolean config key directly with its pointer and consolidated dbInstance
 func (s *SettingsChain) Register(key, label string, ptr *bool) *SettingsChain {
-	s.bot.mu.Lock()
-	if s.bot.settingsDB == nil {
-		s.bot.settingsDB = NewDatabase("gobale_settings.gob")
-	}
-	s.bot.mu.Unlock()
-
 	s.bot.mu.Lock()
 	s.bot.settings = append(s.bot.settings, SettingEntry{
 		Key:   key,
@@ -44,12 +39,25 @@ func (s *SettingsChain) Register(key, label string, ptr *bool) *SettingsChain {
 	})
 	s.bot.mu.Unlock()
 
-	db := s.bot.settingsDB
+	db := s.bot.dbInstance // Fixed: Read from consolidated dbInstance instead of uninitialized settingsDB
 	if val, ok := db.Get(key); ok {
 		if bVal, ok := val.(bool); ok {
 			*ptr = bVal
 		}
 	}
+	return s
+}
+
+// RegisterLocal registers a chat-isolated boolean configuration template
+func (s *SettingsChain) RegisterLocal(key, label string, defaultVal bool) *SettingsChain {
+	s.bot.mu.Lock()
+	s.bot.settings = append(s.bot.settings, SettingEntry{
+		Key:     key,
+		Label:   label,
+		Default: defaultVal,
+		IsLocal: true,
+	})
+	s.bot.mu.Unlock()
 	return s
 }
 
@@ -83,27 +91,35 @@ func (s *SettingsChain) Toggle(key string) *SettingsChain {
 	return s
 }
 
-// Go executes the settings registration or toggle operation with auto error logging
+// Go executes the settings registration or toggle operation with local-state fallback
 func (s *SettingsChain) Go() error {
 	var err error
 	if s.op == "toggle" {
-		s.bot.mu.Lock()
-		if s.bot.settingsDB == nil {
-			s.bot.settingsDB = NewDatabase("gobale_settings.gob")
-		}
-		s.bot.mu.Unlock()
-
-		db := s.bot.settingsDB
+		db := s.bot.dbInstance
 		s.bot.mu.Lock()
 		defer s.bot.mu.Unlock()
+		
 		found := false
 		for i := range s.bot.settings {
 			if s.bot.settings[i].Key == s.key {
-				*s.bot.settings[i].Ptr = !*s.bot.settings[i].Ptr
-
-				// Standardized atomic write using the native Storage interface method Set
-				err = db.Set(s.key, *s.bot.settings[i].Ptr)
-
+				if s.bot.settings[i].IsLocal {
+					// Toggle chat-isolated GOB record dynamically
+					chatID, _ := s.ctx.ChatID()
+					dbKey := fmt.Sprintf("group_config_%v_%s", chatID, s.key)
+					
+					current := s.bot.settings[i].Default
+					val, ok := db.Get(dbKey)
+					if ok {
+						if bVal, okBool := val.(bool); okBool {
+							current = bVal
+						}
+					}
+					err = db.Set(dbKey, !current)
+				} else {
+					// Toggle global pointer variable
+					*s.bot.settings[i].Ptr = !*s.bot.settings[i].Ptr
+					err = db.Set(s.key, *s.bot.settings[i].Ptr)
+				}
 				found = true
 				break
 			}

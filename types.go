@@ -13,6 +13,8 @@ type SettingEntry struct {
 	Key   string
 	Label string
 	Ptr   *bool
+	Default bool
+	IsLocal bool
 }
 
 // Update represents the incoming update envelope from Bale servers

@@ -59,8 +59,8 @@ type Bot struct {
 	defenseOnce        sync.Once
 	editMsg            []Handler
 	cache              *BotCache
-	socketInstance *SocketServer
-	socketMu       sync.Mutex
+	socketInstance     *SocketServer
+	socketMu           sync.Mutex
 	AutoStretch        bool
 }
 
@@ -196,6 +196,34 @@ func (b *BotBuilder) Go() (*Bot, error) {
 	}
 
 	bot.On().Use(Recovery())
+
+	// Register the automatic, secure unified global/local settings toggle handler
+	bot.On().Callback("_sys_cfg").Do(func(c *Ctx) {
+		if c.Update == nil || c.Update.CallbackQuery == nil {
+			return
+		}
+
+		// Security: Verify if the user who clicked is a group administrator
+		isAdmin, err := c.Chat().IsAdmin().Go()
+		if err != nil || !isAdmin {
+			_ = c.Answer().Text("❌ تغییر تنظیمات فقط مخصوص مدیران گروه است!").Alert().Go()
+			c.Abort()
+			return
+		}
+
+		var key string
+		_ = c.ScanCallbackArgs(&key)
+
+		// Toggle state (supports both global variables and chat-isolated GOB records)
+		errToggle := c.Settings().Toggle(key).Go()
+		if errToggle != nil {
+			return
+		}
+
+		// Dynamically edit settings menu in-place and answer callback
+		_, _ = c.Edit().Settings().Go()
+		_ = c.Answer().Go()
+	})
 
 	bot.optimizeForHardware()
 
@@ -877,7 +905,7 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 	c.Keys = nil
 	c.err = nil
 	c.index = -1
-	c.ctx = nil // Prevent stale context references from leaking in GC memory
+	c.ctx = nil     // Prevent stale context references from leaking in GC memory
 	c.prevText = "" // clear previous text value before pool recycling
 	b.ctxPool.Put(c)
 }

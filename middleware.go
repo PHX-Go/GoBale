@@ -359,121 +359,184 @@ func SuperGroupOnly(alert string) Handler {
 	}
 }
 
-// GroupLockGuard deletes messages from non-admins if group is locked, captcha unverified, or user is muted
-func GroupLockGuard(customAlerts ...string) Handler {
-	lockAlert := "⚠️ چت گروه در حال حاضر توسط مدیریت قفل شده است."
-	captchaAlert := "⚠️ کاربر عزیز {name}، چت شما تا زمان تایید هویت مسدود است! لطفاً روی دکمه تایید هویت در پیام خوش‌آمدگویی کلیک کنید."
-	adminMuteAlert := "⚠️ کاربر عزیز {name}، شما توسط مدیریت بی‌صدا (Mute) شده‌اید."
-
-	if len(customAlerts) > 0 {
-		lockAlert = customAlerts[0]
-	}
-	if len(customAlerts) > 1 {
-		captchaAlert = customAlerts[1]
-	}
-	if len(customAlerts) > 2 {
-		adminMuteAlert = customAlerts[2]
+// ChatGuard is a unified single-pass protection middleware with panic-proof checks
+func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handler {
+	defaultWarn := "⚠️ کاربر عزیز {name}، شما اجازه ارسال رسانه از نوع [{type}] را در این چت ندارید!"
+	if customMsg != "" {
+		defaultWarn = customMsg
 	}
 
 	return func(c *Ctx) {
-		if c.Update != nil && c.Update.CallbackQuery != nil {
+		// Panic-Proof Shield: Bypass immediately if message or sender is nil (e.g. Channel posts)
+		if c.Message == nil || c.Message.From == nil {
 			c.Next()
 			return
 		}
 
-		if c.Message == nil || c.Message.From == nil || len(c.Message.NewChatMembers) > 0 || c.Message.LeftChatMember != nil {
+		if c.IsPrivate() {
 			c.Next()
 			return
 		}
 
-		if c.IsGroup() || c.IsSuperGroup() {
-			id, err := c.ChatID()
-			if err == nil {
-				senderID := c.SenderID()
+		chatID, err := c.ChatID()
+		if err != nil {
+			c.Next()
+			return
+		}
 
-				c.Bot.mu.RLock()
-				isOwner := senderID == c.Bot.MaintenanceAdminID
-				c.Bot.mu.RUnlock()
-				if isOwner {
-					c.Next()
-					return
-				}
+		senderID := c.SenderID()
 
-				// query group lock state from DB
-				dbKey := fmt.Sprintf("group_lock_%d", id)
-				val, ok := c.DB().Get(dbKey).Go()
-				locked := false
-				if ok {
-					locked, _ = val.(bool)
-				}
+		// Bypass global administrators and owner
+		c.Bot.mu.RLock()
+		isOwner := senderID == c.Bot.MaintenanceAdminID
+		c.Bot.mu.RUnlock()
+		if isOwner {
+			c.Next()
+			return
+		}
 
-				// query captcha mute state from DB
-				captchaKey := fmt.Sprintf("captcha_mute_%d_%d", id, senderID)
-				valCaptcha, okCaptcha := c.DB().Get(captchaKey).Go()
-				captchaMuted := false
-				if okCaptcha && valCaptcha != nil {
-					if isMuted, ok := valCaptcha.(bool); ok {
-						captchaMuted = isMuted
-					}
-				}
+		isAdmin, errAdmin := c.Chat().IsAdmin().Go()
+		if errAdmin == nil && isAdmin {
+			c.Next()
+			return
+		}
 
-				// query administrative mute state with dynamic expiration check
-				muteKey := fmt.Sprintf("mute_user_%d_%d", id, senderID)
-				valMute, okMute := c.DB().Get(muteKey).Go()
-				muted := false
-				if okMute && valMute != nil {
-					if isMuted, ok := valMute.(bool); ok {
-						muted = isMuted
-					} else {
-						var exp int64
-						if v, ok := valMute.(int64); ok {
-							exp = v
-						} else if v, ok := valMute.(int); ok {
-							exp = int64(v)
-						}
+		db := c.Bot.dbInstance
+		if db == nil {
+			c.Next()
+			return
+		}
 
-						if exp > 0 {
-							if time.Now().UnixNano() > exp {
-								// mute expired, automatically delete key from DB and allow chat
-								_ = c.DB().Del(muteKey).Go()
-								muted = false
-							} else {
-								muted = true
-							}
-						} else {
-							muted = true
-						}
-					}
-				}
+		// 1. Check if group is locked natively
+		lockKey := fmt.Sprintf("group_lock_%d", chatID)
+		if val, ok := db.Get(lockKey); ok {
+			if locked, okBool := val.(bool); okBool && locked {
+				_ = c.Del().Go()
+				_, _ = c.Send().Text("⚠️ چت گروه در حال حاضر توسط مدیریت قفل شده است.").Temp(5 * time.Second).Go()
+				c.Abort()
+				return
+			}
+		}
 
-				if locked || captchaMuted || muted {
-					isAdmin, errAdmin := c.Chat().IsAdmin().Go()
-					if errAdmin == nil {
-						if !isAdmin {
-							_ = c.Del().Go()
+		// 2. Check if captcha unverified or muted natively
+		captchaKey := fmt.Sprintf("captcha_mute_%d_%d", chatID, senderID)
+		if val, ok := db.Get(captchaKey); ok {
+			if isMuted, okBool := val.(bool); okBool && isMuted {
+				_ = c.Del().Go()
+				c.Abort()
+				return
+			}
+		}
 
-							var alertText string
-							if locked && lockAlert != "" {
-								alertText = lockAlert
-							} else if captchaMuted && captchaAlert != "" {
-								alertText = strings.ReplaceAll(captchaAlert, "{name}", c.Message.From.Mention())
-							} else if muted && adminMuteAlert != "" {
-								alertText = strings.ReplaceAll(adminMuteAlert, "{name}", c.Message.From.Mention())
-							}
+		muteKey := fmt.Sprintf("mute_user_%d_%d", chatID, senderID)
+		if val, ok := db.Get(muteKey); ok {
+			if isMuted, okBool := val.(bool); okBool && isMuted {
+				_ = c.Del().Go()
+				c.Abort()
+				return
+			}
+		}
 
-							// only send alert message if the alert text is not empty
-							if alertText != "" {
-								_, _ = c.Send().Text(alertText).Temp(5 * time.Second).Go()
-							}
-							c.Abort()
-							return
-						}
-					} else {
-						c.Log().Warn("Failed to check admin status: %v. Allowing message.", errAdmin).Go()
+		blockedMap := make(map[string]bool)
+
+		// 3. Dynamically map registered group settings directly to media blocks
+		c.Bot.mu.RLock()
+		for _, setting := range c.Bot.settings {
+			if !setting.IsLocal {
+				continue // Skip global settings like maintenance mode
+			}
+			dbKey := fmt.Sprintf("group_config_%d_%s", chatID, setting.Key)
+			if val, ok := db.Get(dbKey); ok {
+				if active, okBool := val.(bool); okBool && active {
+					switch setting.Key {
+					case "g_lock":
+						blockedMap[string(MediaAll)] = true
+					case "g_lock_photo":
+						blockedMap[string(MediaPhoto)] = true
+					case "g_lock_voice":
+						blockedMap[string(MediaVoice)] = true
+					case "g_lock_video":
+						blockedMap[string(MediaVideo)] = true
+					case "g_lock_sticker":
+						blockedMap[string(MediaSticker)] = true
 					}
 				}
 			}
 		}
+		c.Bot.mu.RUnlock()
+
+		// 4. Also check Group-wide manual command restrictions (e.g. /restrict)
+		groupKey := fmt.Sprintf("blocked_media_group_%d", chatID)
+		if groupVal, okGroup := db.Get(groupKey); okGroup {
+			if blockedSlice, okSlice := groupVal.([]string); okSlice {
+				for _, b := range blockedSlice {
+					blockedMap[b] = true
+				}
+			}
+		}
+
+		// 5. Also check Individual user manual command restrictions (e.g. /restrict [userID])
+		userKey := fmt.Sprintf("blocked_media_%d_%d", chatID, senderID)
+		if userVal, okUser := db.Get(userKey); okUser {
+			if blockedSlice, okSlice := userVal.([]string); okSlice {
+				for _, b := range blockedSlice {
+					blockedMap[b] = true
+				}
+			}
+		}
+
+		if len(blockedMap) == 0 {
+			c.Next()
+			return
+		}
+
+		// Detect message media type
+		var detected MediaType
+		var matchedTypeFarsi string
+
+		if len(c.Message.Photo) > 0 {
+			detected = MediaPhoto
+			matchedTypeFarsi = "تصویر"
+		} else if c.Message.Video != nil {
+			detected = MediaVideo
+			matchedTypeFarsi = "ویدیو"
+		} else if c.Message.Audio != nil {
+			detected = MediaAudio
+			matchedTypeFarsi = "فایل صوتی"
+		} else if c.Message.Document != nil {
+			detected = MediaDocument
+			matchedTypeFarsi = "سند (فایل)"
+		} else if c.Message.Voice != nil {
+			detected = MediaVoice
+			matchedTypeFarsi = "پیام صوتی (وویس)"
+		} else if c.Message.Sticker != nil {
+			detected = MediaSticker
+			matchedTypeFarsi = "استیکر"
+		} else if c.Message.Animation != nil {
+			detected = MediaAnimation
+			matchedTypeFarsi = "گیف (انیمیشن)"
+		} else if c.Message.Location != nil {
+			detected = MediaLocation
+			matchedTypeFarsi = "موقعیت مکانی"
+		} else if c.Message.Contact != nil {
+			detected = MediaContact
+			matchedTypeFarsi = "مخاطب"
+		}
+
+		if detected != "" {
+			isBlocked := blockedMap[string(detected)] || blockedMap[string(MediaAll)]
+			if isBlocked {
+				_ = c.Del().Go()
+				if !silent && warnDuration > 0 {
+					warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
+					warn = strings.ReplaceAll(warn, "{type}", matchedTypeFarsi)
+					_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
+				}
+				c.Abort()
+				return
+			}
+		}
+
 		c.Next()
 	}
 }

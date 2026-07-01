@@ -225,19 +225,40 @@ func (s *SendChain) Confirm(yesCallback, noCallback string) *SendChain {
 	return s
 }
 
-// Settings builds the dynamic system configuration keyboard automatically
+// Settings builds the dynamic system configuration keyboard automatically supporting local states
 func (s *SendChain) Settings() *SendChain {
+	resolved := s.bot.ResolveChatID(s.chat)
 	builder := InlineMarkup()
+	
 	s.bot.mu.RLock()
+	db := s.bot.dbInstance
 	for _, entry := range s.bot.settings {
 		status := "🔴 خاموش"
-		if *entry.Ptr {
-			status = "🟢 روشن"
+		if entry.IsLocal {
+			// Read group-isolated config dynamically in-place
+			dbKey := fmt.Sprintf("group_config_%v_%s", resolved, entry.Key)
+			val, ok := db.Get(dbKey)
+			active := entry.Default
+			if ok {
+				if bVal, okBool := val.(bool); okBool {
+					active = bVal
+				}
+			}
+			if active {
+				status = "🟢 روشن"
+			}
+		} else {
+			// Read global pointer configuration state
+			if entry.Ptr != nil && *entry.Ptr {
+				status = "🟢 روشن"
+			}
 		}
+		
 		callbackKey := "_sys_cfg:" + entry.Key
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
 	}
 	s.bot.mu.RUnlock()
+	
 	s.markup = builder.Build()
 	return s
 }
@@ -763,19 +784,43 @@ func (e *EditChain) Paginated(items []InlineKeyboardButton, page, perPage int, p
 	return e
 }
 
-// Settings builds the dynamic system configuration keyboard automatically inside Edit
+// Settings builds the dynamic system configuration keyboard inside Edit supporting local states
 func (e *EditChain) Settings() *EditChain {
+	id, err := e.c.ChatID()
+	if err != nil {
+		return e
+	}
+
 	builder := InlineMarkup()
 	e.c.Bot.mu.RLock()
+	db := e.c.Bot.dbInstance
 	for _, entry := range e.c.Bot.settings {
 		status := "🔴 خاموش"
-		if *entry.Ptr {
-			status = "🟢 روشن"
+		if entry.IsLocal {
+			// Read group-isolated config dynamically in-place
+			dbKey := fmt.Sprintf("group_config_%v_%s", id, entry.Key)
+			val, ok := db.Get(dbKey)
+			active := entry.Default
+			if ok {
+				if bVal, okBool := val.(bool); okBool {
+					active = bVal
+				}
+			}
+			if active {
+				status = "🟢 روشن"
+			}
+		} else {
+			// Read global pointer configuration in-place
+			if entry.Ptr != nil && *entry.Ptr {
+				status = "🟢 روشن"
+			}
 		}
+		
 		callbackKey := "_sys_cfg:" + entry.Key
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
 	}
 	e.c.Bot.mu.RUnlock()
+	
 	e.markup = builder.Build()
 	return e
 }
