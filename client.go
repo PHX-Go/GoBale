@@ -294,6 +294,11 @@ func NewClient(token string) *Client {
 
 // BaseRequest modification inside gobale/client.go:
 func (c *Client) BaseRequest(ctx context.Context, method string, params any, result any) error {
+	// Panic-Proof Shield: Ensure context is never nil
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	
 	if !c.cb.CanExecute() {
 		return fmt.Errorf("circuit breaker is open, api is offline")
 	}
@@ -418,6 +423,11 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 
 // BaseRequestMultipart modification inside gobale/client.go:
 func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params any, files []InputFile, result any) error {
+	// Panic-Proof Shield: Ensure context is never nil
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if !c.cb.CanExecute() {
 		return fmt.Errorf("circuit breaker is open, api is offline")
 	}

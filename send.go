@@ -229,9 +229,9 @@ func (s *SendChain) Confirm(yesCallback, noCallback string) *SendChain {
 func (s *SendChain) Settings() *SendChain {
 	resolved := s.bot.ResolveChatID(s.chat)
 	builder := InlineMarkup()
-	
+
 	s.bot.mu.RLock()
-	db := s.bot.dbInstance
+	db := s.bot.dbInstance // Fixed: Read from consolidated dbInstance instead of uninitialized settingsDB
 	for _, entry := range s.bot.settings {
 		status := "🔴 خاموش"
 		if entry.IsLocal {
@@ -253,12 +253,12 @@ func (s *SendChain) Settings() *SendChain {
 				status = "🟢 روشن"
 			}
 		}
-		
+
 		callbackKey := "_sys_cfg:" + entry.Key
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
 	}
 	s.bot.mu.RUnlock()
-	
+
 	s.markup = builder.Build()
 	return s
 }
@@ -793,7 +793,7 @@ func (e *EditChain) Settings() *EditChain {
 
 	builder := InlineMarkup()
 	e.c.Bot.mu.RLock()
-	db := e.c.Bot.dbInstance
+	db := e.c.Bot.dbInstance // Fixed: Read from consolidated dbInstance instead of uninitialized settingsDB
 	for _, entry := range e.c.Bot.settings {
 		status := "🔴 خاموش"
 		if entry.IsLocal {
@@ -815,12 +815,12 @@ func (e *EditChain) Settings() *EditChain {
 				status = "🟢 روشن"
 			}
 		}
-		
+
 		callbackKey := "_sys_cfg:" + entry.Key
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
 	}
 	e.c.Bot.mu.RUnlock()
-	
+
 	e.markup = builder.Build()
 	return e
 }
@@ -1032,4 +1032,76 @@ func (bc *BroadcastChain) Go() (sent int, failed int) {
 
 	wg.Wait()
 	return
+}
+
+// GroupSettings builds a chat-isolated, dynamic inline settings keyboard
+func (s *SendChain) GroupSettings() *SendChain {
+	resolved := s.bot.ResolveChatID(s.chat)
+	var chatID int64
+	switch v := resolved.(type) {
+	case int64:
+		chatID = v
+	case int:
+		chatID = int64(v)
+	case int32:
+		chatID = int64(v)
+	}
+
+	builder := InlineMarkup()
+	s.bot.mu.RLock()
+	db := s.bot.dbInstance
+	for _, setting := range s.bot.groupSettings {
+		dbKey := fmt.Sprintf("group_config_%d_%s", chatID, setting.Key)
+
+		status := setting.Default
+		if val, ok := db.Get(dbKey); ok {
+			if bVal, okBool := val.(bool); okBool {
+				status = bVal
+			}
+		}
+
+		emoji := "🔴 خاموش"
+		if status {
+			emoji = "🟢 روشن"
+		}
+
+		callbackKey := "_sys_gcfg:" + setting.Key
+		builder.Row(Btn(setting.Label + ": " + emoji).Callback(callbackKey))
+	}
+	s.bot.mu.RUnlock()
+	s.markup = builder.Build()
+	return s
+}
+
+// GroupSettings builds a chat-isolated, dynamic inline settings keyboard inside Edit
+func (e *EditChain) GroupSettings() *EditChain {
+	id, err := e.c.ChatID()
+	if err != nil {
+		return e
+	}
+
+	builder := InlineMarkup()
+	e.c.Bot.mu.RLock()
+	db := e.c.Bot.dbInstance
+	for _, setting := range e.c.Bot.groupSettings {
+		dbKey := fmt.Sprintf("group_config_%d_%s", id, setting.Key)
+
+		status := setting.Default
+		if val, ok := db.Get(dbKey); ok {
+			if bVal, okBool := val.(bool); okBool {
+				status = bVal
+			}
+		}
+
+		emoji := "🔴 خاموش"
+		if status {
+			emoji = "🟢 روشن"
+		}
+
+		callbackKey := "_sys_gcfg:" + setting.Key
+		builder.Row(Btn(setting.Label + ": " + emoji).Callback(callbackKey))
+	}
+	e.c.Bot.mu.RUnlock()
+	e.markup = builder.Build()
+	return e
 }

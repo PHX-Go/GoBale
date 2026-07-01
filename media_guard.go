@@ -61,10 +61,11 @@ func (m *MediaGuardChain) DelCmds() *MediaGuardChain {
 	return m
 }
 
-// Go completes building the chain, registering middlewares and optional commands
+// Go completes building the chain, registering unified ChatGuard and optional commands
 func (m *MediaGuardChain) Go() *OnChain {
 	m.on.bot.mu.Lock()
-	m.on.bot.middlewares = append(m.on.bot.middlewares, UserMediaGuard(m.warnDuration, m.customMsg, m.silent))
+	// Registers the unified multi-purpose ChatGuard middleware
+	m.on.bot.middlewares = append(m.on.bot.middlewares, ChatGuard(m.warnDuration, m.customMsg, m.silent))
 	m.on.bot.mu.Unlock()
 
 	if m.useCommands {

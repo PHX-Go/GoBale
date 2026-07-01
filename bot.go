@@ -62,6 +62,7 @@ type Bot struct {
 	socketInstance     *SocketServer
 	socketMu           sync.Mutex
 	AutoStretch        bool
+	groupSettings      []GroupSetting
 }
 
 type BotBuilder struct {
@@ -75,6 +76,13 @@ type BotBuilder struct {
 	adminID    int64
 	safirKey   string
 	safirBotID int64
+}
+
+// GroupSetting represents a chat-isolated boolean config template
+type GroupSetting struct {
+	Key     string
+	Label   string
+	Default bool
 }
 
 // DryRun configures the bot to run in sandbox mode without sending physical messages
@@ -1206,4 +1214,15 @@ func (b *Bot) Socket() *SocketServer {
 		}
 	}
 	return b.socketInstance
+}
+
+// RegisterGroupSetting registers a chat-isolated configuration toggle
+func (b *Bot) RegisterGroupSetting(key, label string, defaultVal bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.groupSettings = append(b.groupSettings, GroupSetting{
+		Key:     key,
+		Label:   label,
+		Default: defaultVal,
+	})
 }

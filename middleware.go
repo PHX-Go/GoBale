@@ -441,7 +441,7 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 
 		// 3. Dynamically map registered group settings directly to media blocks
 		c.Bot.mu.RLock()
-		for _, setting := range c.Bot.settings {
+		for _, setting := range c.Bot.settings { // Fixed: Read from settings instead of groupSettings
 			if !setting.IsLocal {
 				continue // Skip global settings like maintenance mode
 			}
