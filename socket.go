@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -16,15 +15,20 @@ import (
 	"time"
 )
 
-// SocketClient manages individual raw hijacked tcp websocket client connection
+// Standard WebSocket keep-alive constants
+const (
+	pingPeriod  = 15 * time.Second // Interval to send ping frames
+	readTimeout = 20 * time.Second // Max time to wait for client pong/frame
+)
+
+// SocketClient manages individual upgraded raw WebSocket connections
 type SocketClient struct {
 	conn     net.Conn
 	bufrw    *bufio.ReadWriter
 	mu       sync.Mutex
 	Handlers map[string]func(string)
 	server   *SocketServer
-	// channel to stop the background ping ticker goroutine on disconnect
-	pingStop chan struct{}
+	pingStop chan struct{} // Stop channel for background heartbeat loop
 }
 
 // On registers a custom socket event handler
@@ -32,10 +36,11 @@ func (sc *SocketClient) On(event string, h func(string)) {
 	sc.Handlers[event] = h
 }
 
-// Send transmits a raw text message directly to the browser client
+// Send transmits a raw text message directly to the browser client with write deadlines
 func (sc *SocketClient) Send(msg string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	_ = sc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_ = writeFrame(sc.conn, []byte(msg))
 }
 
@@ -51,40 +56,70 @@ func (sc *SocketClient) EmitJSON(event string, data any) {
 	if err != nil {
 		return
 	}
+	_ = sc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_ = writeFrame(sc.conn, jsonBytes)
 }
 
-// Close closes the hijacked socket connection
+// Close closes the upgraded socket connection safely
 func (sc *SocketClient) Close() {
 	_ = sc.conn.Close()
 }
 
-// listen reads incoming unmasked frames and routes events asynchronously
+// pingLoop writes periodic ping frames to keep the connection alive
+func (sc *SocketClient) pingLoop() {
+	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			sc.mu.Lock()
+			_ = sc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			// Send WebSocket Ping frame (FIN=1, Opcode=9, Length=0)
+			_, err := sc.conn.Write([]byte{0x89, 0x00})
+			sc.mu.Unlock()
+			if err != nil {
+				sc.Close()
+				return
+			}
+		case <-sc.pingStop:
+			return
+		}
+	}
+}
+
+// listen reads incoming upgraded frames with strict read deadlines
 func (sc *SocketClient) listen() {
 	defer func() {
 		sc.server.clients.Delete(sc)
+		close(sc.pingStop) // Terminate background heartbeat loop
 		sc.Close()
 	}()
 
 	for {
+		_ = sc.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		payload, opcode, err := readFrame(sc.bufrw.Reader)
 		if err != nil {
 			return
 		}
 
-		// opcode 9 represents standard WebSocket Ping frame from browser
-		if opcode == 9 {
-			// Send standard WebSocket Pong frame (FIN=1, Opcode=10, Length=0)
-			_, _ = sc.conn.Write([]byte{0x8A, 0x00})
+		if opcode == 10 {
+			// Received Pong from client, read deadline extended automatically
 			continue
 		}
 
-		// opcode 8 represents connection close frame
-		if opcode == 8 {
-			return
+		if opcode == 9 {
+			// Received Ping from client, respond with Pong (FIN=1, Opcode=10, Length=0)
+			sc.mu.Lock()
+			_ = sc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_, _ = sc.conn.Write([]byte{0x8A, 0x00})
+			sc.mu.Unlock()
+			continue
 		}
 
-		// opcode 1 represents standard raw text frame
+		if opcode == 8 {
+			return // Connection close frame received
+		}
+
 		if opcode == 1 {
 			msg := string(payload)
 			if sc.server.onMessage != nil {
@@ -102,6 +137,7 @@ type SocketServer struct {
 	onMessage func(*SocketClient, string)
 	clients   sync.Map
 	srv       *http.Server
+	srvMu     sync.Mutex
 }
 
 // Addr registers custom websocket listening port address
@@ -144,14 +180,16 @@ func (ss *SocketServer) BroadcastJSON(event string, data any) {
 
 // Go initializes the mux router, handles static files and runs server in background
 func (ss *SocketServer) Go() {
-	mux := http.NewServeMux()
+	ss.srvMu.Lock()
+	if ss.srv != nil {
+		ss.srvMu.Unlock()
+		return
+	}
 
-	// serve index.html directly on root path to bypass browser file:// security blocks
+	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "index.html")
 	})
-
-	// handle raw websocket requests on path /ws
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
@@ -166,15 +204,13 @@ func (ss *SocketServer) Go() {
 		Addr:    ss.addr,
 		Handler: mux,
 	}
+	ss.srvMu.Unlock()
 
-	go func() {
-		_ = ss.srv.ListenAndServe()
-	}()
+	_ = ss.srv.ListenAndServe()
 }
 
 // ServeHTTP implements standard net/http handler interface with clean CORS and handshake execution
 func (ss *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// validate secure connection token from query params against env configuration
 	secret := GetEnv[string]("SOCKET_TOKEN")
 	if secret != "" && r.URL.Query().Get("token") != secret {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -188,14 +224,14 @@ func (ss *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &SocketClient{
-		conn:   conn,
-		bufrw:  bufrw,
-		server: ss,
+		conn:     conn,
+		bufrw:    bufrw,
+		server:   ss,
+		pingStop: make(chan struct{}),
 	}
 
 	ss.clients.Store(client, true)
 
-	// immediately emit welcome json packet to browser client natively
 	welcomePacket := map[string]any{
 		"username": "سیستم مانیتورینگ",
 		"userId":   123456789,
@@ -207,6 +243,7 @@ func (ss *SocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go ss.onConnect(client)
 	}
 
+	go client.pingLoop() // Start background keep-alive heartbeat loop
 	client.listen()
 }
 
@@ -234,16 +271,12 @@ func handshake(w http.ResponseWriter, r *http.Request) (net.Conn, *bufio.ReadWri
 	h.Write([]byte(key + magic))
 	accept := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
-	log.Printf("[DEBUG HANDSHAKE] Key: %q, Accept: %q", key, accept)
-
-	// write handshake headers directly to raw TCP connection to bypass bufio buffering
 	handshakeStr := "HTTP/1.1 101 Switching Protocols\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
 		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
 
 	_, _ = conn.Write([]byte(handshakeStr))
-
 	time.Sleep(10 * time.Millisecond)
 
 	return conn, bufrw, nil
@@ -264,13 +297,14 @@ func readFrame(r *bufio.Reader) ([]byte, byte, error) {
 	hasMask := (b2 & 0x80) != 0
 	length := int(b2 & 0x7F)
 
-	if length == 126 {
+	switch length {
+	case 126:
 		lenBytes := make([]byte, 2)
 		if _, err := io.ReadFull(r, lenBytes); err != nil {
 			return nil, 0, err
 		}
 		length = int(binary.BigEndian.Uint16(lenBytes))
-	} else if length == 127 {
+	case 127:
 		lenBytes := make([]byte, 8)
 		if _, err := io.ReadFull(r, lenBytes); err != nil {
 			return nil, 0, err

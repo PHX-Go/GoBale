@@ -31,7 +31,7 @@ func (d *DashChain) Addr(a string) *DashChain {
 	return d
 }
 
-// Go fires the dashboard monitoring service
+// Go fires the dashboard monitoring service and starts unified WebSocket streaming
 func (d *DashChain) Go() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -39,6 +39,8 @@ func (d *DashChain) Go() error {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	// Legacy fallback API endpoint
 	mux.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -70,6 +72,19 @@ func (d *DashChain) Go() error {
 		}
 		_ = json.NewEncoder(w).Encode(payload)
 	})
+
+	// Unified WebSocket endpoint hosted directly on the same dashboard port (e.g. :8080/ws)
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// Upgrade connection using the native SocketServer upgrade engine
+		d.bot.Socket().ServeHTTP(w, r)
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			w.WriteHeader(http.StatusNotFound)
@@ -78,6 +93,38 @@ func (d *DashChain) Go() error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(htmlPage))
 	})
+
+	// Periodically stream real-time metrics over WebSocket to all active dashboard clients
+	d.bot.Task().Every(1*time.Second, func() {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		activeS := 0
+		if d.bot.Sessions != nil {
+			activeS = d.bot.Sessions.GetSessionsCount()
+		}
+		dbKeys := 0
+		if db, ok := d.bot.dbInstance.(*Database); ok {
+			db.mu.RLock()
+			dbKeys = len(db.store)
+			db.mu.RUnlock()
+		}
+		activeShield, _ := d.bot.Shield().IsActive().Go()
+		payload := map[string]any{
+			"cpu_percent":     getCPUUsage(),
+			"alloc_mb":        float64(m.Alloc) / (1024 * 1024),
+			"sys_mb":          float64(m.Sys) / (1024 * 1024),
+			"queue_depth":     len(d.bot.workerChan),
+			"goroutines":      runtime.NumGoroutine(),
+			"total_updates":   atomic.LoadUint64(&d.bot.totalUpdates),
+			"latency_ms":      float64(atomic.LoadInt64(&d.bot.Client.NetLatencyNs)) / 1000000.0,
+			"active_sessions": activeS,
+			"db_keys":         dbKeys,
+			"num_gc":          m.NumGC,
+			"shield_active":   activeShield,
+		}
+		d.bot.Socket().BroadcastJSON("metrics", payload)
+	})
+
 	log.Printf("dashboard server is running on http://localhost%s", d.addr)
 	server := &http.Server{
 		Addr:         d.addr,
@@ -123,7 +170,7 @@ func getCPUUsage() float64 {
 	return percent
 }
 
-// htmlPage contains the embedded visual mantiroing layout
+// htmlPage contains the embedded visual monitoring layout with resilient WS client
 const htmlPage = `
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -146,12 +193,12 @@ const htmlPage = `
                         <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                         <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                     </span>
-                    مانیتورینگ بله
+                    مانیتورینگ بله <span class="text-[10px] font-normal text-emerald-500 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-900/30">Unified Port</span>
                 </h1>
                 <p class="text-[10px] md:text-xs text-zinc-500 mt-0.5">وضعیت آنلاین منابع سرور و همروندی</p>
             </div>
-            <div id="shield-badge" class="px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300">
-                در حال بارگذاری...
+            <div id="shield-badge" class="px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-zinc-900 border border-zinc-800">
+                در حال اتصال به سرور...
             </div>
         </header>
 
@@ -265,60 +312,91 @@ const htmlPage = `
     </div>
 
     <script>
-        async function updateMetrics() {
-            try {
-                const res = await fetch('/api/metrics');
-                const data = await res.json();
+        // Resilient WebSocket client that automatically connects to the same port on /ws
+        const wsUri = "ws://" + window.location.host + "/ws";
+        let websocket;
 
-                const cpuVal = data.cpu_percent;
-                document.getElementById('cpu-percent').innerText = cpuVal.toFixed(2) + '%';
-                const cpuBar = document.getElementById('cpu-bar');
-                cpuBar.style.width = Math.min(cpuVal, 100) + '%';
-                
-                if (cpuVal > 80) {
-                    cpuBar.className = 'bg-red-500 h-1 rounded-full transition-all duration-500';
-                } else if (cpuVal > 40) {
-                    cpuBar.className = 'bg-amber-500 h-1 rounded-full transition-all duration-500';
-                } else {
-                    cpuBar.className = 'bg-emerald-500 h-1 rounded-full transition-all duration-500';
+        function initWebSocket() {
+            websocket = new WebSocket(wsUri);
+            
+            websocket.onopen = function() {
+                const badge = document.getElementById('shield-badge');
+                badge.innerText = "متصل به WebSocket Stream";
+                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30";
+            };
+
+            websocket.onmessage = function(evt) {
+                try {
+                    const data = JSON.parse(evt.data);
+                    if (data.action === "metrics") {
+                        renderMetrics(data.payload);
+                    }
+                } catch (e) {
+                    console.error("Failed to parse WS packet", e);
                 }
+            };
 
-                document.getElementById('alloc-mb').innerHTML = data.alloc_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
-                document.getElementById('sys-mb').innerHTML = data.sys_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
+            websocket.onclose = function() {
+                const badge = document.getElementById('shield-badge');
+                badge.innerText = "قطع ارتباط! تلاش برای اتصال مجدد...";
+                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-red-950/40 text-red-400 border border-red-900/30 animate-pulse";
                 
-                const qVal = data.queue_depth;
-                document.getElementById('queue-depth').innerHTML = qVal + ' <span class="text-[10px] font-normal text-zinc-500">/ 1000</span>';
-                document.getElementById('queue-bar').style.width = Math.min((qVal / 1000) * 100, 100) + '%';
+                // Resilient auto-reconnect loop
+                setTimeout(initWebSocket, 2000);
+            };
 
-                document.getElementById('total-updates').innerText = data.total_updates.toLocaleString();
-                
-                const latencyVal = data.latency_ms;
-                if (latencyVal > 0) {
-                    document.getElementById('latency-ms').innerHTML = latencyVal.toFixed(1) + ' <span class="text-[10px] font-normal text-zinc-500">ms</span>';
-                } else {
-                    document.getElementById('latency-ms').innerHTML = '<span class="text-xs font-normal text-zinc-500">در انتظار درخواست...</span>';
-                }
-                
-                document.getElementById('num-gc').innerText = data.num_gc.toLocaleString();
-                document.getElementById('goroutines').innerText = data.goroutines.toLocaleString();
-                document.getElementById('active-sessions').innerText = data.active_sessions.toLocaleString();
-                document.getElementById('db-keys').innerText = data.db_keys.toLocaleString();
+            websocket.onerror = function(err) {
+                websocket.close();
+            };
+        }
 
-                const shieldBadge = document.getElementById('shield-badge');
-                if (data.shield_active === true) {
-                    shieldBadge.className = 'px-2 py-0.5 rounded text-[10px] md:text-xs font-bold bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1';
-                    shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span> سپر دفاعی فعال';
-                } else {
-                    shieldBadge.className = 'px-2 py-0.5 rounded text-[10px] md:text-xs font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 flex items-center gap-1';
-                    shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span></span> وضعیت عادی';
-                }
-            } catch (e) {
-                console.error("Failed to fetch metrics", e);
+        function renderMetrics(data) {
+            const cpuVal = data.cpu_percent;
+            document.getElementById('cpu-percent').innerText = cpuVal.toFixed(2) + '%';
+            const cpuBar = document.getElementById('cpu-bar');
+            cpuBar.style.width = Math.min(cpuVal, 100) + '%';
+            
+            if (cpuVal > 80) {
+                cpuBar.className = 'bg-red-500 h-1 rounded-full transition-all duration-500';
+            } else if (cpuVal > 40) {
+                cpuBar.className = 'bg-amber-500 h-1 rounded-full transition-all duration-500';
+            } else {
+                cpuBar.className = 'bg-emerald-500 h-1 rounded-full transition-all duration-500';
+            }
+
+            document.getElementById('alloc-mb').innerHTML = data.alloc_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
+            document.getElementById('sys-mb').innerHTML = data.sys_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
+            
+            const qVal = data.queue_depth;
+            document.getElementById('queue-depth').innerHTML = qVal + ' <span class="text-[10px] font-normal text-zinc-500">/ 1000</span>';
+            document.getElementById('queue-bar').style.width = Math.min((qVal / 1000) * 100, 100) + '%';
+
+            document.getElementById('total-updates').innerText = data.total_updates.toLocaleString();
+            
+            const latencyVal = data.latency_ms;
+            if (latencyVal > 0) {
+                document.getElementById('latency-ms').innerHTML = latencyVal.toFixed(1) + ' <span class="text-[10px] font-normal text-zinc-500">ms</span>';
+            } else {
+                document.getElementById('latency-ms').innerHTML = '<span class="text-xs font-normal text-zinc-500">در انتظار درخواست...</span>';
+            }
+            
+            document.getElementById('num-gc').innerText = data.num_gc.toLocaleString();
+            document.getElementById('goroutines').innerText = data.goroutines.toLocaleString();
+            document.getElementById('active-sessions').innerText = data.active_sessions.toLocaleString();
+            document.getElementById('db-keys').innerText = data.db_keys.toLocaleString();
+
+            const shieldBadge = document.getElementById('shield-badge');
+            // Check shield active status dynamically and update badge
+            if (data.shield_active === true) {
+                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span> سپر دفاعی فعال';
+                shieldBadge.className = 'px-2 py-0.5 rounded text-[10px] md:text-xs font-bold bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1';
+            } else {
+                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span></span> وضعیت عادی';
+                shieldBadge.className = 'px-2 py-0.5 rounded text-[10px] md:text-xs font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 flex items-center gap-1';
             }
         }
 
-        updateMetrics();
-        setInterval(updateMetrics, 1000);
+        initWebSocket();
     </script>
 </body>
 </html>

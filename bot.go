@@ -1258,3 +1258,19 @@ func (b *Bot) RegisterGroupSetting(key, label string, defaultVal bool) {
 		Default: defaultVal,
 	})
 }
+
+// ClearQueue drains the unexported buffered worker channel instantly and returns the count of deleted updates
+func (b *Bot) ClearQueue() int {
+	drained := 0
+Draining:
+	for len(b.workerChan) > 0 {
+		select {
+		case <-b.workerChan:
+			drained++
+		default:
+			// Breaks out of the labeled "Draining" loop safely
+			break Draining
+		}
+	}
+	return drained
+}
