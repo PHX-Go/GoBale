@@ -264,7 +264,7 @@ func NewClient(token string) *Client {
 		baseURL:   "https://tapi.bale.ai/bot",
 		rateLimit: NewRL(30, time.Second),
 		cb:        NewCB(5, 30*time.Second),
-		fileCache: NewFC("gobale_file_cache.db"),
+		fileCache: NewFC(DataPath("gobale_file_cache.db")),
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: transport,

@@ -3,6 +3,7 @@ package gobale
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,11 +53,14 @@ type AnalyticsResult struct {
 
 var analyticsOnce sync.Once
 
+// Compiled regex pattern to identify raw domains (e.g. google.com) and secure/insecure link layouts
+var rxLinkPattern = regexp.MustCompile(`(?i)(https?://)?([a-zA-Z0-9-]+\.)+(com|ir|net|org|co|info|biz|cc|me|ble\.ir)(/[^\s]*)?`)
+
 // initAnalyticsDB dynamically instantiates the analytics GOB database only when activated
 func (b *Bot) initAnalyticsDB() {
 	analyticsOnce.Do(func() {
 		if b.analyticsDB == nil {
-			b.analyticsDB = NewDatabase("gobale_analytics.gob")
+			b.analyticsDB = NewDatabase(DataPath("gobale_analytics.gob"))
 		}
 	})
 }
@@ -150,7 +154,8 @@ func AnalyticsLogger() Handler {
 				logMetric("command", 1)
 			}
 
-			hasLink := strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "ble.ir/")
+			// Smart Link & Domain Pattern Matching
+			hasLink := rxLinkPattern.MatchString(text)
 			if hasLink {
 				logMetric("links", 1)
 			}

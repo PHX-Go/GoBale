@@ -155,7 +155,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		b.workers = 2
 	}
 
-	store := NewGOBStore("gobale_sessions.gob")
+	store := NewGOBStore(DataPath("gobale_sessions.gob"))
 	_ = store.Load()
 
 	bot := &Bot{
@@ -168,8 +168,8 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		states:     make(map[string][]Handler),
 		callbacks:  make(map[string][]Handler),
 		Blacklist:  make(map[int64]bool),
-		dbInstance: NewDatabase("gobale_database.gob"),
-		settingsDB: NewDatabase("gobale_settings.gob"),
+		dbInstance: NewDatabase(DataPath("gobale_database.gob")),
+		settingsDB: NewDatabase(DataPath("gobale_settings.gob")),
 		cache:      newBotCache(),
 		safirKey:   b.safirKey,
 		safirBotID: b.safirBotID,

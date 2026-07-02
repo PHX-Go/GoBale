@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -499,4 +500,12 @@ func (w *WebappChain) Go() (bool, error) {
 	}
 
 	return true, nil
+}
+
+// DataPath ensures the "data" directory exists and returns an OS-independent path
+func DataPath(filename string) string {
+	// Auto-creates "data" directory recursively if it does not exist
+	_ = os.MkdirAll("data", 0755)
+	// Joins path using OS-specific path separators safely
+	return filepath.Join("data", filename)
 }
