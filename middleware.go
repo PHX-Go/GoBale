@@ -1073,8 +1073,11 @@ func MandatoryAddGuard(defaultLimit int) Handler {
 							valInvites, okInvites := c.DB().Get(userInvitesKey).Go()
 							invites := 0
 							if okInvites {
+								// Support both int and int64 gob decoding formats safely
 								if i, ok := valInvites.(int); ok {
 									invites = i
+								} else if i, ok := valInvites.(int64); ok {
+									invites = int(i)
 								}
 							}
 

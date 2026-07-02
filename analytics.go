@@ -121,7 +121,10 @@ func AnalyticsLogger() Handler {
 					current = int64(iVal)
 				}
 			}
-			dbConcrete.store[key] = current + delta
+			newVal := current + delta
+			dbConcrete.store[key] = newVal
+			// Append WAL record to persist increment safely
+			dbConcrete.appendWAL(walEntry{Op: walSet, Key: key, Val: newVal})
 		}
 
 		// Helper to increment both daily and lifetime keyspaces
@@ -405,5 +408,7 @@ func (a *AnalyticsChain) purgeDailyStats(chatID int64) {
 
 	for _, k := range keysToDel {
 		delete(dbConcrete.store, k)
+		// Append WAL record to persist deletion cleanly
+		dbConcrete.appendWAL(walEntry{Op: walDel, Key: k})
 	}
 }

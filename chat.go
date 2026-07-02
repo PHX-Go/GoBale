@@ -577,6 +577,15 @@ func (ia *IsAdminChain) Go() (bool, error) {
 	} else {
 		return false, errors.New("cannot determine target user ID")
 	}
+
+	// Try loading admin status from cache
+	cacheKey := fmt.Sprintf("is_admin:%v:%d", resolved, targetUserID)
+	if cachedVal, ok := ia.cc.bot.Cache().Get(cacheKey).Go(); ok {
+		if isAdmin, okBool := cachedVal.(bool); okBool {
+			return isAdmin, nil
+		}
+	}
+
 	var member ChatMember
 	err := ia.cc.bot.BaseRequest(ia.cc.ctx, "getChatMember", map[string]any{
 		"chat_id": resolved,
@@ -587,6 +596,10 @@ func (ia *IsAdminChain) Go() (bool, error) {
 		return false, err
 	}
 	isAdmin := member.Status == "administrator" || member.Status == "creator"
+
+	// Cache admin status for 5 minutes
+	ia.cc.bot.Cache().Set(cacheKey, isAdmin, 5*time.Minute).Go()
+
 	return isAdmin, nil
 }
 

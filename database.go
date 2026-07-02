@@ -313,17 +313,19 @@ func (db *Database) Close() error {
 	close(db.closeChan)
 	db.wg.Wait()
 
-	// Final compact to make sure everything is persisted
-	if err := db.compact(); err != nil {
-		return err
-	}
+	// Execute final compaction
+	compactErr := db.compact()
 
+	// Ensure WAL file is closed regardless of compact result
 	db.walMu.Lock()
-	defer db.walMu.Unlock()
-	return db.walF.Close()
-}
+	closeErr := db.walF.Close()
+	db.walMu.Unlock()
 
-// ── Fluent chain (unchanged API) ──────────────────────────────────────────────
+	if compactErr != nil {
+		return compactErr
+	}
+	return closeErr
+}
 
 // DBChain provides a unified fluent state editor on top of abstract Storage methods
 type DBChain struct {
