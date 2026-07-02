@@ -1115,3 +1115,89 @@ func (e *EditChain) GroupSettings() *EditChain {
 	e.markup = builder.Build()
 	return e
 }
+
+// BotEditChain manages fluent message edits from a Bot context
+type BotEditChain struct {
+	bot       *Bot
+	ctx       context.Context
+	chat      any
+	messageID int64
+	text      string
+	caption   string
+	markup    any
+	pm        string
+}
+
+// Edit opens the fluent editing dot system from Bot context using target chat and message ID
+func (b *Bot) Edit(chat any, messageID int64) *BotEditChain {
+	return &BotEditChain{
+		bot:       b,
+		ctx:       context.Background(),
+		chat:      chat,
+		messageID: messageID,
+	}
+}
+
+// Text registers new text body for editing from Bot context
+func (e *BotEditChain) Text(t string) *BotEditChain {
+	e.text = t
+	return e
+}
+
+// Caption registers new caption body for editing from Bot context
+func (e *BotEditChain) Caption(c string) *BotEditChain {
+	e.caption = c
+	return e
+}
+
+// Markup appends updated markup keyboard from Bot context
+func (e *BotEditChain) Markup(m any) *BotEditChain {
+	e.markup = m
+	return e
+}
+
+// Markdown enables Markdown styling rules for edited text from Bot context
+func (e *BotEditChain) Markdown() *BotEditChain {
+	e.pm = "Markdown"
+	return e
+}
+
+// Go executes the edit operation on Bale servers from Bot context
+func (e *BotEditChain) Go() (*Message, error) {
+	resolved := e.bot.ResolveChatID(e.chat)
+	var method string
+	payload := map[string]any{
+		"chat_id":    resolved,
+		"message_id": e.messageID,
+	}
+
+	switch {
+	case e.text != "":
+		method = "editMessageText"
+		payload["text"] = e.text
+		if e.pm != "" {
+			payload["parse_mode"] = e.pm
+		}
+		if e.markup != nil {
+			payload["reply_markup"] = e.markup
+		}
+	case e.caption != "":
+		method = "editMessageCaption"
+		payload["caption"] = e.caption
+		if e.markup != nil {
+			payload["reply_markup"] = e.markup
+		}
+	case e.markup != nil:
+		method = "editMessageReplyMarkup"
+		payload["reply_markup"] = e.markup
+	default:
+		return nil, errors.New("empty edit parameters")
+	}
+
+	var msg Message
+	err := e.bot.BaseRequest(e.ctx, method, payload, &msg)
+	if err != nil {
+		logErr(e.bot, "[Bot Edit Error] ", err)
+	}
+	return &msg, err
+}

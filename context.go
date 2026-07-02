@@ -242,30 +242,48 @@ func (a *AnswerChain) Go() error {
 
 // File initializes file management and actions chain using ID
 func (c *Ctx) File(fileID string) *FileChain {
+	origName := ""
+	// Extract original filename if the file is sent in the current message context
+	if c.Message != nil {
+		if c.Message.Document != nil && c.Message.Document.FileID == fileID {
+			origName = c.Message.Document.FileName
+		} else if c.Message.Audio != nil && c.Message.Audio.FileID == fileID {
+			origName = c.Message.Audio.FileName
+		} else if c.Message.Video != nil && c.Message.Video.FileID == fileID {
+			origName = c.Message.Video.FileName
+		}
+	}
 	return &FileChain{
-		bot: c.Bot,
-		ctx: c.ctx,
-		id:  fileID,
+		bot:      c.Bot,
+		ctx:      c.ctx,
+		id:       fileID,
+		origName: origName,
 	}
 }
 
-// FileChain provides generic container for file ID scope operations
+// FileChain provides generic container for file ID scope operations with original name support
 type FileChain struct {
-	bot *Bot
-	ctx context.Context
-	id  string
+	bot      *Bot
+	ctx      context.Context
+	id       string
+	origName string // Original filename passed from context
 }
 
 // Download starts file downloading fluent chain
 func (f *FileChain) Download() *DownloadChain {
-	return &DownloadChain{fc: f}
+	return &DownloadChain{
+		fc:   f,
+		name: f.origName, // Pre-populate with the original filename automatically
+	}
 }
 
-// DownloadChain manages physical file write configurations
+// DownloadChain manages physical file write configurations with concurrent pool support
 type DownloadChain struct {
-	fc   *FileChain
-	path string
-	name string
+	fc         *FileChain
+	path       string
+	name       string
+	onProgress func(percent float64)
+	useQueue   bool
 }
 
 // Name registers a custom filename (including extension) to save the file as
@@ -277,6 +295,18 @@ func (d *DownloadChain) Name(n string) *DownloadChain {
 // Path configures directory target to save the file
 func (d *DownloadChain) Path(p string) *DownloadChain {
 	d.path = p
+	return d
+}
+
+// OnProgress registers a callback triggered during download progress updates (1% to 100%)
+func (d *DownloadChain) OnProgress(fn func(percent float64)) *DownloadChain {
+	d.onProgress = fn
+	return d
+}
+
+// Queue configures the download to run asynchronously in a concurrent background worker queue
+func (d *DownloadChain) Queue() *DownloadChain {
+	d.useQueue = true
 	return d
 }
 
@@ -293,23 +323,12 @@ func (d *DownloadChain) Go() (string, error) {
 		return "", err
 	}
 	url := "https://tapi.bale.ai/file/bot" + d.fc.bot.Client.token + "/" + fileInfo.FilePath
-	req, err := http.NewRequestWithContext(d.fc.ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := d.fc.bot.Client.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
 
-	// Use custom name if provided, otherwise fallback to filepath.Base
+	// Build destination path using sanitized filename
 	fileName := d.name
 	if fileName == "" {
 		fileName = filepath.Base(fileInfo.FilePath)
 	}
-
-	// Sanitize forbidden filename characters (colons, slashes, etc.) to prevent OS errors
 	repl := strings.NewReplacer(
 		":", "_",
 		"*", "_",
@@ -320,19 +339,175 @@ func (d *DownloadChain) Go() (string, error) {
 		"\"", "_",
 	)
 	fileName = repl.Replace(fileName)
-
-	// Build destination path using sanitized filename
 	destPath := filepath.Join(d.path, fileName)
+
 	if err := os.MkdirAll(d.path, 0755); err != nil {
 		return "", err
 	}
+
+	// Dispatch job through the concurrent download queue
+	if d.useQueue {
+		d.fc.bot.InitDownloadPool()
+		resultChan := make(chan error, 1)
+
+		job := &DownloadJob{
+			url:        url,
+			destPath:   destPath,
+			totalSize:  fileInfo.FileSize,
+			ctx:        d.fc.ctx,
+			client:     d.fc.bot.Client.httpClient,
+			onProgress: d.onProgress,
+			resultChan: resultChan,
+		}
+
+		globalDownloadPool.jobChan <- job
+		err = <-resultChan // Wait until the worker pool picks up and finishes the download
+		return destPath, err
+	}
+
+	// Standard synchronous download
+	req, err := http.NewRequestWithContext(d.fc.ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := d.fc.bot.Client.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
 	out, err := os.Create(destPath)
 	if err != nil {
 		return "", err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, resp.Body)
+
+	// Use HTTP Content-Length header as the absolute source of truth for file size
+	totalSize := resp.ContentLength
+	if totalSize <= 0 {
+		totalSize = fileInfo.FileSize
+	}
+
+	var src io.Reader = resp.Body
+	if d.onProgress != nil {
+		src = &progressReader{
+			r:          resp.Body,
+			total:      totalSize, // Set accurate size
+			onProgress: d.onProgress,
+		}
+	}
+
+	_, err = io.Copy(out, src)
 	return destPath, err
+}
+
+// progressReader wraps io.Reader to track and throttle download progress events
+type progressReader struct {
+	r          io.Reader
+	total      int64
+	read       int64
+	lastPct    int
+	onProgress func(percent float64)
+}
+
+// Read implements standard io.Reader interface with progress notification
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.r.Read(p)
+	pr.read += int64(n)
+	if pr.total > 0 && pr.onProgress != nil && n > 0 {
+		pct := int(float64(pr.read) / float64(pr.total) * 100.0)
+		// Trigger callback only when integer percentage increases to prevent flooding
+		if pct > pr.lastPct {
+			pr.lastPct = pct
+			pr.onProgress(float64(pct))
+		}
+	}
+	return n, err
+}
+
+// DownloadJob encapsulates task state for background queue pipeline
+type DownloadJob struct {
+	url        string
+	destPath   string
+	totalSize  int64
+	ctx        context.Context
+	client     *http.Client
+	onProgress func(percent float64)
+	resultChan chan error
+}
+
+// DownloadPool manages bounded concurrent downloads using background workers
+type DownloadPool struct {
+	jobChan chan *DownloadJob
+	workers int
+	once    sync.Once
+}
+
+// start spawns concurrent download workers
+func (dp *DownloadPool) start(workers int) {
+	dp.once.Do(func() {
+		dp.jobChan = make(chan *DownloadJob, 1000)
+		dp.workers = workers
+		for i := 0; i < workers; i++ {
+			go func() {
+				for job := range dp.jobChan {
+					job.resultChan <- executeDownloadJob(job)
+				}
+			}()
+		}
+	})
+}
+
+// executeDownloadJob processes a single download task synchronously
+func executeDownloadJob(job *DownloadJob) error {
+	req, err := http.NewRequestWithContext(job.ctx, http.MethodGet, job.url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := job.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(job.destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Use HTTP Content-Length header as the absolute source of truth for file size
+	totalSize := resp.ContentLength
+	if totalSize <= 0 {
+		totalSize = job.totalSize
+	}
+
+	var src io.Reader = resp.Body
+	if job.onProgress != nil {
+		src = &progressReader{
+			r:          resp.Body,
+			total:      totalSize, // Set accurate size
+			onProgress: job.onProgress,
+		}
+	}
+
+	_, err = io.Copy(out, src)
+	return err
+}
+
+var downloadPoolOnce sync.Once
+var globalDownloadPool *DownloadPool
+
+// InitDownloadPool initializes the global concurrent download queue thread-safely
+func (b *Bot) InitDownloadPool(workers ...int) {
+	w := 4 // Default limit of 4 concurrent downloads simultaneously
+	if len(workers) > 0 && workers[0] > 0 {
+		w = workers[0]
+	}
+	downloadPoolOnce.Do(func() {
+		globalDownloadPool = &DownloadPool{}
+		globalDownloadPool.start(w)
+	})
 }
 
 // Send opens the fluent sending dot system inside the handler context
