@@ -480,7 +480,12 @@ func (o *OnChain) Callback(data string) *RouteChain {
 		on: o,
 		reg: func(h ...Handler) {
 			o.bot.mu.Lock()
-			o.bot.callbacks[data] = h
+			if strings.HasPrefix(data, "_sys_") {
+				// Safely append system handlers instead of overwriting
+				o.bot.callbacks[data] = append(o.bot.callbacks[data], h...)
+			} else {
+				o.bot.callbacks[data] = h
+			}
 			o.bot.mu.Unlock()
 		},
 	}
@@ -830,10 +835,12 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		c.Message = u.CallbackQuery.Message
 	}
 
+	// Acquire read lock immediately to protect slice copies
+	b.mu.RLock()
+
 	var chain []Handler
 	chain = append(chain, b.middlewares...)
 
-	b.mu.RLock()
 	if u.Message != nil {
 		// Dynamically normalize message text on-the-fly to keep original raw field untouched
 		text := ToEnDigits(u.Message.Text)
@@ -924,12 +931,6 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		item, ok := b.cache.store[key]
 		b.cache.mu.RUnlock()
 
-		b.cache.mu.RLock()
-		if item, ok := b.cache.store[key]; ok {
-			c.prevText, _ = item.value.(string)
-		}
-		b.cache.mu.RUnlock()
-
 		if ok && item != nil {
 			c.prevText, _ = item.value.(string)
 		}
@@ -943,7 +944,8 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 
 		chain = append(chain, b.editMsg...)
 	}
-	b.mu.RUnlock()
+
+	b.mu.RUnlock() // Release read lock safely
 
 	if len(chain) > 0 {
 		c.handlers = chain
