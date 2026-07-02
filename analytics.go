@@ -3,6 +3,7 @@ package gobale
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -173,13 +174,42 @@ func AnalyticsLogger() Handler {
 			logMetric("forwards", 1)
 		}
 
-		// Detect and log specific media types with strict priority order (Voice and Sticker checked first)
+		// Detect and log specific media types with strict priority order
 		var detected string
-		isMusicFile := c.Message.Document != nil && strings.HasPrefix(c.Message.Document.MimeType, "audio/")
+
+		// Advanced categorization for general documents containing audio
+		var isVoiceDoc, isMusicDoc bool
+		if c.Message.Document != nil {
+			mime := strings.ToLower(c.Message.Document.MimeType)
+			ext := strings.ToLower(filepath.Ext(c.Message.Document.FileName))
+
+			// Typical voice-note / speech codecs and formats
+			isVoiceFormat := mime == "audio/ogg" || mime == "audio/opus" || mime == "audio/amr" || mime == "audio/3gpp" ||
+				ext == ".ogg" || ext == ".oga" || ext == ".opus" || ext == ".amr" || ext == ".3gp" || ext == ".3gpp"
+
+			// General music formats
+			isMusicFormat := mime == "audio/mpeg" || mime == "audio/mp3" || mime == "audio/x-m4a" || mime == "audio/m4a" || mime == "audio/flac" || mime == "audio/wav" ||
+				ext == ".mp3" || ext == ".m4a" || ext == ".flac" || ext == ".wav" || ext == ".wma" || ext == ".aac"
+
+			if strings.HasPrefix(mime, "audio/") {
+				if isVoiceFormat {
+					isVoiceDoc = true
+				} else {
+					isMusicDoc = true
+				}
+			} else {
+				// Fallback to extensions if mime-type is generic/binary
+				if isVoiceFormat {
+					isVoiceDoc = true
+				} else if isMusicFormat {
+					isMusicDoc = true
+				}
+			}
+		}
 
 		if len(c.Message.Photo) > 0 {
 			detected = "photo"
-		} else if c.Message.Voice != nil {
+		} else if c.Message.Voice != nil || isVoiceDoc {
 			detected = "voice" // Voice checked before Audio to prevent Bale audio/voice override
 		} else if c.Message.Sticker != nil {
 			detected = "sticker" // Sticker checked before Document override
@@ -187,8 +217,8 @@ func AnalyticsLogger() Handler {
 			detected = "animation" // Animation checked before Document override
 		} else if c.Message.Video != nil {
 			detected = "video"
-		} else if c.Message.Audio != nil || isMusicFile {
-			detected = "audio" // Classifies document-audio files safely as audio
+		} else if c.Message.Audio != nil || isMusicDoc {
+			detected = "audio" // Classifies document-audio files safely as audio/music
 		} else if c.Message.Location != nil {
 			detected = "location"
 		} else if c.Message.Contact != nil {
