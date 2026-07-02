@@ -63,6 +63,7 @@ type Bot struct {
 	socketMu           sync.Mutex
 	AutoStretch        bool
 	groupSettings      []GroupSetting
+	analyticsDB        Storage
 }
 
 type BotBuilder struct {
@@ -598,6 +599,11 @@ func (p *PollChain) Go() {
 				_ = p.run.bot.settingsDB.Close()
 			}
 
+			// Safely close and flush the analytics database on shutdown
+			if p.run.bot.analyticsDB != nil {
+				_ = p.run.bot.analyticsDB.Close()
+			}
+
 			// Safely close GOB store cleanup goroutine using io.Closer
 			_ = p.run.bot.Sessions.Close()
 
@@ -739,6 +745,11 @@ func (w *WebChain) Go() error {
 		// Safely close and flush the settings GOB database on Webhook shutdown
 		if w.run.bot.settingsDB != nil {
 			_ = w.run.bot.settingsDB.Close()
+		}
+
+		// Safely close and flush the analytics database on shutdown
+		if w.run.bot.analyticsDB != nil {
+			_ = w.run.bot.analyticsDB.Close()
 		}
 
 		// Safely close GOB store cleanup goroutine using io.Closer on Webhook shutdown
@@ -1273,4 +1284,41 @@ Draining:
 		}
 	}
 	return drained
+}
+
+// cpuTracker manages process load variables safely
+type cpuTracker struct {
+	mu       sync.Mutex
+	lastTick int64
+	lastTime time.Time
+}
+
+// globalTracker holds state for ongoing cpu calculations
+var globalTracker = &cpuTracker{
+	lastTime: time.Now(),
+}
+
+// GetCPU reads and returns the current process CPU execution load on the host
+func (b *Bot) GetCPU() float64 {
+	globalTracker.mu.Lock()
+	defer globalTracker.mu.Unlock()
+
+	now := time.Now()
+	elapsed := float64(now.Sub(globalTracker.lastTime).Microseconds())
+	if elapsed <= 0 {
+		return 0.0
+	}
+
+	ticks := getOSProcessCPUTicks()
+	delta := float64(ticks - globalTracker.lastTick)
+	globalTracker.lastTick = ticks
+	globalTracker.lastTime = now
+
+	raw := (delta / elapsed) * 100.0
+	num := float64(runtime.NumCPU())
+	percent := raw / num
+	if percent < 0 {
+		return 0.0
+	}
+	return percent
 }

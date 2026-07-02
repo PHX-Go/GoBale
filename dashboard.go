@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -58,7 +57,7 @@ func (d *DashChain) Go() error {
 		}
 		activeShield, _ := d.bot.Shield().IsActive().Go()
 		payload := map[string]any{
-			"cpu_percent":     getCPUUsage(),
+			"cpu_percent":     d.bot.GetCPU(),
 			"alloc_mb":        float64(m.Alloc) / (1024 * 1024),
 			"sys_mb":          float64(m.Sys) / (1024 * 1024),
 			"queue_depth":     len(d.bot.workerChan),
@@ -110,7 +109,7 @@ func (d *DashChain) Go() error {
 		}
 		activeShield, _ := d.bot.Shield().IsActive().Go()
 		payload := map[string]any{
-			"cpu_percent":     getCPUUsage(),
+			"cpu_percent":     d.bot.GetCPU(),
 			"alloc_mb":        float64(m.Alloc) / (1024 * 1024),
 			"sys_mb":          float64(m.Sys) / (1024 * 1024),
 			"queue_depth":     len(d.bot.workerChan),
@@ -136,41 +135,7 @@ func (d *DashChain) Go() error {
 	return server.ListenAndServe()
 }
 
-// cpuTracker manages process load variables safely
-type cpuTracker struct {
-	mu       sync.Mutex
-	lastTick int64
-	lastTime time.Time
-}
-
-// globalTracker holds state for ongoing cpu calculations
-var globalTracker = &cpuTracker{
-	lastTime: time.Now(),
-}
-
-// getCPUUsage calculates process cpu execution load
-func getCPUUsage() float64 {
-	globalTracker.mu.Lock()
-	defer globalTracker.mu.Unlock()
-	now := time.Now()
-	elapsed := float64(now.Sub(globalTracker.lastTime).Microseconds())
-	if elapsed <= 0 {
-		return 0.0
-	}
-	ticks := getOSProcessCPUTicks()
-	delta := float64(ticks - globalTracker.lastTick)
-	globalTracker.lastTick = ticks
-	globalTracker.lastTime = now
-	raw := (delta / elapsed) * 100.0
-	num := float64(runtime.NumCPU())
-	percent := raw / num
-	if percent < 0 {
-		return 0.0
-	}
-	return percent
-}
-
-// htmlPage contains the embedded visual monitoring layout with resilient WS client
+// htmlPage contains the embedded visual monitoring layout with resilient, vector-only WS client
 const htmlPage = `
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -193,16 +158,16 @@ const htmlPage = `
                         <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                         <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                     </span>
-                    مانیتورینگ بله <span class="text-[10px] font-normal text-emerald-500 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-900/30">Unified Port</span>
+                    مانیتورینگ بله
                 </h1>
                 <p class="text-[10px] md:text-xs text-zinc-500 mt-0.5">وضعیت آنلاین منابع سرور و همروندی</p>
             </div>
-            <div id="shield-badge" class="px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-zinc-900 border border-zinc-800">
-                در حال اتصال به سرور...
+            <div id="shield-badge" class="px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300">
+                در حال بارگذاری...
             </div>
         </header>
 
-        <main class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+        <main class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
                 <div class="flex justify-between items-start">
                     <span class="text-[11px] text-zinc-400 font-bold">مصرف پردازنده (CPU)</span>
@@ -271,7 +236,7 @@ const htmlPage = `
 
             <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
                 <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">تأخیر بله (Latency)</span>
+                    <span class="text-[11px] text-zinc-400 font-bold">تأخیر شبکه (Latency)</span>
                     <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 </div>
                 <div class="mt-2">
@@ -322,7 +287,8 @@ const htmlPage = `
             websocket.onopen = function() {
                 const badge = document.getElementById('shield-badge');
                 badge.innerText = "متصل به WebSocket Stream";
-                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30";
+                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 flex items-center gap-1.5";
+                badge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span></span> متصل به WebSocket Stream';
             };
 
             websocket.onmessage = function(evt) {
@@ -339,7 +305,8 @@ const htmlPage = `
             websocket.onclose = function() {
                 const badge = document.getElementById('shield-badge');
                 badge.innerText = "قطع ارتباط! تلاش برای اتصال مجدد...";
-                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-red-950/40 text-red-400 border border-red-900/30 animate-pulse";
+                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1.5";
+                badge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span> قطع ارتباط! تلاش برای اتصال مجدد...';
                 
                 // Resilient auto-reconnect loop
                 setTimeout(initWebSocket, 2000);
@@ -366,12 +333,7 @@ const htmlPage = `
 
             document.getElementById('alloc-mb').innerHTML = data.alloc_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
             document.getElementById('sys-mb').innerHTML = data.sys_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
-            
-            const qVal = data.queue_depth;
-            document.getElementById('queue-depth').innerHTML = qVal + ' <span class="text-[10px] font-normal text-zinc-500">/ 1000</span>';
-            document.getElementById('queue-bar').style.width = Math.min((qVal / 1000) * 100, 100) + '%';
-
-            document.getElementById('total-updates').innerText = data.total_updates.toLocaleString();
+            document.getElementById('goroutines').innerText = data.goroutines.toLocaleString();
             
             const latencyVal = data.latency_ms;
             if (latencyVal > 0) {
@@ -380,19 +342,18 @@ const htmlPage = `
                 document.getElementById('latency-ms').innerHTML = '<span class="text-xs font-normal text-zinc-500">در انتظار درخواست...</span>';
             }
             
-            document.getElementById('num-gc').innerText = data.num_gc.toLocaleString();
-            document.getElementById('goroutines').innerText = data.goroutines.toLocaleString();
+            document.getElementById('total-updates').innerText = data.total_updates.toLocaleString();
             document.getElementById('active-sessions').innerText = data.active_sessions.toLocaleString();
             document.getElementById('db-keys').innerText = data.db_keys.toLocaleString();
 
             const shieldBadge = document.getElementById('shield-badge');
-            // Check shield active status dynamically and update badge
+            // Check shield active status dynamically and update badge with pure vectors
             if (data.shield_active === true) {
-                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span> سپر دفاعی فعال';
-                shieldBadge.className = 'px-2 py-0.5 rounded text-[10px] md:text-xs font-bold bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1';
+                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span>  سپر دفاعی فعال';
+                shieldBadge.className = 'px-2.5 py-1 rounded text-[10px] md:text-xs font-bold bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1.5';
             } else {
-                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span></span> وضعیت عادی';
-                shieldBadge.className = 'px-2 py-0.5 rounded text-[10px] md:text-xs font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 flex items-center gap-1';
+                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span></span> متصل به WebSocket Stream';
+                shieldBadge.className = 'px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 flex items-center gap-1.5';
             }
         }
 
@@ -401,7 +362,3 @@ const htmlPage = `
 </body>
 </html>
 `
-
-func (b *Bot) GetCPU() float64 {
-	return getCPUUsage()
-}

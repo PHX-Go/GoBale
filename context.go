@@ -138,7 +138,7 @@ func (d *DelChain) Delay(dur time.Duration) *DelChain {
 	return d
 }
 
-// Go executes the deletion of the message linked to the current context with auto error logging and double-delete prevention
+// Go executes the deletion of the message linked to the current context with auto error logging and cumulative analytics
 func (d *DelChain) Go() error {
 	if d.c.Message == nil {
 		return errors.New("no message in context")
@@ -152,10 +152,18 @@ func (d *DelChain) Go() error {
 			return err
 		}
 		d.c.Bot.Task().In(d.dur, func() {
-			_ = d.c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+			errDel := d.c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
 				"chat_id":    id,
 				"message_id": msgID,
 			}, nil)
+			if errDel == nil {
+				// Initialize on-demand and increment the deletion counter inside background delayed tasks
+				d.c.Bot.initAnalyticsDB()
+				if d.c.Bot.analyticsDB != nil {
+					d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_daily:%d:deletions", id), 1)
+					d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_lifetime:%d:deletions", id), 1)
+				}
+			}
 		})
 		return nil
 	}
@@ -185,6 +193,13 @@ func (d *DelChain) Go() error {
 		}
 		d.c.Keys["_sys_msg_deleted"] = true
 		d.c.mu.Unlock()
+
+		// Initialize on-demand and increment the deletion counter in analytics GOB database
+		d.c.Bot.initAnalyticsDB()
+		if d.c.Bot.analyticsDB != nil {
+			d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_daily:%d:deletions", id), 1)
+			d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_lifetime:%d:deletions", id), 1)
+		}
 	}
 	return errDel
 }
