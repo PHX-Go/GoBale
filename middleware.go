@@ -2,7 +2,6 @@ package gobale
 
 import (
 	"fmt"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -528,10 +527,7 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 			isBlocked := blockedMap[string(detected)] || blockedMap[string(MediaAll)]
 			if isBlocked {
 				// Attempt to delete message natively and print error on failure to console
-				errDel := c.Del().Go()
-				if errDel != nil {
-					log.Printf("[DEBUG ERROR] Failed to delete message: %v", errDel)
-				}
+				_ = c.Del().Go()
 
 				if !silent && warnDuration > 0 {
 					warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
