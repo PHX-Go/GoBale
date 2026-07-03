@@ -638,3 +638,22 @@ func (c *Ctx) ScanOptionalArgs(targets ...any) int {
 	_ = ScanValues(args[:limit], " ", targets[:limit]...)
 	return limit
 }
+
+// Reset clears all fields to prevent context pollution in sync.Pool
+func (c *Ctx) Reset() {
+	c.Bot = nil
+	c.Update = nil
+	c.Message = nil
+	c.handlers = nil
+	c.index = -1
+	c.err = nil
+	c.prevText = ""
+	c.ctx = nil
+
+	// Avoid map re-allocation by clearing existing keys
+	if c.Keys != nil {
+		for k := range c.Keys {
+			delete(c.Keys, k)
+		}
+	}
+}

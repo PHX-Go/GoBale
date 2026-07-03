@@ -952,14 +952,8 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		c.Next()
 	}
 
-	c.handlers = nil
-	c.Update = nil
-	c.Message = nil
-	c.Keys = nil
-	c.err = nil
-	c.index = -1
-	c.ctx = nil     // Prevent stale context references from leaking in GC memory
-	c.prevText = "" // clear previous text value before pool recycling
+	// Recycle context cleanly
+	c.Reset()
 	b.ctxPool.Put(c)
 }
 
