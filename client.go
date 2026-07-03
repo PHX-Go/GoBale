@@ -278,7 +278,7 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	
+
 	if !c.cb.CanExecute() {
 		return fmt.Errorf("circuit breaker is open, api is offline")
 	}

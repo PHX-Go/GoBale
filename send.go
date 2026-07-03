@@ -13,37 +13,51 @@ import (
 
 // SendChain provides fluid chain methods to construct and send payloads
 type SendChain struct {
-	bot       *Bot
-	ctx       context.Context
-	chat      any
-	text      string
-	photo     any
-	audio     any
-	doc       any
-	video     any
-	voice     any
-	anim      any
-	caption   string
-	replyTo   int64
-	markup    any
-	pm        string
-	from      any
-	msgID     int64
-	action    string
-	temp      time.Duration
-	lat       float64
-	lon       float64
-	phone     string
-	first     string
-	last      string
-	isContact bool
-	isLoc     bool
-	sticker   any
-	dur       int
-	width     int
-	height    int
-	title     string
-	stretch   bool
+	bot        *Bot
+	ctx        context.Context
+	chat       any
+	text       string
+	photo      any
+	audio      any
+	doc        any
+	video      any
+	voice      any
+	anim       any
+	caption    string
+	replyTo    int64
+	markup     any
+	pm         string
+	from       any
+	msgID      int64
+	action     string
+	temp       time.Duration
+	lat        float64
+	lon        float64
+	phone      string
+	first      string
+	last       string
+	isContact  bool
+	isLoc      bool
+	sticker    any
+	dur        int
+	width      int
+	height     int
+	title      string
+	stretch    bool
+	onProgress func(percent float64)
+	useQueue   bool
+}
+
+// OnProgress registers a callback triggered during upload progress updates (1% to 100%)
+func (s *SendChain) OnProgress(fn func(percent float64)) *SendChain {
+	s.onProgress = fn
+	return s
+}
+
+// Queue configures the upload to run asynchronously in a concurrent background worker queue
+func (s *SendChain) Queue() *SendChain {
+	s.useQueue = true
+	return s
 }
 
 // Stretch enables or disables message stretching for this specific send action
@@ -270,184 +284,23 @@ func (s *SendChain) Go() (*Message, error) {
 	if s.chat == nil {
 		return nil, errors.New("missing chat destination")
 	}
-	resolved := s.bot.ResolveChatID(s.chat)
-	var msg Message
-	var err error
 
-	if s.markup != nil {
-		if _, isInline := s.markup.(*InlineKeyboardMarkup); isInline {
-			if chatID, ok := resolved.(int64); ok {
-				sess := s.bot.Sessions.Get(chatID)
-				sess.mu.RLock()
-				lastMenuIDVal, exists := sess.DataMap["last_menu_id"]
-				sess.mu.RUnlock()
-				if exists {
-					if lastMenuID, ok := lastMenuIDVal.(int64); ok && lastMenuID > 0 {
-						go func(cid, mid int64) {
-							_ = s.bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
-								"chat_id":    cid,
-								"message_id": mid,
-							}, nil)
-						}(chatID, lastMenuID)
-					}
-				}
-			}
+	// If useQueue is enabled, dispatch task to the concurrent upload pool
+	if s.useQueue {
+		initUploadPool()
+		resultChan := make(chan *UploadResult, 1)
+
+		job := &UploadJob{
+			sendChain:  s,
+			resultChan: resultChan,
 		}
+		globalUploadPool.jobChan <- job
+		res := <-resultChan
+		return res.Msg, res.Err
 	}
 
-	if s.action == "forward" {
-		err = s.bot.BaseRequest(s.ctx, "forwardMessage", map[string]any{
-			"chat_id":      resolved,
-			"from_chat_id": s.bot.ResolveChatID(s.from),
-			"message_id":   s.msgID,
-		}, &msg)
-	} else if s.action == "copy" {
-		var msgIDHolder MessageId
-		err = s.bot.BaseRequest(s.ctx, "copyMessage", map[string]any{
-			"chat_id":      resolved,
-			"from_chat_id": s.bot.ResolveChatID(s.from),
-			"message_id":   s.msgID,
-		}, &msgIDHolder)
-		if err == nil {
-			msg.MessageID = msgIDHolder.MessageID
-		}
-	} else if s.sticker != nil {
-		// Call the native sendSticker API on Bale servers
-		err = s.uploadMedia("sendSticker", "sticker", s.sticker, &msg)
-	} else if s.isContact {
-		err = s.bot.BaseRequest(s.ctx, "sendContact", map[string]any{
-			"chat_id":             resolved,
-			"phone_number":        s.phone,
-			"first_name":          s.first,
-			"last_name":           s.last,
-			"reply_to_message_id": s.replyTo,
-			"reply_markup":        s.markup,
-		}, &msg)
-	} else if s.isLoc {
-		err = s.bot.BaseRequest(s.ctx, "sendLocation", map[string]any{
-			"chat_id":             resolved,
-			"latitude":            s.lat,
-			"longitude":           s.lon,
-			"reply_to_message_id": s.replyTo,
-			"reply_markup":        s.markup,
-		}, &msg)
-	} else if s.photo != nil {
-		err = s.uploadMedia("sendPhoto", "photo", s.photo, &msg)
-	} else if s.audio != nil {
-		err = s.uploadMedia("sendAudio", "audio", s.audio, &msg)
-	} else if s.doc != nil {
-		err = s.uploadMedia("sendDocument", "document", s.doc, &msg)
-	} else if s.video != nil {
-		err = s.uploadMedia("sendVideo", "video", s.video, &msg)
-	} else if s.voice != nil {
-		err = s.uploadMedia("sendVoice", "voice", s.voice, &msg)
-	} else if s.anim != nil {
-		err = s.uploadMedia("sendAnimation", "animation", s.anim, &msg)
-	} else if s.text != "" {
-		text := s.text
-		if s.bot.AutoStretch || s.stretch {
-			text = stretchText(text)
-		}
-		err = s.bot.BaseRequest(s.ctx, "sendMessage", map[string]any{
-			"chat_id":             resolved,
-			"text":                text,
-			"parse_mode":          s.pm,
-			"reply_to_message_id": s.replyTo,
-			"reply_markup":        s.markup,
-		}, &msg)
-	} else {
-		return nil, errors.New("empty payload parameters")
-	}
-
-	if err == nil && s.markup != nil {
-		if _, isInline := s.markup.(*InlineKeyboardMarkup); isInline {
-			if chatID, ok := resolved.(int64); ok {
-				sess := s.bot.Sessions.Get(chatID)
-				sess.mu.Lock()
-				if sess.DataMap == nil {
-					sess.DataMap = make(map[string]any)
-				}
-				sess.DataMap["last_menu_id"] = msg.MessageID
-				sess.mu.Unlock()
-			}
-		}
-	}
-
-	if err == nil && s.temp > 0 {
-		msgID := msg.MessageID
-		s.bot.Task().In(s.temp, func() {
-			errDel := s.bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
-				"chat_id":    resolved,
-				"message_id": msgID,
-			}, nil)
-			if errDel != nil && s.bot.loggerInstance != nil {
-				s.bot.loggerInstance.Log(LevelError, "[Temp Delete Error] ", "failed to delete message %d: %v", []any{msgID, errDel})
-			}
-		})
-	}
-
-	if err != nil {
-		logErr(s.bot, "[Send Error] ", err)
-	}
-
-	return &msg, err
-}
-
-// uploadMedia manages files dispatching via cache lookup or multipart encoding
-func (s *SendChain) uploadMedia(method, field string, media any, out *Message) error {
-	resolved := s.bot.ResolveChatID(s.chat)
-	payload := map[string]any{
-		"chat_id":             resolved,
-		"caption":             s.caption,
-		"reply_to_message_id": s.replyTo,
-		"reply_markup":        s.markup,
-		"duration":            s.dur,
-	}
-
-	// Only attach optional values if they are explicitly configured greater than zero/non-empty
-	if s.dur > 0 {
-		payload["duration"] = s.dur
-	}
-	if s.width > 0 {
-		payload["width"] = s.width
-	}
-	if s.height > 0 {
-		payload["height"] = s.height
-	}
-	if s.title != "" {
-		payload["title"] = s.title
-	}
-
-	switch m := media.(type) {
-	case string:
-		if isLocalFile(m) {
-			if cached, ok := s.bot.fileCache.Load(m); ok {
-				payload[field] = cached
-				return s.bot.BaseRequest(s.ctx, method, payload, out)
-			}
-			file, err := os.Open(m)
-			if err != nil {
-				return err
-			}
-			defer file.Close()
-			inputFile := InputFile{
-				FileName: filepath.Base(m),
-				Reader:   file,
-				Field:    field,
-			}
-			err = s.bot.BaseRequestMultipart(s.ctx, method, payload, []InputFile{inputFile}, out)
-			if err == nil {
-				s.cacheUploadedID(m, field, out)
-			}
-			return err
-		}
-		payload[field] = m
-		return s.bot.BaseRequest(s.ctx, method, payload, out)
-	case InputFile:
-		m.Field = field
-		return s.bot.BaseRequestMultipart(s.ctx, method, payload, []InputFile{m}, out)
-	}
-	return errors.New("invalid media configuration type")
+	// Run standard upload directly
+	return s.executeUpload(s.ctx)
 }
 
 // cacheUploadedID stores received file identifier to avoid uploading duplicates
@@ -675,7 +528,8 @@ func (p *ProgressChain) Go() (*Message, error) {
 				"text":       sb.String(),
 			}, nil)
 			if errEdit != nil {
-				return // Break execution if message was deleted or chat blocked
+				// Break execution if message was deleted or chat blocked
+				return
 			}
 		}
 		time.Sleep(p.delay)
@@ -1200,4 +1054,115 @@ func (e *BotEditChain) Go() (*Message, error) {
 		logErr(e.bot, "[Bot Edit Error] ", err)
 	}
 	return &msg, err
+}
+
+// executeUpload processes the final message transmission with progress context
+func (s *SendChain) executeUpload(ctx context.Context) (*Message, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resolved := s.bot.ResolveChatID(s.chat)
+	var msg Message
+	var err error
+
+	if s.sticker != nil {
+		err = s.uploadMediaWithProgress(ctx, "sendSticker", "sticker", s.sticker, s.onProgress, &msg)
+	} else if s.photo != nil {
+		err = s.uploadMediaWithProgress(ctx, "sendPhoto", "photo", s.photo, s.onProgress, &msg)
+	} else if s.audio != nil {
+		err = s.uploadMediaWithProgress(ctx, "sendAudio", "audio", s.audio, s.onProgress, &msg)
+	} else if s.doc != nil {
+		err = s.uploadMediaWithProgress(ctx, "sendDocument", "document", s.doc, s.onProgress, &msg)
+	} else if s.video != nil {
+		err = s.uploadMediaWithProgress(ctx, "sendVideo", "video", s.video, s.onProgress, &msg)
+	} else if s.voice != nil {
+		err = s.uploadMediaWithProgress(ctx, "sendVoice", "voice", s.voice, s.onProgress, &msg)
+	} else if s.anim != nil {
+		err = s.uploadMediaWithProgress(ctx, "sendAnimation", "animation", s.anim, s.onProgress, &msg)
+	} else if s.text != "" {
+		text := s.text
+		if s.bot.AutoStretch || s.stretch {
+			text = stretchText(text)
+		}
+		payload := map[string]any{
+			"chat_id": resolved,
+			"text":    text,
+		}
+		if s.pm != "" {
+			payload["parse_mode"] = s.pm
+		}
+		if s.replyTo > 0 {
+			payload["reply_to_message_id"] = s.replyTo
+		}
+		if s.markup != nil {
+			payload["reply_markup"] = s.markup
+		}
+		err = s.bot.BaseRequest(ctx, "sendMessage", payload, &msg)
+	} else {
+		return nil, errors.New("empty payload parameters")
+	}
+
+	return &msg, err
+}
+
+// uploadMediaWithProgress manages file uploads with dynamic progress context and API cache support safely
+func (s *SendChain) uploadMediaWithProgress(ctx context.Context, method, field string, media any, onProgress func(pct float64), out *Message) error {
+	resolved := s.bot.ResolveChatID(s.chat)
+	payload := map[string]any{
+		"chat_id": resolved,
+	}
+	if s.caption != "" {
+		payload["caption"] = s.caption
+	}
+	if s.replyTo > 0 {
+		payload["reply_to_message_id"] = s.replyTo
+	}
+	if s.markup != nil {
+		payload["reply_markup"] = s.markup
+	}
+	if s.dur > 0 {
+		payload["duration"] = s.dur
+	}
+	if s.width > 0 {
+		payload["width"] = s.width
+	}
+	if s.height > 0 {
+		payload["height"] = s.height
+	}
+	if s.title != "" {
+		payload["title"] = s.title
+	}
+
+	switch m := media.(type) {
+	case string:
+		if isLocalFile(m) {
+			if cached, ok := s.bot.fileCache.Load(m); ok {
+				payload[field] = cached
+				return s.bot.BaseRequest(ctx, method, payload, out)
+			}
+			file, err := os.Open(m)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			inputFile := InputFile{
+				FileName: filepath.Base(m),
+				Reader:   file,
+				Field:    field,
+			}
+			// Call the new BaseRequestMultipartWithProgress to enable true network progress and retry capabilities
+			err = s.bot.Client.BaseRequestMultipartWithProgress(ctx, method, payload, []InputFile{inputFile}, onProgress, out)
+			if err == nil {
+				s.cacheUploadedID(m, field, out)
+			}
+			return err
+		}
+		payload[field] = m
+		return s.bot.BaseRequest(ctx, method, payload, out)
+	case InputFile:
+		m.Field = field
+		// Call the new BaseRequestMultipartWithProgress to enable true network progress and retry capabilities
+		return s.bot.Client.BaseRequestMultipartWithProgress(ctx, method, payload, []InputFile{m}, onProgress, out)
+	}
+	return errors.New("invalid media configuration type")
 }

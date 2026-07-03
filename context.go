@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -342,10 +340,11 @@ func (d *DownloadChain) Go() (string, error) {
 	fileName := d.name
 	if fileName == "" {
 		fileName = filepath.Base(url)
+		// Strip query parameters from URL if present (e.g., ?token=...)
 		if idx := strings.Index(fileName, "?"); idx != -1 {
 			fileName = fileName[:idx]
 		}
-		// Decode percent-encoded URL characters (e.g., %20 -> space)
+		// Decode percent-encoded URL characters safely using the aliased package
 		if decoded, err := neturl.PathUnescape(fileName); err == nil {
 			fileName = decoded
 		}
@@ -396,229 +395,9 @@ func (d *DownloadChain) Go() (string, error) {
 		return destPath, err
 	}
 
-	// Standard resilient download without queue
-	err := resilientDownload(ctx, d.fc.bot.Client.httpClient, url, destPath, fileSize, chatIDStr, d.onProgress)
+	// Standard resilient download without queue (updated: removed chatIDStr parameter)
+	err := resilientDownload(ctx, d.fc.bot.Client.httpClient, url, destPath, fileSize, d.onProgress)
 	return destPath, err
-}
-
-// progressReader wraps io.Reader to track and throttle download progress events
-type progressReader struct {
-	r          io.Reader
-	total      int64
-	read       int64
-	lastPct    int
-	onProgress func(percent float64)
-}
-
-// Read implements standard io.Reader interface with progress notification
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.r.Read(p)
-	pr.read += int64(n)
-	if pr.total > 0 && pr.onProgress != nil && n > 0 {
-		pct := int(float64(pr.read) / float64(pr.total) * 100.0)
-		if pct > pr.lastPct {
-			pr.lastPct = pct
-			pr.onProgress(float64(pct))
-		}
-	}
-	return n, err
-}
-
-// DownloadJob encapsulates task state for background queue pipeline
-type DownloadJob struct {
-	url        string
-	destPath   string
-	totalSize  int64
-	ctx        context.Context
-	client     *http.Client
-	onProgress func(percent float64)
-	resultChan chan error
-	chatID     string
-}
-
-// DownloadPool manages bounded concurrent downloads using background workers and cancellation maps
-type DownloadPool struct {
-	jobChan chan *DownloadJob
-	workers int
-	once    sync.Once
-	active  sync.Map
-}
-
-// start spawns concurrent download workers with context cancellation wrappers
-func (dp *DownloadPool) start(workers int) {
-	dp.once.Do(func() {
-		dp.jobChan = make(chan *DownloadJob, 1000)
-		dp.workers = workers
-		for i := 0; i < workers; i++ {
-			go func() {
-				for job := range dp.jobChan {
-					jobCtx, cancel := context.WithCancel(job.ctx)
-					if job.chatID != "" {
-						dp.active.Store(job.chatID, cancel)
-					}
-
-					err := resilientDownload(jobCtx, job.client, job.url, job.destPath, job.totalSize, job.chatID, job.onProgress)
-
-					if job.chatID != "" {
-						dp.active.Delete(job.chatID)
-					}
-					cancel()
-
-					job.resultChan <- err
-				}
-			}()
-		}
-	})
-}
-
-// resilientDownload handles range-resuming, multi-attempt retries, and manual cancellations
-func resilientDownload(ctx context.Context, client *http.Client, url, destPath string, expectedSize int64, chatID string, onProgress func(percent float64)) error {
-	const maxRetries = 5
-	var currentSize int64 = 0
-	var lastPct = -1
-
-	if stat, err := os.Stat(destPath); err == nil {
-		currentSize = stat.Size()
-	}
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return err
-		}
-
-		if currentSize > 0 {
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", currentSize))
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		isResume := resp.StatusCode == http.StatusPartialContent
-		if resp.StatusCode == http.StatusOK {
-			currentSize = 0
-			isResume = false
-		} else if resp.StatusCode != http.StatusPartialContent && currentSize > 0 {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-				return nil
-			}
-			currentSize = 0
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		var out *os.File
-		if isResume {
-			out, err = os.OpenFile(destPath, os.O_WRONLY|os.O_APPEND, 0600)
-		} else {
-			out, err = os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-		}
-		if err != nil {
-			resp.Body.Close()
-			return err
-		}
-
-		totalSize := resp.ContentLength
-		if isResume {
-			totalSize += currentSize
-		}
-		if totalSize <= 0 {
-			totalSize = expectedSize
-		}
-
-		var buffer = make([]byte, 32*1024)
-		var readErr error
-		var bytesRead int
-
-		for {
-			if ctx.Err() != nil {
-				out.Close()
-				resp.Body.Close()
-				return ctx.Err()
-			}
-
-			bytesRead, readErr = resp.Body.Read(buffer)
-			if bytesRead > 0 {
-				_, writeErr := out.Write(buffer[:bytesRead])
-				if writeErr != nil {
-					out.Close()
-					resp.Body.Close()
-					return writeErr
-				}
-				currentSize += int64(bytesRead)
-
-				if totalSize > 0 && onProgress != nil {
-					pct := int(float64(currentSize) / float64(totalSize) * 100.0)
-					if pct > lastPct {
-						if pct > 100 {
-							pct = 100
-						}
-						lastPct = pct
-						onProgress(float64(pct))
-					}
-				}
-			}
-
-			if readErr != nil {
-				break
-			}
-		}
-
-		out.Close()
-		resp.Body.Close()
-
-		if readErr == io.EOF {
-			return nil
-		}
-
-		time.Sleep(2 * time.Second)
-	}
-
-	return fmt.Errorf("download aborted after %d failed attempts", maxRetries)
-}
-
-var downloadPoolOnce sync.Once
-var globalDownloadPool *DownloadPool
-
-// MaxDownloadWorkers sets the maximum concurrent downloads allowed (default: 4)
-var MaxDownloadWorkers = 4
-
-// initDownloadPool initializes the global concurrent download pool lazily
-func initDownloadPool() {
-	downloadPoolOnce.Do(func() {
-		globalDownloadPool = &DownloadPool{}
-		globalDownloadPool.start(MaxDownloadWorkers)
-	})
-}
-
-// InitDownloadPool allows external configuration of the download pool
-func (b *Bot) InitDownloadPool(workers ...int) {
-	if len(workers) > 0 && workers[0] > 0 {
-		MaxDownloadWorkers = workers[0]
-	}
-	initDownloadPool()
-}
-
-// CancelDownload cancels an active download task for a specific Chat ID globally
-func (b *Bot) CancelDownload(chatID any) bool {
-	initDownloadPool()
-	resolved := b.ResolveChatID(chatID)
-	resolvedStr := fmt.Sprintf("%v", resolved)
-	if cancelVal, ok := globalDownloadPool.active.Load(resolvedStr); ok {
-		if cancel, okFunc := cancelVal.(context.CancelFunc); okFunc {
-			cancel()
-			return true
-		}
-	}
-	return false
 }
 
 // Send opens the fluent sending dot system inside the handler context
