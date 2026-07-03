@@ -113,13 +113,11 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 	var currentSize int64 = 0
 	var lastPct = -1
 
-	// If the file already exists, check its size to resume partial content
 	if stat, err := os.Stat(destPath); err == nil {
 		currentSize = stat.Size()
 	}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Stop immediately if the download has been canceled
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -129,44 +127,37 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 			return err
 		}
 
-		// Inject browser User-Agent to prevent target servers from blocking Go's default client
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-		// Dynamically inject Referer header to bypass hotlinking protection on servers
 		if parsedURL, err := neturl.Parse(urlStr); err == nil {
 			req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
 		}
 
-		// Inject HTTP Range header if resuming from a partial file
 		if currentSize > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", currentSize))
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
-			// Backoff and retry on network dropouts
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		isResume := resp.StatusCode == http.StatusPartialContent
-		if resp.StatusCode == http.StatusOK {
-			// Range header was ignored by server; restart download from scratch
-			currentSize = 0
-			isResume = false
-		} else if resp.StatusCode != http.StatusPartialContent && currentSize > 0 {
+		// Terminate immediately if server returns standard error codes (404, 500, etc.)
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-				// File is already fully downloaded!
 				return nil
 			}
-			// Reset and retry without Range header
-			currentSize = 0
-			time.Sleep(1 * time.Second)
-			continue
+			return fmt.Errorf("unexpected http status code: %d (%s)", resp.StatusCode, resp.Status)
 		}
 
-		// Open target file either in append mode (resume) or truncate mode (new start)
+		isResume := resp.StatusCode == http.StatusPartialContent
+		if resp.StatusCode == http.StatusOK {
+			currentSize = 0
+			isResume = false
+		}
+
 		var out *os.File
 		if isResume {
 			out, err = os.OpenFile(destPath, os.O_WRONLY|os.O_APPEND, 0600)
@@ -178,7 +169,6 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 			return err
 		}
 
-		// Recalculate true file size based on partial or full HTTP headers
 		totalSize := resp.ContentLength
 		if isResume {
 			totalSize += currentSize
@@ -191,7 +181,6 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 		var readErr error
 		var bytesRead int
 
-		// Stream reading block loop
 		for {
 			if ctx.Err() != nil {
 				out.Close()
@@ -209,10 +198,8 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 				}
 				currentSize += int64(bytesRead)
 
-				// Calculate progress
 				if onProgress != nil {
 					if totalSize > 0 {
-						// Calculate normal percentage
 						pct := int(float64(currentSize) / float64(totalSize) * 100.0)
 						if pct > lastPct {
 							if pct > 100 {
@@ -222,7 +209,6 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 							onProgress(float64(pct))
 						}
 					} else {
-						// If total size is unknown, pass negative MBs as progress indicator
 						mbs := float64(currentSize) / (1024 * 1024)
 						onProgress(-mbs)
 					}
@@ -237,12 +223,10 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 		out.Close()
 		resp.Body.Close()
 
-		// If EOF is reached, the download completed successfully
 		if readErr == io.EOF {
 			return nil
 		}
 
-		// Connection aborted or read timeout; retry from currentSize
 		time.Sleep(2 * time.Second)
 	}
 
