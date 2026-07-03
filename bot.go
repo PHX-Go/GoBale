@@ -835,6 +835,13 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		c.Message = u.CallbackQuery.Message
 	}
 
+	// Query state before acquiring the read lock to prevent lock contention
+	var state string
+	if u.Message != nil {
+		stateChan := b.Sessions.Get(u.Message.Chat.ID).State()
+		state, _ = stateChan.Go()
+	}
+
 	// Acquire read lock immediately to protect slice copies
 	b.mu.RLock()
 
@@ -863,9 +870,6 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 				_, _ = b.Sessions.Get(u.Message.Chat.ID).Data("deep_link", parts[1]).Go()
 			}
 		}
-
-		stateChan := b.Sessions.Get(u.Message.Chat.ID).State()
-		state, _ := stateChan.Go()
 
 		// Route member joins and exits to their registered system callbacks seamlessly
 		if len(u.Message.NewChatMembers) > 0 {
