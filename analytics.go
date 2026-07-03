@@ -184,11 +184,11 @@ func AnalyticsLogger() Handler {
 			ext := strings.ToLower(filepath.Ext(c.Message.Document.FileName))
 
 			// Typical voice-note / speech codecs and formats
-			isVoiceFormat := mime == "audio/ogg" || mime == "audio/opus" || mime == "audio/amr" || mime == "audio/3gpp" ||
+			isVoiceFormat := strings.Contains(mime, "ogg") || strings.Contains(mime, "opus") || strings.Contains(mime, "amr") || strings.Contains(mime, "3gpp") ||
 				ext == ".ogg" || ext == ".oga" || ext == ".opus" || ext == ".amr" || ext == ".3gp" || ext == ".3gpp"
 
 			// General music formats
-			isMusicFormat := mime == "audio/mpeg" || mime == "audio/mp3" || mime == "audio/x-m4a" || mime == "audio/m4a" || mime == "audio/flac" || mime == "audio/wav" ||
+			isMusicFormat := strings.Contains(mime, "mpeg") || strings.Contains(mime, "mp3") || strings.Contains(mime, "m4a") || strings.Contains(mime, "flac") || strings.Contains(mime, "wav") ||
 				ext == ".mp3" || ext == ".m4a" || ext == ".flac" || ext == ".wav" || ext == ".wma" || ext == ".aac"
 
 			if strings.HasPrefix(mime, "audio/") {
