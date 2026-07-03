@@ -140,8 +140,6 @@ func AnalyticsLogger() Handler {
 		isEdit := c.Update.EditedMessage != nil
 		if isEdit {
 			logMetric("edits", 1)
-		} else {
-			logMetric("text", 1)
 		}
 
 		peakKey := fmt.Sprintf("stat_peak:%d:%d", chatID, currentHour)
@@ -220,6 +218,8 @@ func AnalyticsLogger() Handler {
 
 		if detected != "" {
 			logMetric(detected, 1)
+		} else if !isEdit {
+			logMetric("text", 1) // Increment only if it has no media and is not an edit
 		}
 
 		dbConcrete.mu.Unlock()
