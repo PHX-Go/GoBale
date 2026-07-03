@@ -3,6 +3,7 @@ package gobale
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -47,6 +48,11 @@ func NewLogger(level LogLevel, path string, toConsole bool) *Logger {
 
 // openAndSetSize opens the active file stream and reads its current size
 func (l *Logger) openAndSetSize() {
+	// Auto-create parent directory if it does not exist
+	if dir := filepath.Dir(l.path); dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0755)
+	}
+
 	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
 		l.file = file
@@ -79,6 +85,13 @@ func (l *Logger) rotate() {
 	if l.file != nil {
 		_ = l.file.Close()
 		l.file = nil
+	}
+
+	// Clean active file directly if backups are disabled
+	if l.backups == 0 {
+		_ = os.Remove(l.path)
+		l.openAndSetSize()
+		return
 	}
 
 	// Sequentially shift and rename old backup files (e.g., .2 to .3, .1 to .2)
