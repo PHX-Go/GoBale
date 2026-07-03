@@ -3,17 +3,34 @@ package gobale
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 )
+
+// Dedicated HTTP client with 15-minute timeout, explicit HTTP/2 disabling, and optimized TCP buffers
+var transferHTTPClient = &http.Client{
+	Timeout: 15 * time.Minute,
+	Transport: &http.Transport{
+		TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		// Optimize buffer sizes to prevent connection resets on unstable networks
+		ReadBufferSize:  512 * 1024, // 512 KB
+		WriteBufferSize: 512 * 1024, // 512 KB
+	},
+}
 
 // progressReader wraps io.Reader to track and throttle data transfer progress events (1% to 100%)
 type progressReader struct {
@@ -38,6 +55,8 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
+
+// CONCURRENT DOWNLOAD POOL
 
 // DownloadJob encapsulates task state for background queue pipeline
 type DownloadJob struct {
@@ -73,14 +92,13 @@ func (dp *DownloadPool) start(workers int) {
 						dp.active.Store(job.chatID, cancel)
 					}
 
-					// Run the resilient download with retry and resume capabilities (updated: removed job.chatID)
-					err := resilientDownload(jobCtx, job.client, job.url, job.destPath, job.totalSize, job.onProgress)
+					// Run the resilient download with retry and resume capabilities (updated: uses transferHTTPClient)
+					err := resilientDownload(jobCtx, transferHTTPClient, job.url, job.destPath, job.totalSize, job.onProgress)
 
 					if job.chatID != "" {
 						dp.active.Delete(job.chatID)
 					}
-					// Clean up context resources
-					cancel()
+					cancel() // Clean up context resources
 
 					job.resultChan <- err
 				}
@@ -89,8 +107,8 @@ func (dp *DownloadPool) start(workers int) {
 	})
 }
 
-// resilientDownload handles range-resuming, multi-attempt retries, and manual cancellations (updated: removed chatID parameter)
-func resilientDownload(ctx context.Context, client *http.Client, url, destPath string, expectedSize int64, onProgress func(percent float64)) error {
+// resilientDownload handles range-resuming, multi-attempt retries, browser-mimicking headers, and unknown sizes
+func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPath string, expectedSize int64, onProgress func(percent float64)) error {
 	const maxRetries = 5
 	var currentSize int64 = 0
 	var lastPct = -1
@@ -106,9 +124,17 @@ func resilientDownload(ctx context.Context, client *http.Client, url, destPath s
 			return ctx.Err()
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if err != nil {
 			return err
+		}
+
+		// Inject browser User-Agent to prevent target servers from blocking Go's default client
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+		// Dynamically inject Referer header to bypass hotlinking protection on servers
+		if parsedURL, err := neturl.Parse(urlStr); err == nil {
+			req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
 		}
 
 		// Inject HTTP Range header if resuming from a partial file
@@ -184,14 +210,21 @@ func resilientDownload(ctx context.Context, client *http.Client, url, destPath s
 				currentSize += int64(bytesRead)
 
 				// Calculate progress
-				if totalSize > 0 && onProgress != nil {
-					pct := int(float64(currentSize) / float64(totalSize) * 100.0)
-					if pct > lastPct {
-						if pct > 100 {
-							pct = 100
+				if onProgress != nil {
+					if totalSize > 0 {
+						// Calculate normal percentage
+						pct := int(float64(currentSize) / float64(totalSize) * 100.0)
+						if pct > lastPct {
+							if pct > 100 {
+								pct = 100
+							}
+							lastPct = pct
+							onProgress(float64(pct))
 						}
-						lastPct = pct
-						onProgress(float64(pct))
+					} else {
+						// If total size is unknown, pass negative MBs as progress indicator
+						mbs := float64(currentSize) / (1024 * 1024)
+						onProgress(-mbs)
 					}
 				}
 			}
@@ -252,6 +285,8 @@ func (b *Bot) CancelDownload(chatID any) bool {
 	return false
 }
 
+// CONCURRENT UPLOAD POOL
+
 // UploadJob encapsulates task state for background upload pipeline
 type UploadJob struct {
 	sendChain  *SendChain
@@ -291,7 +326,7 @@ func (up *UploadPool) start(workers int) {
 					msg, err := job.sendChain.executeUpload(jobCtx)
 
 					up.active.Delete(chatIDStr)
-					cancel()
+					cancel() // Clean up context resources
 
 					job.resultChan <- &UploadResult{Msg: msg, Err: err}
 				}
@@ -329,13 +364,14 @@ func CancelUpload(b *Bot, chatID any) bool {
 	resolvedStr := fmt.Sprintf("%v", resolved)
 	if cancelVal, ok := globalUploadPool.active.Load(resolvedStr); ok {
 		if cancel, okFunc := cancelVal.(context.CancelFunc); okFunc {
-			// Cancel the context to abort upload loop instantly
-			cancel()
+			cancel() // Cancel the context to abort upload loop instantly
 			return true
 		}
 	}
 	return false
 }
+
+// CLIENT PROGRESS UPLOADER
 
 // BaseRequestMultipartWithProgress executes resilient multipart uploads with true network progress tracking and multi-attempt retries
 func (c *Client) BaseRequestMultipartWithProgress(ctx context.Context, method string, params any, files []InputFile, onProgress func(pct float64), result any) error {
@@ -361,7 +397,7 @@ func (c *Client) BaseRequestMultipartWithProgress(ctx context.Context, method st
 		buf := new(bytes.Buffer)
 		writer := multipart.NewWriter(buf)
 
-		// Serialize parameters into multipart fields
+		// 1. Serialize parameters into multipart fields (struct tags and generic maps)
 		if params != nil {
 			v := reflect.ValueOf(params)
 			if v.Kind() == reflect.Ptr {
@@ -414,7 +450,7 @@ func (c *Client) BaseRequestMultipartWithProgress(ctx context.Context, method st
 			}
 		}
 
-		// Write file payloads into multipart fields
+		// 2. Write file payloads into multipart fields
 		for _, f := range files {
 			part, err := writer.CreateFormFile(f.Field, f.FileName)
 			if err != nil {
@@ -424,7 +460,7 @@ func (c *Client) BaseRequestMultipartWithProgress(ctx context.Context, method st
 		}
 		_ = writer.Close()
 
-		// Wrap request body in a progressReader to track actual byte transfer on the socket
+		// 3. Wrap request body in a progressReader to track actual byte transfer on the socket
 		bodyReader := bytes.NewReader(buf.Bytes())
 		var requestBody io.Reader = bodyReader
 		if onProgress != nil {
@@ -442,11 +478,11 @@ func (c *Client) BaseRequestMultipartWithProgress(ctx context.Context, method st
 		}
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 
-		resp, err := c.httpClient.Do(req)
+		// Use transferHTTPClient to allow long-running uploads without 30-second timeouts!
+		resp, err := transferHTTPClient.Do(req)
 		if err != nil {
 			reqErr = err
-			// Delay before next retry
-			time.Sleep(2 * time.Second)
+			time.Sleep(2 * time.Second) // Delay before next retry
 			continue
 		}
 
