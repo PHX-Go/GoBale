@@ -297,27 +297,28 @@ func readFrame(r *bufio.Reader) ([]byte, byte, error) {
 	hasMask := (b2 & 0x80) != 0
 	length := int(b2 & 0x7F)
 
+	// Use stack-allocated buffer to eliminate small heap allocations
+	var buf [8]byte
+
 	switch length {
 	case 126:
-		lenBytes := make([]byte, 2)
-		if _, err := io.ReadFull(r, lenBytes); err != nil {
+		if _, err := io.ReadFull(r, buf[:2]); err != nil {
 			return nil, 0, err
 		}
-		length = int(binary.BigEndian.Uint16(lenBytes))
+		length = int(binary.BigEndian.Uint16(buf[:2]))
 	case 127:
-		lenBytes := make([]byte, 8)
-		if _, err := io.ReadFull(r, lenBytes); err != nil {
+		if _, err := io.ReadFull(r, buf[:8]); err != nil {
 			return nil, 0, err
 		}
-		length = int(binary.BigEndian.Uint64(lenBytes))
+		length = int(binary.BigEndian.Uint64(buf[:8]))
 	}
 
 	var maskKey []byte
 	if hasMask {
-		maskKey = make([]byte, 4)
-		if _, err := io.ReadFull(r, maskKey); err != nil {
+		if _, err := io.ReadFull(r, buf[:4]); err != nil {
 			return nil, 0, err
 		}
+		maskKey = buf[:4]
 	}
 
 	payload := make([]byte, length)
@@ -337,24 +338,26 @@ func readFrame(r *bufio.Reader) ([]byte, byte, error) {
 // writeFrame encodes and transmits unmasked websocket server-to-client frames
 func writeFrame(w io.Writer, payload []byte) error {
 	length := len(payload)
-	var header []byte
-	header = append(header, 0x81)
 
+	// Stack-allocated header buffer to prevent heap escape
+	var header [10]byte
+	header[0] = 0x81
+
+	var headerLen int
 	if length <= 125 {
-		header = append(header, byte(length))
+		header[1] = byte(length)
+		headerLen = 2
 	} else if length <= 65535 {
-		header = append(header, 126)
-		lenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(lenBytes, uint16(length))
-		header = append(header, lenBytes...)
+		header[1] = 126
+		binary.BigEndian.PutUint16(header[2:4], uint16(length))
+		headerLen = 4
 	} else {
-		header = append(header, 127)
-		lenBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(lenBytes, uint64(length))
-		header = append(header, lenBytes...)
+		header[1] = 127
+		binary.BigEndian.PutUint64(header[2:10], uint64(length))
+		headerLen = 10
 	}
 
-	if _, err := w.Write(header); err != nil {
+	if _, err := w.Write(header[:headerLen]); err != nil {
 		return err
 	}
 	_, err := w.Write(payload)
