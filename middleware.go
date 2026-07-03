@@ -43,7 +43,6 @@ func (t *tokenBucket) shouldWarn(cooldown time.Duration) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := time.Now()
-	// Safely read and update lastWarn under mutual exclusion lock (mu)
 	if now.Sub(t.lastWarn) >= cooldown {
 		t.lastWarn = now
 		return true
@@ -96,35 +95,30 @@ type userLimit struct {
 	count int
 }
 
-// AntiSpam prevents rapid message flood anomalies with customizable auto-deleting alerts
-func AntiSpam(limit int, window time.Duration, warnMsg ...string) Handler {
+// AntiSpam prevents rapid message flood anomalies with customizable alerts or dynamic WarnEngine
+func AntiSpam(engine *WarnEngine, limit int, window time.Duration, warnMsg ...string) Handler {
 	var tracker sync.Map
 
-	// Default friendly warning text with mention placeholder
 	defaultWarn := "⚠️ کاربر عزیز {name}، لطفاً از ارسال پیام‌های پی‌درپی خودداری کنید!"
 	if len(warnMsg) > 0 && warnMsg[0] != "" {
 		defaultWarn = warnMsg[0]
 	}
 
 	return func(c *Ctx) {
-		// Bypass callback queries (button clicks)
 		if c.Update != nil && c.Update.CallbackQuery != nil {
 			c.Next()
 			return
 		}
-
 		if c.Message == nil || c.Message.From == nil {
 			c.Next()
 			return
 		}
 		userID := c.Message.From.ID
 
-		// Bypass global bot owner/administrator
 		c.Bot.mu.RLock()
 		isOwner := userID == c.Bot.MaintenanceAdminID
 		c.Bot.mu.RUnlock()
 
-		// Bypass group administrators
 		isAdmin := false
 		if c.IsGroup() {
 			isAdmin, _ = c.Chat().IsAdmin().Go()
@@ -159,22 +153,19 @@ func AntiSpam(limit int, window time.Duration, warnMsg ...string) Handler {
 		}
 
 		if count > activeLimit {
-			_ = c.Del().Go() // Delete the spam message
+			_ = c.Del().Go()
 			if count == activeLimit+1 {
-				warn := defaultWarn
-				if activeShield {
-					warn = "🚨 *[سپر دفاعی فعال]* اسپم متوالی شناسایی شد! پیام‌ها به طور خودکار حذف می‌شوند."
+				if engine != nil {
+					_ = engine.Warn(c, "ارسال پیام‌های متوالی و اسپم")
 				} else {
-					// Replace placeholder with smart mention
-					warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+					warn := defaultWarn
+					if activeShield {
+						warn = "🚨 *[سپر دفاعی فعال]* اسپم متوالی شناسایی شد! پیام‌ها به طور خودکار حذف می‌شوند."
+					} else {
+						warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+					}
+					_, _ = c.Send().Text(warn).Markdown().Temp(5 * time.Second).Go()
 				}
-
-				// Send a self-destroying warning to keep chat clean
-				_, _ = c.Send().
-					Text(warn).
-					Markdown().
-					Temp(5 * time.Second). // Automatically deletes after 5 seconds
-					Go()
 			}
 			c.Abort()
 			return
@@ -183,14 +174,13 @@ func AntiSpam(limit int, window time.Duration, warnMsg ...string) Handler {
 	}
 }
 
-// AntiLink deletes unwanted links and advertisements from chat messages with custom warnings
-func AntiLink(warnDuration time.Duration, customMsg string, customTLDs ...string) Handler {
+// AntiLink deletes unwanted links and advertisements from chat messages, supporting optional WarnEngine
+func AntiLink(engine *WarnEngine, warnDuration time.Duration, customMsg string, customTLDs ...string) Handler {
 	tlds := []string{"com", "ir", "net", "org", "co", "ble\\.ir"}
 	tlds = append(tlds, customTLDs...)
 	pattern := fmt.Sprintf(`(?i)(https?://)?([a-zA-Z0-9-]+\.)+(%s)(/[^\s]*)?`, strings.Join(tlds, "|"))
 	regex := regexp.MustCompile(pattern)
 
-	// Set default warning text if customMsg is empty
 	defaultWarn := "⚠️ کاربر عزیز {name}، ارسال لینک و تبلیغات در این گروه مجاز نیست!"
 	if customMsg != "" {
 		defaultWarn = customMsg
@@ -207,13 +197,14 @@ func AntiLink(warnDuration time.Duration, customMsg string, customTLDs ...string
 				return
 			}
 			if regex.MatchString(c.Message.Text) {
-				_ = c.Del().Go() // Delete the link message
+				_ = c.Del().Go()
 
-				warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
-				_, _ = c.Send().
-					Text(warn).
-					Temp(warnDuration). // Automatically delete the warning message
-					Go()
+				if engine != nil {
+					_ = engine.Warn(c, "ارسال لینک و تبلیغات غیرمجاز")
+				} else {
+					warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
+					_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
+				}
 
 				c.Abort()
 				return
@@ -323,23 +314,15 @@ func AdminsOnly(customMsg ...string) Handler {
 
 // AdminOnly restricts execution to the global bot owner with custom warnings
 func AdminOnly(adminID int64, customMsg ...string) Handler {
-	// Set default warning text if customMsg is empty
-	defaultWarn := "⚠️ دسترسی غیرمجاز! این بخش مخصوص مدیریت کل ربات است."
-	if len(customMsg) > 0 && customMsg[0] != "" {
-		defaultWarn = customMsg[0]
-	}
-
 	return func(c *Ctx) {
-		if c.Message == nil || c.Message.From == nil {
-			c.Abort()
-			return
-		}
-		if c.Message.From.ID != adminID {
-			warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
-			_, _ = c.Send().
-				Text(warn).
-				Temp(5 * time.Second). // Clean up the chat
-				Go()
+		c.Bot.mu.RLock()
+		defer c.Bot.mu.RUnlock()
+		if c.SenderID() != c.Bot.MaintenanceAdminID {
+			warn := "⚠️ این بخش فقط مخصوص مالک ربات است."
+			if len(customMsg) > 0 && customMsg[0] != "" {
+				warn = customMsg[0]
+			}
+			_, _ = c.Send().Text(warn).Temp(5 * time.Second).Go()
 			c.Abort()
 			return
 		}
@@ -367,7 +350,6 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 	}
 
 	return func(c *Ctx) {
-		// Panic-Proof Shield: Bypass immediately if message or sender is nil (e.g. Channel posts)
 		if c.Message == nil || c.Message.From == nil {
 			c.Next()
 			return
@@ -386,7 +368,6 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 
 		senderID := c.SenderID()
 
-		// Bypass global administrators and owner
 		c.Bot.mu.RLock()
 		isOwner := senderID == c.Bot.MaintenanceAdminID
 		c.Bot.mu.RUnlock()
@@ -407,7 +388,6 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 			return
 		}
 
-		// 1. Check if group is locked natively
 		lockKey := fmt.Sprintf("group_lock_%d", chatID)
 		if val, ok := db.Get(lockKey); ok {
 			if locked, okBool := val.(bool); okBool && locked {
@@ -418,79 +398,64 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 			}
 		}
 
-		// 2. Check if captcha unverified or muted natively
 		captchaKey := fmt.Sprintf("captcha_mute_%d_%d", chatID, senderID)
 		if val, ok := db.Get(captchaKey); ok {
-			if isMuted, okBool := val.(bool); okBool && isMuted {
+			if isMuted, ok := val.(bool); ok && isMuted {
 				_ = c.Del().Go()
 				c.Abort()
 				return
 			}
 		}
 
-		muteKey := fmt.Sprintf("mute_user_%d_%d", chatID, senderID)
-		if val, ok := db.Get(muteKey); ok {
-			if isMuted, okBool := val.(bool); okBool && isMuted {
-				_ = c.Del().Go()
-				c.Abort()
-				return
-			}
-		}
-
-		blockedMap := make(map[string]bool)
-
-		// 3. Dynamically map registered group settings directly to media blocks
+		blockedTypes := make(map[string]bool)
 		c.Bot.mu.RLock()
-		for _, setting := range c.Bot.settings { // Fixed: Read from settings instead of groupSettings
-			if !setting.IsLocal {
-				continue // Skip global settings like maintenance mode
-			}
-			dbKey := fmt.Sprintf("group_config_%d_%s", chatID, setting.Key)
-			if val, ok := db.Get(dbKey); ok {
-				if active, okBool := val.(bool); okBool && active {
-					switch setting.Key {
-					case "g_lock":
-						blockedMap[string(MediaAll)] = true
-					case "g_lock_photo":
-						blockedMap[string(MediaPhoto)] = true
-					case "g_lock_voice":
-						blockedMap[string(MediaVoice)] = true
-					case "g_lock_video":
-						blockedMap[string(MediaVideo)] = true
-					case "g_lock_sticker":
-						blockedMap[string(MediaSticker)] = true
+		for _, entry := range c.Bot.settings {
+			if entry.IsLocal {
+				dbKey := fmt.Sprintf("group_config_%d_%s", chatID, entry.Key)
+				if val, ok := db.Get(dbKey); ok {
+					if active, okBool := val.(bool); okBool && active {
+						switch entry.Key {
+						case "g_lock":
+							blockedMapKey := string(MediaAll)
+							blockedTypes[blockedMapKey] = true
+						case "g_lock_photo":
+							blockedTypes[string(MediaPhoto)] = true
+						case "g_lock_voice":
+							blockedTypes[string(MediaVoice)] = true
+						case "g_lock_video":
+							blockedTypes[string(MediaVideo)] = true
+						case "g_lock_sticker":
+							blockedTypes[string(MediaSticker)] = true
+						}
 					}
 				}
 			}
 		}
 		c.Bot.mu.RUnlock()
 
-		// 4. Also check Group-wide manual command restrictions (e.g. /restrict)
 		groupKey := fmt.Sprintf("blocked_media_group_%d", chatID)
 		if groupVal, okGroup := db.Get(groupKey); okGroup {
 			if blockedSlice, okSlice := groupVal.([]string); okSlice {
 				for _, b := range blockedSlice {
-					blockedMap[b] = true
+					blockedTypes[b] = true
 				}
 			}
 		}
 
-		// 5. Also check Individual user manual command restrictions (e.g. /restrict [userID])
 		userKey := fmt.Sprintf("blocked_media_%d_%d", chatID, senderID)
 		if userVal, okUser := db.Get(userKey); okUser {
 			if blockedSlice, okSlice := userVal.([]string); okSlice {
 				for _, b := range blockedSlice {
-					blockedMap[b] = true
+					blockedTypes[b] = true
 				}
 			}
 		}
 
-		if len(blockedMap) == 0 {
+		if len(blockedTypes) == 0 {
 			c.Next()
 			return
 		}
 
-		// Detect message media type
 		var detected MediaType
 		var matchedTypeFarsi string
 
@@ -524,9 +489,8 @@ func ChatGuard(warnDuration time.Duration, customMsg string, silent bool) Handle
 		}
 
 		if detected != "" {
-			isBlocked := blockedMap[string(detected)] || blockedMap[string(MediaAll)]
+			isBlocked := blockedTypes[string(detected)] || blockedTypes[string(MediaAll)]
 			if isBlocked {
-				// Attempt to delete message natively and print error on failure to console
 				_ = c.Del().Go()
 
 				if !silent && warnDuration > 0 {
@@ -569,8 +533,8 @@ func Recovery() Handler {
 	}
 }
 
-// AntiForward deletes any forwarded messages from non-admin members automatically
-func AntiForward(warnDuration time.Duration, customMsg ...string) Handler {
+// AntiForward deletes any forwarded messages from non-admin members automatically, supporting optional WarnEngine
+func AntiForward(engine *WarnEngine, warnDuration time.Duration, customMsg ...string) Handler {
 	return func(c *Ctx) {
 		if c.Message != nil && (c.Message.ForwardFrom != nil || c.Message.ForwardFromChat != nil) {
 			c.Bot.mu.RLock()
@@ -583,16 +547,16 @@ func AntiForward(warnDuration time.Duration, customMsg ...string) Handler {
 			}
 			_ = c.Del().Go()
 
-			warn := "⚠️ ارسال پیام‌های بازارسال شده (Forward) در این گروه ممنوع است!"
-			if len(customMsg) > 0 && customMsg[0] != "" {
-				warn = customMsg[0]
-				warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+			if engine != nil {
+				_ = engine.Warn(c, "ارسال پیام بازارسال شده (Forward)")
+			} else {
+				warn := "⚠️ ارسال پیام‌های بازارسال شده (Forward) در این گروه ممنوع است!"
+				if len(customMsg) > 0 && customMsg[0] != "" {
+					warn = customMsg[0]
+					warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+				}
+				_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
 			}
-
-			_, _ = c.Send().
-				Text(warn).
-				Temp(warnDuration).
-				Go()
 			c.Abort()
 			return
 		}
@@ -600,9 +564,8 @@ func AntiForward(warnDuration time.Duration, customMsg ...string) Handler {
 	}
 }
 
-// AntiProfanity automatically deletes messages containing banned words with custom warnings
-func AntiProfanity(warnDuration time.Duration, bannedWords []string, customMsg ...string) Handler {
-	// Set default warning text if customMsg is empty
+// AntiProfanity automatically deletes messages containing banned words, supporting optional WarnEngine
+func AntiProfanity(engine *WarnEngine, warnDuration time.Duration, bannedWords []string, customMsg ...string) Handler {
 	defaultWarn := "⚠️ کاربر عزیز {name}، ارسال کلمات نامناسب در این گروه مجاز نیست!"
 	if len(customMsg) > 0 && customMsg[0] != "" {
 		defaultWarn = customMsg[0]
@@ -621,13 +584,14 @@ func AntiProfanity(warnDuration time.Duration, bannedWords []string, customMsg .
 			text := strings.ToLower(c.Message.Text)
 			for _, word := range bannedWords {
 				if strings.Contains(text, strings.ToLower(word)) {
-					_ = c.Del().Go() // Delete the profanity message
+					_ = c.Del().Go()
 
-					warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
-					_, _ = c.Send().
-						Text(warn).
-						Temp(warnDuration). // Automatically delete after duration
-						Go()
+					if engine != nil {
+						_ = engine.Warn(c, "استفاده از کلمات نامناسب و بی‌ادبی")
+					} else {
+						warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
+						_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
+					}
 
 					c.Abort()
 					return
@@ -654,8 +618,8 @@ const (
 	MediaContact   MediaType = "contact"
 )
 
-// AntiMedia restricts non-admin members from posting selected media types fluidly
-func AntiMedia(warnDuration time.Duration, blockedTypes ...MediaType) Handler {
+// AntiMedia restricts non-admin members from posting selected media types, supporting optional WarnEngine
+func AntiMedia(engine *WarnEngine, warnDuration time.Duration, blockedTypes ...MediaType) Handler {
 	typesMap := make(map[MediaType]bool)
 	for _, t := range blockedTypes {
 		typesMap[t] = true
@@ -705,10 +669,15 @@ func AntiMedia(warnDuration time.Duration, blockedTypes ...MediaType) Handler {
 		}
 		if matched {
 			_ = c.Del().Go()
-			_, _ = c.Send().
-				Text(fmt.Sprintf("⚠️ ارسال رسانه از نوع [%s] در این گروه مجاز نیست!", matchedType)).
-				Temp(warnDuration).
-				Go()
+
+			if engine != nil {
+				_ = engine.Warn(c, fmt.Sprintf("ارسال رسانه غیرمجاز (%s)", matchedType))
+			} else {
+				_, _ = c.Send().
+					Text(fmt.Sprintf("⚠️ ارسال رسانه از نوع [%s] در این گروه مجاز نیست!", matchedType)).
+					Temp(warnDuration).
+					Go()
+			}
 			c.Abort()
 			return
 		}
@@ -722,8 +691,8 @@ type repeatState struct {
 	lastTime time.Time
 }
 
-// AntiRepeat deletes duplicate identical messages sent by the same user in sequence thread-safely
-func AntiRepeat(warnDuration time.Duration, customMsg ...string) Handler {
+// AntiRepeat deletes duplicate identical messages, supporting optional WarnEngine
+func AntiRepeat(engine *WarnEngine, warnDuration time.Duration, customMsg ...string) Handler {
 	var users sync.Map
 	return func(c *Ctx) {
 		if c.Message == nil || c.Message.From == nil || c.Message.Text == "" {
@@ -750,16 +719,16 @@ func AntiRepeat(warnDuration time.Duration, customMsg ...string) Handler {
 		if isDuplicate {
 			_ = c.Del().Go()
 
-			warn := fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام تکراری و کپی‌پست در این گروه ممنوع است!", c.Message.From.Mention())
-			if len(customMsg) > 0 && customMsg[0] != "" {
-				warn = customMsg[0]
-				warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+			if engine != nil {
+				_ = engine.Warn(c, "ارسال پیام تکراری و کپی‌پست متوالی")
+			} else {
+				warn := fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام تکراری و کپی‌پست در این گروه ممنوع است!", c.Message.From.Mention())
+				if len(customMsg) > 0 && customMsg[0] != "" {
+					warn = customMsg[0]
+					warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
+				}
+				_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
 			}
-
-			_, _ = c.Send().
-				Text(warn).
-				Temp(warnDuration).
-				Go()
 			c.Abort()
 			return
 		}
@@ -788,7 +757,6 @@ func AntiRaid(limit int, window time.Duration) Handler {
 		tracker := val.(*raidTracker)
 
 		tracker.mu.Lock()
-		// Filter out historical timestamps
 		var cleanList []time.Time
 		for _, t := range tracker.joinTimes {
 			if now.Sub(t) < window {
@@ -796,7 +764,6 @@ func AntiRaid(limit int, window time.Duration) Handler {
 			}
 		}
 
-		// Append new timestamps
 		for range c.Message.NewChatMembers {
 			cleanList = append(cleanList, now)
 		}
@@ -804,7 +771,6 @@ func AntiRaid(limit int, window time.Duration) Handler {
 		currentCount := len(cleanList)
 		tracker.mu.Unlock()
 
-		// Trigger Panic Shield and lock group automatically if join rate exceeds limit
 		if currentCount > limit {
 			dbKey := fmt.Sprintf("group_lock_%d", id)
 			val, ok := c.DB().Get(dbKey).Go()
@@ -814,10 +780,7 @@ func AntiRaid(limit int, window time.Duration) Handler {
 			}
 
 			if !alreadyLocked {
-				// Lock the group locally inside GOB database atomically
 				_ = c.DB().Set(dbKey, true).Go()
-
-				// Announce the emergency lockdown event fluidly with markdown
 				_, _ = c.Send().
 					Text("⚠️ *[سپر اضطراری ربات]* حمله ربات‌های تبلیغاتی (Raid Attack) شناسایی شد! گروه به طور خودکار برای امنیت چت قفل گردید.").
 					Markdown().
@@ -830,7 +793,7 @@ func AntiRaid(limit int, window time.Duration) Handler {
 	}
 }
 
-// AntiCharLimit deletes messages exceeding the character limit from non-admin members automatically
+// AntiCharLimit deletes messages exceeding the character limit, supporting optional WarnEngine integration
 func AntiCharLimit(limit int, warnDuration time.Duration, customMsg ...string) Handler {
 	return func(c *Ctx) {
 		if c.Message != nil && c.Message.Text != "" {
@@ -916,14 +879,12 @@ func AntiSelfBot(minInterval time.Duration) Handler {
 			return
 		}
 
-		// Check if there is a recorded join time for this user in this group
 		joinKey := fmt.Sprintf("join_time_%d_%d", chatID, userID)
 		val, ok := c.DB().Get(joinKey).Go()
 		if ok {
 			if joinTimeNs, ok := val.(int64); ok && joinTimeNs > 0 {
 				elapsed := time.Since(time.Unix(0, joinTimeNs))
 
-				// If they posted a message faster than the minInterval (e.g. 3 seconds), they are a self-bot!
 				if elapsed < minInterval {
 					c.Bot.mu.RLock()
 					isOwner := userID == c.Bot.MaintenanceAdminID
@@ -931,18 +892,15 @@ func AntiSelfBot(minInterval time.Duration) Handler {
 					isAdmin, _ := c.Chat().IsAdmin().Go()
 
 					if !isOwner && !isAdmin {
-						// Delete the spam message and ban the self-bot instantly
 						_ = c.Del().Go()
 						_ = c.Chat().Ban(userID).Go()
 						_ = c.DB().Del(joinKey).Go()
 
 						c.Bot.Log().Warn("Self-bot detected! User %d posted within %v of joining. Banned.", userID, elapsed).Go()
-
 						c.Abort()
 						return
 					}
 				}
-				// Clean up the key after they safely pass the first message threshold to optimize DB size
 				_ = c.DB().Del(joinKey).Go()
 			}
 		}
@@ -950,8 +908,8 @@ func AntiSelfBot(minInterval time.Duration) Handler {
 	}
 }
 
-// AntiNight restricts non-admin members from sending any messages during specified night hours
-func AntiNight(startHour, endHour int, warnDuration time.Duration, customMsg ...string) Handler {
+// AntiNight restricts non-admin members from sending any messages during specified night hours, supporting optional WarnEngine
+func AntiNight(engine *WarnEngine, startHour, endHour int, warnDuration time.Duration, customMsg ...string) Handler {
 	return func(c *Ctx) {
 		if c.Message == nil {
 			c.Next()
@@ -973,17 +931,17 @@ func AntiNight(startHour, endHour int, warnDuration time.Duration, customMsg ...
 			if !isOwner && !isAdmin {
 				_ = c.Del().Go()
 
-				warn := fmt.Sprintf("⚠️ گفتگو در ساعات خاموشی شبانه گروه (%02d:00 الی %02d:00) ممنوع است!", startHour, endHour)
-				if len(customMsg) > 0 && customMsg[0] != "" {
-					warn = customMsg[0]
-					warn = strings.ReplaceAll(warn, "{start}", fmt.Sprintf("%02d:00", startHour))
-					warn = strings.ReplaceAll(warn, "{end}", fmt.Sprintf("%02d:00", endHour))
+				if engine != nil {
+					_ = engine.Warn(c, "گفتگو در ساعات خاموشی شبانه گروه")
+				} else {
+					warn := fmt.Sprintf("⚠️ گفتگو در ساعات خاموشی شبانه گروه (%02d:00 الی %02d:00) ممنوع است!", startHour, endHour)
+					if len(customMsg) > 0 && customMsg[0] != "" {
+						warn = customMsg[0]
+						warn = strings.ReplaceAll(warn, "{start}", fmt.Sprintf("%02d:00", startHour))
+						warn = strings.ReplaceAll(warn, "{end}", fmt.Sprintf("%02d:00", endHour))
+					}
+					_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
 				}
-
-				_, _ = c.Send().
-					Text(warn).
-					Temp(warnDuration).
-					Go()
 				c.Abort()
 				return
 			}
@@ -992,8 +950,8 @@ func AntiNight(startHour, endHour int, warnDuration time.Duration, customMsg ...
 	}
 }
 
-// AntiCaps deletes messages containing excessive uppercase English letters (shouting) from non-admins
-func AntiCaps(thresholdPercent float64, minLength int, warnDuration time.Duration) Handler {
+// AntiCaps deletes messages containing excessive uppercase English letters, supporting optional WarnEngine
+func AntiCaps(engine *WarnEngine, thresholdPercent float64, minLength int, warnDuration time.Duration) Handler {
 	return func(c *Ctx) {
 		if c.Message != nil && c.Message.Text != "" {
 			c.Bot.mu.RLock()
@@ -1020,10 +978,15 @@ func AntiCaps(thresholdPercent float64, minLength int, warnDuration time.Duratio
 					percent := (float64(upperLetters) / float64(totalLetters)) * 100.0
 					if percent >= thresholdPercent {
 						_ = c.Del().Go()
-						_, _ = c.Send().
-							Text(fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام با حروف بزرگ پی‌درپی (فریاد زدن) در این گروه ممنوع است!", c.Message.From.FirstName)).
-							Temp(warnDuration).
-							Go()
+
+						if engine != nil {
+							_ = engine.Warn(c, "ارسال پیام با حروف بزرگ پی‌درپی (فریاد زدن)")
+						} else {
+							_, _ = c.Send().
+								Text(fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام با حروف بزرگ پی‌درپی (فریاد زدن) در این گروه ممنوع است!", c.Message.From.FirstName)).
+								Temp(warnDuration).
+								Go()
+						}
 						c.Abort()
 						return
 					}
@@ -1034,16 +997,13 @@ func AntiCaps(thresholdPercent float64, minLength int, warnDuration time.Duratio
 	}
 }
 
-// MandatoryAddGuard restricts non-admin members from posting unless they have invited a minimum number of users
-func MandatoryAddGuard(defaultLimit int) Handler {
+// MandatoryAddGuard restricts non-admin members from posting unless they have invited a minimum number of users, supporting optional WarnEngine
+func MandatoryAddGuard(engine *WarnEngine, defaultLimit int) Handler {
 	return func(c *Ctx) {
-		// Bypass callback queries (button clicks)
 		if c.Update != nil && c.Update.CallbackQuery != nil {
 			c.Next()
 			return
 		}
-
-		// Bypass service messages, joins, exits, or messages without a valid sender
 		if c.Message == nil || c.Message.From == nil || len(c.Message.NewChatMembers) > 0 || c.Message.LeftChatMember != nil {
 			c.Next()
 			return
@@ -1052,7 +1012,6 @@ func MandatoryAddGuard(defaultLimit int) Handler {
 		if c.IsGroup() {
 			id, err := c.ChatID()
 			if err == nil {
-				// Query if the group has custom mandatory add limit in database, otherwise fallback to defaultLimit
 				limitKey := fmt.Sprintf("mandatory_add_limit_%d", id)
 				valLimit, okLimit := c.DB().Get(limitKey).Go()
 				limit := defaultLimit
@@ -1062,7 +1021,6 @@ func MandatoryAddGuard(defaultLimit int) Handler {
 					}
 				}
 
-				// Execute guard only if the limit is set greater than 0
 				if limit > 0 {
 					isAdmin, errAdmin := c.Chat().IsAdmin().Go()
 					if errAdmin == nil {
@@ -1073,7 +1031,6 @@ func MandatoryAddGuard(defaultLimit int) Handler {
 							valInvites, okInvites := c.DB().Get(userInvitesKey).Go()
 							invites := 0
 							if okInvites {
-								// Support both int and int64 gob decoding formats safely
 								if i, ok := valInvites.(int); ok {
 									invites = i
 								} else if i, ok := valInvites.(int64); ok {
@@ -1081,20 +1038,22 @@ func MandatoryAddGuard(defaultLimit int) Handler {
 								}
 							}
 
-							// If user invites count is less than required limit, delete message and block pipeline
 							if invites < limit {
 								_ = c.Del().Go()
 
-								report := Text().
-									Line("⚠️ *[اد اجباری]* کاربر عزیز {name}، برای چت در این گروه باید ابتدا اعضا را دعوت کنید!").
-									Line().
-									Line("📊 آمار دعوت‌های شما: {count} از {limit} نفر").
-									Bind("name", c.Message.From.Mention()).
-									Bind("count", invites).
-									Bind("limit", limit).
-									Go()
-
-								_, _ = c.Send().Text(report).Markdown().Temp(5 * time.Second).Go()
+								if engine != nil {
+									_ = engine.Warn(c, fmt.Sprintf("عدم دعوت از حداقل %d کاربر جدید به گروه", limit))
+								} else {
+									report := Text().
+										Line("⚠️ *[اد اجباری]* کاربر عزیز {name}، برای چت در این گروه باید ابتدا اعضا را دعوت کنید!").
+										Line().
+										Line("📊 آمار دعوت‌های شما: {count} از {limit} نفر").
+										Bind("name", c.Message.From.Mention()).
+										Bind("count", invites).
+										Bind("limit", limit).
+										Go()
+									_, _ = c.Send().Text(report).Markdown().Temp(5 * time.Second).Go()
+								}
 								c.Abort()
 								return
 							}
@@ -1140,85 +1099,21 @@ func CallbackRateLimit(rate, capacity float64, onLimit Handler) Handler {
 			return
 		}
 		userID := c.Update.CallbackQuery.From.ID
-
+		now := time.Now()
 		val, _ := limiters.LoadOrStore(userID, &tokenBucket{
 			tokens:     capacity,
-			lastRefill: time.Now(),
+			lastRefill: now,
 			rate:       rate,
 			cap:        capacity,
 		})
 		tb := val.(*tokenBucket)
 		if !tb.allow() {
-			if tb.shouldWarn(3*time.Second) && onLimit != nil {
+			if onLimit != nil {
 				onLimit(c)
 			}
 			c.Abort()
 			return
 		}
-		c.Next()
-	}
-}
-
-// EditHistory saves message text with timestamp to local DB to track modifications
-func EditHistory(dbPath string, keepDuration time.Duration) Handler {
-	db := NewDatabase(dbPath)
-
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		for range ticker.C {
-			now := time.Now().UnixNano()
-			db.mu.Lock()
-			var keysToDelete []string
-			for k, v := range db.store {
-				if valStr, ok := v.(string); ok {
-					parts := strings.SplitN(valStr, "|", 2)
-					if len(parts) == 2 {
-						var exp int64
-						_, err := fmt.Sscanf(parts[0], "%d", &exp)
-						if err == nil && now > exp {
-							keysToDelete = append(keysToDelete, k)
-						}
-					}
-				}
-			}
-			db.mu.Unlock()
-			for _, k := range keysToDelete {
-				_ = db.Del(k)
-			}
-		}
-	}()
-
-	return func(c *Ctx) {
-		if c.Update == nil {
-			c.Next()
-			return
-		}
-
-		if c.Update.Message != nil && c.Update.Message.Text != "" {
-			key := fmt.Sprintf("msg:%d:%d", c.Update.Message.Chat.ID, c.Update.Message.MessageID)
-			val := fmt.Sprintf("%d|%s", time.Now().Add(keepDuration).UnixNano(), c.Update.Message.Text)
-			_ = db.Set(key, val)
-		} else if c.Update.EditedMessage != nil {
-			key := fmt.Sprintf("msg:%d:%d", c.Update.EditedMessage.Chat.ID, c.Update.EditedMessage.MessageID)
-			val, ok := db.Get(key)
-			if ok {
-				if valStr, okStr := val.(string); okStr {
-					parts := strings.SplitN(valStr, "|", 2)
-					if len(parts) == 2 {
-						c.mu.Lock()
-						if c.Keys == nil {
-							c.Keys = make(map[string]any)
-						}
-						c.Keys["_sys_prev_text"] = parts[1]
-						c.mu.Unlock()
-					}
-				}
-			}
-
-			valNew := fmt.Sprintf("%d|%s", time.Now().Add(keepDuration).UnixNano(), c.Update.EditedMessage.Text)
-			_ = db.Set(key, valNew)
-		}
-
 		c.Next()
 	}
 }
