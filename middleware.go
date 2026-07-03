@@ -97,8 +97,6 @@ type userLimit struct {
 
 // AntiSpam prevents rapid message flood anomalies with customizable alerts or dynamic WarnEngine
 func AntiSpam(engine *WarnEngine, limit int, window time.Duration, warnMsg ...string) Handler {
-	var tracker sync.Map
-
 	defaultWarn := "⚠️ کاربر عزیز {name}، لطفاً از ارسال پیام‌های پی‌درپی خودداری کنید!"
 	if len(warnMsg) > 0 && warnMsg[0] != "" {
 		defaultWarn = warnMsg[0]
@@ -114,6 +112,11 @@ func AntiSpam(engine *WarnEngine, limit int, window time.Duration, warnMsg ...st
 			return
 		}
 		userID := c.Message.From.ID
+		chatID, err := c.ChatID()
+		if err != nil {
+			c.Next()
+			return
+		}
 
 		c.Bot.mu.RLock()
 		isOwner := userID == c.Bot.MaintenanceAdminID
@@ -131,8 +134,24 @@ func AntiSpam(engine *WarnEngine, limit int, window time.Duration, warnMsg ...st
 
 		now := time.Now().UnixNano()
 		winNs := int64(window)
-		val, _ := tracker.LoadOrStore(userID, &userLimit{})
-		ul := val.(*userLimit)
+
+		// Safely fetch or store dynamic rate limits inside BotCache
+		key := fmt.Sprintf("antispam:%d:%d", chatID, userID)
+		cache := c.Bot.cache
+		cache.mu.Lock()
+		var ul *userLimit
+		if item, ok := cache.store[key]; ok && time.Now().Before(item.expiresAt) {
+			ul = item.value.(*userLimit)
+			item.expiresAt = time.Now().Add(window * 2)
+		} else {
+			ul = &userLimit{}
+			cache.store[key] = &cacheItem{
+				value:     ul,
+				expiresAt: time.Now().Add(window * 2),
+			}
+		}
+		cache.mu.Unlock()
+
 		ul.mu.Lock()
 		if now-ul.start < winNs {
 			ul.count++
@@ -699,29 +718,52 @@ type repeatState struct {
 
 // AntiRepeat deletes duplicate identical messages, supporting optional WarnEngine
 func AntiRepeat(engine *WarnEngine, warnDuration time.Duration, customMsg ...string) Handler {
-	var users sync.Map
 	return func(c *Ctx) {
 		if c.Message == nil || c.Message.From == nil || c.Message.Text == "" {
 			c.Next()
 			return
 		}
 		userID := c.Message.From.ID
+		chatID, err := c.ChatID()
+		if err != nil {
+			c.Next()
+			return
+		}
 		text := strings.TrimSpace(c.Message.Text)
+
 		c.Bot.mu.RLock()
 		isOwner := userID == c.Bot.MaintenanceAdminID
 		c.Bot.mu.RUnlock()
+
 		isAdmin, _ := c.Chat().IsAdmin().Go()
 		if isOwner || isAdmin {
 			c.Next()
 			return
 		}
-		val, _ := users.LoadOrStore(userID, &repeatState{})
-		rs := val.(*repeatState)
+
+		// Safely fetch or store duplicate detection states inside BotCache
+		key := fmt.Sprintf("antirepeat:%d:%d", chatID, userID)
+		cache := c.Bot.cache
+		cache.mu.Lock()
+		var rs *repeatState
+		if item, ok := cache.store[key]; ok && time.Now().Before(item.expiresAt) {
+			rs = item.value.(*repeatState)
+			item.expiresAt = time.Now().Add(5 * time.Minute)
+		} else {
+			rs = &repeatState{}
+			cache.store[key] = &cacheItem{
+				value:     rs,
+				expiresAt: time.Now().Add(5 * time.Minute),
+			}
+		}
+		cache.mu.Unlock()
+
 		rs.mu.Lock()
 		isDuplicate := rs.lastText == text && time.Since(rs.lastTime) < 1*time.Minute
 		rs.lastText = text
 		rs.lastTime = time.Now()
 		rs.mu.Unlock()
+
 		if isDuplicate {
 			_ = c.Del().Go()
 
@@ -750,7 +792,6 @@ type raidTracker struct {
 
 // AntiRaid detects rapid member joins and automatically locks the group locally inside GOB DB
 func AntiRaid(limit int, window time.Duration) Handler {
-	var groupTrackers sync.Map // maps chatID (int64) -> *raidTracker
 	return func(c *Ctx) {
 		id, err := c.ChatID()
 		if err != nil {
@@ -759,8 +800,22 @@ func AntiRaid(limit int, window time.Duration) Handler {
 		}
 		now := time.Now()
 
-		val, _ := groupTrackers.LoadOrStore(id, &raidTracker{})
-		tracker := val.(*raidTracker)
+		// Safely fetch or store raid group trackers inside BotCache
+		key := fmt.Sprintf("antiraid:%d", id)
+		cache := c.Bot.cache
+		cache.mu.Lock()
+		var tracker *raidTracker
+		if item, ok := cache.store[key]; ok && time.Now().Before(item.expiresAt) {
+			tracker = item.value.(*raidTracker)
+			item.expiresAt = time.Now().Add(window * 2)
+		} else {
+			tracker = &raidTracker{}
+			cache.store[key] = &cacheItem{
+				value:     tracker,
+				expiresAt: time.Now().Add(window * 2),
+			}
+		}
+		cache.mu.Unlock()
 
 		tracker.mu.Lock()
 		var cleanList []time.Time
