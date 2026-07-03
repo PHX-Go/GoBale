@@ -172,7 +172,6 @@ func (db *Database) replayWAL() error {
 func (db *Database) appendWAL(entry walEntry) {
 	db.walMu.Lock()
 	_ = db.walEnc.Encode(entry)
-	_ = db.walF.Sync()
 	db.writeCount++
 	shouldCompact := db.writeCount >= db.compactEvery
 	db.walMu.Unlock()
