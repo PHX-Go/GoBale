@@ -1123,3 +1123,87 @@ func CallbackRateLimit(rate, capacity float64, onLimit Handler) Handler {
 		c.Next()
 	}
 }
+
+// FLUENT PERMISSION & LOCATION GUARDS
+
+// MemberRole defines the hierarchical role of a chat member
+type MemberRole string
+
+const (
+	RoleOwner   MemberRole = "owner"   // Global bot creator/owner
+	RoleAdmin   MemberRole = "admin"   // Group administrator or creator
+	RoleRegular MemberRole = "regular" // Standard chat member
+)
+
+// ChatLoc defines the physical location type of a chat
+type ChatLoc string
+
+const (
+	LocPrivate    ChatLoc = "private"    // Bot direct message PV
+	LocGroup      ChatLoc = "group"      // Regular chat group
+	LocSuperGroup ChatLoc = "supergroup" // Supergroup chat
+	LocChannel    ChatLoc = "channel"    // Channel chat
+)
+
+// Roles restricts the command execution to specific member roles (e.g., owner, admin, regular)
+func (r *RouteChain) Roles(roles ...MemberRole) *RouteChain {
+	r.Guard(func(c *Ctx) bool {
+		var senderRole MemberRole = RoleRegular
+
+		// Resolve sender role hierarchically
+		if c.IsOwner() {
+			senderRole = RoleOwner
+		} else {
+			isAdmin, err := c.Chat().IsAdmin().Go()
+			if err == nil && isAdmin {
+				senderRole = RoleAdmin
+			}
+		}
+
+		// Validate if sender role matches the authorized scopes
+		for _, role := range roles {
+			if senderRole == role {
+				return true
+			}
+			// Owner implicitly inherits administrator privileges
+			if role == RoleAdmin && senderRole == RoleOwner {
+				return true
+			}
+		}
+
+		// If unauthorized, send a temporary 5-second warning alert
+		_, _ = c.Send().Text("⚠️ شما دسترسی لازم برای اجرای این دستور را ندارید.").Temp(5 * time.Second).Go()
+		return false
+	})
+	return r
+}
+
+// Locs restricts the command execution to specific chat locations (e.g., private, group, supergroup, channel)
+func (r *RouteChain) Locs(locs ...ChatLoc) *RouteChain {
+	r.Guard(func(c *Ctx) bool {
+		var currentLoc ChatLoc
+
+		// Resolve current chat location type safely
+		if c.IsPrivate() {
+			currentLoc = LocPrivate
+		} else if c.IsSuperGroup() {
+			currentLoc = LocSuperGroup
+		} else if c.IsGroup() {
+			currentLoc = LocGroup
+		} else if c.IsChannel() {
+			currentLoc = LocChannel
+		}
+
+		// Validate if current location is allowed
+		for _, loc := range locs {
+			if currentLoc == loc {
+				return true
+			}
+		}
+
+		// If location is unauthorized, send a temporary 5-second warning alert
+		_, _ = c.Send().Text("⚠️ این دستور در این نوع محیط گفتگو قابل اجرا نیست.").Temp(5 * time.Second).Go()
+		return false
+	})
+	return r
+}
