@@ -10,9 +10,9 @@ type Handler func(*Ctx)
 
 // SettingEntry stores system configuration toggle elements
 type SettingEntry struct {
-	Key   string
-	Label string
-	Ptr   *bool
+	Key     string
+	Label   string
+	Ptr     *bool
 	Default bool
 	IsLocal bool
 }
@@ -59,6 +59,7 @@ type Message struct {
 	SuccessfulPayment    *SuccessfulPayment    `json:"successful_payment,omitempty"`
 	WebAppData           *WebAppData           `json:"web_app_data,omitempty"`
 	ReplyMarkup          *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ForwardOrigin        *MessageOrigin        `json:"forward_origin,omitempty"` // EXPERIMENTAL
 }
 
 // User represents a Bale user account structure
@@ -540,4 +541,16 @@ type SafirErr struct {
 	PhoneNumber string `json:"phone_number"`
 	Code        int    `json:"code"`
 	Description string `json:"description"`
+}
+
+// MessageOrigin represents the origin of a forwarded message (EXPERIMENTAL)
+type MessageOrigin struct {
+	Type            string `json:"type"`                       // "user", "hidden_user", "chat", or "channel"
+	Date            int64  `json:"date"`                       // Date the message was originally sent
+	SenderUser      *User  `json:"sender_user,omitempty"`      // Present if Type is "user"
+	SenderUserName  string `json:"sender_user_name,omitempty"` // Present if Type is "hidden_user"
+	SenderChat      *Chat  `json:"sender_chat,omitempty"`      // Present if Type is "chat"
+	AuthorSignature string `json:"author_signature,omitempty"` // Present if Type is "chat" or "channel"
+	Chat            *Chat  `json:"chat,omitempty"`             // Present if Type is "channel"
+	MessageID       int64  `json:"message_id,omitempty"`       // Present if Type is "channel"
 }

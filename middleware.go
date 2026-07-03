@@ -533,10 +533,11 @@ func Recovery() Handler {
 	}
 }
 
-// AntiForward deletes any forwarded messages from non-admin members automatically, supporting optional WarnEngine
+// AntiForward deletes any forwarded messages from non-admin members automatically, supporting optional WarnEngine and hidden privacy bypass
 func AntiForward(engine *WarnEngine, warnDuration time.Duration, customMsg ...string) Handler {
 	return func(c *Ctx) {
-		if c.Message != nil && (c.Message.ForwardFrom != nil || c.Message.ForwardFromChat != nil) {
+		// Use modern ForwardOrigin alongside legacy fields to catch 100% of forwards (including hidden users)
+		if c.Message != nil && (c.Message.ForwardOrigin != nil || c.Message.ForwardFrom != nil || c.Message.ForwardFromChat != nil) {
 			c.Bot.mu.RLock()
 			isOwner := c.Message.From.ID == c.Bot.MaintenanceAdminID
 			c.Bot.mu.RUnlock()
@@ -545,10 +546,15 @@ func AntiForward(engine *WarnEngine, warnDuration time.Duration, customMsg ...st
 				c.Next()
 				return
 			}
-			_ = c.Del().Go()
+			_ = c.Del().Go() // Delete the forwarded message
 
 			if engine != nil {
-				_ = engine.Warn(c, "ارسال پیام بازارسال شده (Forward)")
+				// Resolve the exact origin type (user, channel, chat, hidden_user) for detailed WAL logging
+				originType := "نامشخص"
+				if c.Message.ForwardOrigin != nil {
+					originType = c.Message.ForwardOrigin.Type
+				}
+				_ = engine.Warn(c, fmt.Sprintf("ارسال پیام بازارسال شده (%s)", originType))
 			} else {
 				warn := "⚠️ ارسال پیام‌های بازارسال شده (Forward) در این گروه ممنوع است!"
 				if len(customMsg) > 0 && customMsg[0] != "" {
