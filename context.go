@@ -143,6 +143,11 @@ func (d *DelChain) Go() error {
 		return errors.New("no message in context")
 	}
 
+	// Skip zero message IDs
+	if d.c.Message.MessageID == 0 {
+		return nil
+	}
+
 	if d.dur > 0 {
 		msgID := d.c.Message.MessageID
 		id, err := d.c.ChatID()

@@ -1083,12 +1083,11 @@ func (j *JoinChain) Go() {
 		nowNs := time.Now().UnixNano()
 
 		for _, user := range c.Message.NewChatMembers {
-			// AntiSelfBot: Record join timestamp for new member
 			joinKey := fmt.Sprintf("join_time_%d_%d", chatID, user.ID)
 			_ = c.DB().Set(joinKey, nowNs).Go()
 
-			// MandatoryAddGuard: Increment inviter counters
-			if c.Message.From != nil && c.Message.From.ID != user.ID {
+			// Only credit human inviters
+			if c.Message.From != nil && !c.Message.From.IsBot && c.Message.From.ID != user.ID {
 				inviterID := c.Message.From.ID
 				invitesKey := fmt.Sprintf("invites_%d_%d", chatID, inviterID)
 				_ = c.DB().Tx(func(store map[string]any) {
@@ -1102,7 +1101,6 @@ func (j *JoinChain) Go() {
 				}).Go()
 			}
 
-			// Save the user ID atomically in local GOB DB if option is configured
 			if j.doSave && j.dbKey != "" {
 				_ = c.DB().Tx(func(store map[string]any) {
 					var list []int64
@@ -1124,9 +1122,8 @@ func (j *JoinChain) Go() {
 				}).Go()
 			}
 
-			// Format and send welcome message fluidly if option is configured
 			if j.msg != "" {
-				name := user.Mention() // Updated to use smart Mention() fallback
+				name := user.Mention()
 				if user.LastName != "" {
 					name += " " + user.LastName
 				}

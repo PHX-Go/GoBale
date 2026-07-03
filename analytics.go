@@ -86,10 +86,15 @@ func (b *Bot) incrementAnalyticsCount(key string, delta int64) {
 // AnalyticsLogger is a high-performance, panic-proof global traffic logger middleware
 func AnalyticsLogger() Handler {
 	return func(c *Ctx) {
-		// Initialize the database on-demand upon first message activity
 		c.Bot.initAnalyticsDB()
 
 		if c.Message == nil || c.Message.From == nil {
+			c.Next()
+			return
+		}
+
+		// Ignore service messages
+		if len(c.Message.NewChatMembers) > 0 || c.Message.LeftChatMember != nil {
 			c.Next()
 			return
 		}
@@ -124,17 +129,14 @@ func AnalyticsLogger() Handler {
 			}
 			newVal := current + delta
 			dbConcrete.store[key] = newVal
-			// Append WAL record to persist increment safely
 			dbConcrete.appendWAL(walEntry{Op: walSet, Key: key, Val: newVal})
 		}
 
-		// Helper to increment both daily and lifetime keyspaces
 		logMetric := func(metric string, delta int64) {
 			inc(fmt.Sprintf("stat_daily:%d:%s", chatID, metric), delta)
 			inc(fmt.Sprintf("stat_lifetime:%d:%s", chatID, metric), delta)
 		}
 
-		// Increment message counters
 		isEdit := c.Update.EditedMessage != nil
 		if isEdit {
 			logMetric("edits", 1)
@@ -142,23 +144,19 @@ func AnalyticsLogger() Handler {
 			logMetric("text", 1)
 		}
 
-		// Increment peak hourly counters
 		peakKey := fmt.Sprintf("stat_peak:%d:%d", chatID, currentHour)
 		inc(peakKey, 1)
 
-		// Log rich text behaviors (words, characters, links, and replies)
 		if text != "" {
 			words := int64(len(strings.Fields(text)))
 			chars := int64(len([]rune(text)))
 			logMetric("words", words)
 			logMetric("chars", chars)
 
-			// Detect if message is a bot command
 			if text[0] == '/' {
 				logMetric("command", 1)
 			}
 
-			// Smart Link & Domain Pattern Matching
 			hasLink := rxLinkPattern.MatchString(text)
 			if hasLink {
 				logMetric("links", 1)
@@ -169,25 +167,19 @@ func AnalyticsLogger() Handler {
 			logMetric("replies", 1)
 		}
 
-		// Log incoming forwards securely by checking ForwardDate
 		if c.Message.ForwardDate != 0 {
 			logMetric("forwards", 1)
 		}
 
-		// Detect and log specific media types with strict priority order
 		var detected string
-
-		// Advanced categorization for general documents containing audio
 		var isVoiceDoc, isMusicDoc bool
 		if c.Message.Document != nil {
 			mime := strings.ToLower(c.Message.Document.MimeType)
 			ext := strings.ToLower(filepath.Ext(c.Message.Document.FileName))
 
-			// Typical voice-note / speech codecs and formats
 			isVoiceFormat := strings.Contains(mime, "ogg") || strings.Contains(mime, "opus") || strings.Contains(mime, "amr") || strings.Contains(mime, "3gpp") ||
 				ext == ".ogg" || ext == ".oga" || ext == ".opus" || ext == ".amr" || ext == ".3gp" || ext == ".3gpp"
 
-			// General music formats
 			isMusicFormat := strings.Contains(mime, "mpeg") || strings.Contains(mime, "mp3") || strings.Contains(mime, "m4a") || strings.Contains(mime, "flac") || strings.Contains(mime, "wav") ||
 				ext == ".mp3" || ext == ".m4a" || ext == ".flac" || ext == ".wav" || ext == ".wma" || ext == ".aac"
 
@@ -198,7 +190,6 @@ func AnalyticsLogger() Handler {
 					isMusicDoc = true
 				}
 			} else {
-				// Fallback to extensions if mime-type is generic/binary
 				if isVoiceFormat {
 					isVoiceDoc = true
 				} else if isMusicFormat {
@@ -210,21 +201,21 @@ func AnalyticsLogger() Handler {
 		if len(c.Message.Photo) > 0 {
 			detected = "photo"
 		} else if c.Message.Voice != nil || isVoiceDoc {
-			detected = "voice" // Voice checked before Audio to prevent Bale audio/voice override
+			detected = "voice"
 		} else if c.Message.Sticker != nil {
-			detected = "sticker" // Sticker checked before Document override
+			detected = "sticker"
 		} else if c.Message.Animation != nil {
-			detected = "animation" // Animation checked before Document override
+			detected = "animation"
 		} else if c.Message.Video != nil {
 			detected = "video"
 		} else if c.Message.Audio != nil || isMusicDoc {
-			detected = "audio" // Classifies document-audio files safely as audio/music
+			detected = "audio"
 		} else if c.Message.Location != nil {
 			detected = "location"
 		} else if c.Message.Contact != nil {
 			detected = "contact"
 		} else if c.Message.Document != nil {
-			detected = "document" // Generic document fallback checked last
+			detected = "document"
 		}
 
 		if detected != "" {
