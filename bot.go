@@ -64,6 +64,8 @@ type Bot struct {
 	AutoStretch        bool
 	groupSettings      []GroupSetting
 	analyticsDB        Storage
+	paginations map[string]*PaginationBuilder
+	pagMu       sync.RWMutex
 }
 
 type BotBuilder struct {
@@ -173,6 +175,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		cache:      newBotCache(),
 		safirKey:   b.safirKey,
 		safirBotID: b.safirBotID,
+		paginations: make(map[string]*PaginationBuilder),
 	}
 
 	bot.MaintenanceAdminID = b.adminID
