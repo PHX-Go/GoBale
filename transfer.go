@@ -6,24 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
 	neturl "net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
 // Dedicated HTTP client for large transfers.
-// NOTE: no client-wide Timeout is set anymore. A fixed 15-minute
-// timeout on the *entire* request/response cycle would abort large-but-healthy
-// transfers on slow links even while they are still making progress.
-// Instead, stalls are detected per-attempt with an inactivity watchdog
-// (see resilientDownload) and callers may still impose an overall deadline
-// by passing a context with a deadline/timeout of their own.
 var transferHTTPClient = &http.Client{
 	Transport: &http.Transport{
 		TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
@@ -38,7 +34,7 @@ var transferHTTPClient = &http.Client{
 }
 
 // StallTimeout is the maximum time to wait without receiving any new bytes
-// before an in-progress attempt is aborted and retried.
+// before an in-progress attempt is aborted and retried (issue #2).
 var StallTimeout = 60 * time.Second
 
 // progressReader wraps io.Reader to track and throttle data transfer progress events (1% to 100%)
@@ -68,27 +64,6 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// BuildProgressBar generates a standard, visual text progress bar (e.g., "■■■■■□□□□□")
-// for any percentage value from 0 to 100.
-func BuildProgressBar(pct float64) string {
-	width := 10
-	filled := int(pct / 10.0)
-	if filled < 0 {
-		filled = 0
-	}
-	if filled > width {
-		filled = width
-	}
-	var sb strings.Builder
-	for i := 0; i < filled; i++ {
-		sb.WriteString("■")
-	}
-	for i := filled; i < width; i++ {
-		sb.WriteString("□")
-	}
-	return sb.String()
-}
-
 // backoffWithJitter returns an exponential backoff duration (base 500ms, capped
 // at 10s) with up to 250ms of random jitter added, to avoid thundering-herd
 // retries against the server.
@@ -105,7 +80,7 @@ func backoffWithJitter(attempt int) time.Duration {
 
 // isRetryableStatus reports whether an HTTP status code should be retried.
 // 4xx client errors (other than 429) indicate a request that will never
-// succeed no matter how many times it's retried, so we fail fast on those.
+// succeed no matter how many times it's retried, so we fail fast on those
 func isRetryableStatus(code int) bool {
 	if code == http.StatusTooManyRequests {
 		return true
@@ -183,7 +158,7 @@ type DownloadJob struct {
 	destPath   string
 	totalSize  int64
 	ctx        context.Context
-	client     *http.Client // optional per-job override; falls back to transferHTTPClient
+	client     *http.Client
 	onProgress func(percent float64)
 	resultChan chan error
 	chatID     string
@@ -237,11 +212,21 @@ func (dp *DownloadPool) start(workers int) {
 
 // resilientDownload handles range-resuming, multi-attempt retries, browser-mimicking
 // headers, unknown sizes, stall detection and post-download size verification.
+// It also resolves indirect links (share pages, landing pages with a
+// "Download" button, etc.) into a direct file URL before downloading.
 func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPath string, expectedSize int64, onProgress func(percent float64)) error {
 	const maxRetries = 5
 	var currentSize int64 = 0
 	var lastPct = -1
 	var lastErr error
+	var alreadyResolved bool
+
+	if resolved, err := ResolveDownloadURL(ctx, client, urlStr); err == nil && resolved.URL != "" {
+		urlStr = resolved.URL
+		alreadyResolved = true
+	}
+	// If resolution errored, we just fall through and try urlStr as-is —
+	// it may already be a direct link that no resolver needed to touch.
 
 	if stat, err := os.Stat(destPath); err == nil {
 		currentSize = stat.Size()
@@ -253,7 +238,7 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 		}
 
 		// Per-attempt context that can be cancelled either by the caller (ctx)
-		// or by the stall watchdog below (issue #2).
+		// or by the stall watchdog below.
 		attemptCtx, attemptCancel := context.WithCancel(ctx)
 
 		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, urlStr, nil)
@@ -294,6 +279,25 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 				return fmt.Errorf("unexpected http status code: %d (%s)", resp.StatusCode, resp.Status)
 			}
 			lastErr = fmt.Errorf("unexpected http status code: %d (%s)", resp.StatusCode, resp.Status)
+			time.Sleep(backoffWithJitter(attempt))
+			continue
+		}
+
+		// The URL looked direct (or resolution said so) but actually served a
+		// landing page instead of a file — try resolving it for real before
+		// burning through retries on something that will never be a file.
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
+			resp.Body.Close()
+			attemptCancel()
+
+			if !alreadyResolved {
+				if resolved, rerr := ResolveDownloadURL(ctx, client, urlStr); rerr == nil && resolved.URL != "" && resolved.URL != urlStr {
+					urlStr = resolved.URL
+					alreadyResolved = true
+					continue
+				}
+			}
+			lastErr = fmt.Errorf("server returned an html page instead of a file (link may require manual resolution)")
 			time.Sleep(backoffWithJitter(attempt))
 			continue
 		}
@@ -484,7 +488,7 @@ func (up *UploadPool) start(workers int) {
 					msg, err := job.sendChain.executeUpload(jobCtx)
 
 					remove()
-					cancel() // Clean up context resources
+					cancel()
 
 					job.resultChan <- &UploadResult{Msg: msg, Err: err}
 				}
@@ -527,7 +531,7 @@ func CancelUpload(b *Bot, chatID any) bool {
 // CLIENT PROGRESS UPLOADER
 
 // writeParams serializes params (struct or map) into multipart fields.
-// issue #10: struct fields tagged with `,omitempty` are now skipped when they
+// Struct fields tagged with `,omitempty` are now skipped when they
 // hold a zero value (nil pointer, empty string, zero number, false, empty
 // slice/map), matching encoding/json semantics instead of always emitting a
 // field (which previously could send literal "null" for nil pointer fields).
@@ -730,7 +734,7 @@ func (c *Client) BaseRequestMultipartWithProgress(ctx context.Context, method st
 			continue
 		}
 
-		// Fail fast on non-retryable client errors
+		// Fail fast on non-retryable client errors.
 		if resp.StatusCode != http.StatusOK && !isRetryableStatus(resp.StatusCode) {
 			return fmt.Errorf("unexpected http status code: %d (%s)", resp.StatusCode, resp.Status)
 		}
@@ -758,4 +762,190 @@ func (c *Client) BaseRequestMultipartWithProgress(ctx context.Context, method st
 	}
 
 	return fmt.Errorf("upload failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// INDIRECT LINK RESOLUTION
+
+// ResolvedLink is the outcome of trying to turn an indirect page URL (a
+// landing page, a "click here to download" page, a redirect page, ...) into
+// a direct, fetchable file URL.
+type ResolvedLink struct {
+	URL  string // Direct, fetchable file URL
+	Size int64  // Best-effort size in bytes, -1 if unknown
+}
+
+// Tunables for the generic resolver.
+var (
+	// MaxResolveHops caps how many "this page points to another page" jumps
+	// we're willing to follow before giving up, so a chain of landing pages
+	// (or a loop) can't stall a download forever.
+	MaxResolveHops = 3
+	// maxResolveBodyBytes caps how much of a candidate HTML page we read
+	// while looking for the real link, so we never accidentally "download"
+	// someone's huge page just to scan it.
+	maxResolveBodyBytes int64 = 2 * 1024 * 1024 // 2 MB
+)
+
+// ResolveDownloadURL is a generic, non-site-specific resolver used before
+// (and, if needed, during) a download. It works like this:
+//
+//  1. Fetch rawURL and look at Content-Type.
+//  2. If it's not HTML, it's already a direct file link — done.
+//  3. If it is HTML, scan the page (regex-based, no site knowledge) for the
+//     most likely "real" link using a few common patterns, in priority
+//     order: meta-refresh redirect -> JS location redirect -> an anchor
+//     whose text says "download"/"دانلود" -> any href pointing at a known
+//     file extension.
+//  4. Repeat against the newly found link, up to MaxResolveHops times, in
+//     case that "real" link is itself another landing page.
+//
+// If nothing usable is found, it returns the last URL it had (which may
+// still be the original rawURL) so the caller can just try downloading it as
+// a last resort.
+func ResolveDownloadURL(ctx context.Context, client *http.Client, rawURL string) (*ResolvedLink, error) {
+	if client == nil {
+		client = transferHTTPClient
+	}
+
+	current := rawURL
+	visited := map[string]bool{}
+
+	for hop := 0; hop < MaxResolveHops; hop++ {
+		if visited[current] {
+			// Looped back to a page we already scanned — bail out with
+			// whatever we currently have rather than spinning forever.
+			break
+		}
+		visited[current] = true
+
+		html, contentLength, isHTML, err := peekPage(ctx, client, current)
+		if err != nil {
+			// Couldn't fetch it for inspection; let the caller try it
+			// directly — the real download attempt will surface the real error.
+			return &ResolvedLink{URL: current, Size: -1}, err
+		}
+		if !isHTML {
+			return &ResolvedLink{URL: current, Size: contentLength}, nil
+		}
+
+		next, found := extractLikelyDownloadLink(html, current)
+		if !found || next == current {
+			// It's HTML but nothing better was found inside it. Return it
+			// as-is; the download loop detects the HTML response itself and
+			// surfaces a clear error.
+			return &ResolvedLink{URL: current, Size: -1}, nil
+		}
+
+		current = next
+	}
+
+	return &ResolvedLink{URL: current, Size: -1}, nil
+}
+
+// peekPage fetches url and reports whether the response is HTML. For HTML
+// responses it also returns a size-bounded copy of the body for scanning;
+// for anything else it just returns the Content-Length so the caller doesn't
+// need to fetch it again.
+func peekPage(ctx context.Context, client *http.Client, url string) (html string, contentLength int64, isHTML bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", -1, false, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", -1, false, err
+	}
+	defer resp.Body.Close()
+
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(ct, "text/html") {
+		return "", resp.ContentLength, false, nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResolveBodyBytes))
+	if err != nil {
+		return "", -1, true, err
+	}
+	return string(body), -1, true, nil
+}
+
+// Regex patterns for the handful of common "the real link is over here"
+// signals found on landing/redirect pages. None of this is site-specific.
+var (
+	resolveMetaRefreshRe = regexp.MustCompile(`(?i)<meta[^>]+http-equiv=["']?refresh["']?[^>]+content=["'][^;]+;\s*url=([^"'>]+)["']`)
+
+	resolveJSLocationRe = regexp.MustCompile(`(?i)(?:window\.location(?:\.href)?|location\.href)\s*=\s*["']([^"']+)["']`)
+	resolveJSReplaceRe  = regexp.MustCompile(`(?i)location\.replace\(\s*["']([^"']+)["']\s*\)`)
+
+	// An <a> tag whose visible text mentions "download"/"دانلود" somewhere.
+	resolveDownloadKeywordAnchorRe = regexp.MustCompile(`(?is)<a\s[^>]*href=["']([^"']+)["'][^>]*>(?:(?!</a>).)*?(?:download|دانلود)(?:(?!</a>).)*?</a>`)
+
+	// Any href pointing straight at a file with a common download-able
+	// extension — last-resort signal.
+	resolveFileExtHrefRe = regexp.MustCompile(`(?i)href=["']([^"']+\.(?:zip|rar|7z|tar|gz|exe|msi|apk|dmg|iso|mp4|mkv|avi|mp3|flac|pdf|docx?|xlsx?|pptx?))(?:\?[^"']*)?["']`)
+)
+
+// extractLikelyDownloadLink scans html (from pageURL) for the first pattern
+// that matches, in priority order, and resolves it to an absolute URL.
+func extractLikelyDownloadLink(html, pageURL string) (string, bool) {
+	patterns := []*regexp.Regexp{
+		resolveMetaRefreshRe,
+		resolveJSReplaceRe,
+		resolveJSLocationRe,
+		resolveDownloadKeywordAnchorRe,
+		resolveFileExtHrefRe,
+	}
+	for _, re := range patterns {
+		if m := re.FindStringSubmatch(html); len(m) > 1 {
+			return resolveRelative(pageURL, m[1]), true
+		}
+	}
+	return "", false
+}
+
+// resolveRelative resolves href against the page it was scraped from, so
+// relative or absolute-path links turn into a full, fetchable URL.
+func resolveRelative(pageURL, href string) string {
+	href = strings.TrimSpace(strings.ReplaceAll(href, "&amp;", "&"))
+	base, err := neturl.Parse(pageURL)
+	if err != nil {
+		return href
+	}
+	ref, err := neturl.Parse(href)
+	if err != nil {
+		return href
+	}
+	return base.ResolveReference(ref).String()
+}
+
+// PROGRESS BAR
+
+// BuildProgressBar generates a standard, visual text progress bar
+// (e.g. "■■■■■□□□□□") for any percentage value from 0 to 100.
+func BuildProgressBar(pct float64) string {
+	const width = 10
+
+	if math.IsNaN(pct) || math.IsInf(pct, 0) {
+		pct = 0
+	}
+
+	filled := int(math.Round(pct / 10.0))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+
+	var sb strings.Builder
+	sb.Grow(width * len("■"))
+	for i := 0; i < filled; i++ {
+		sb.WriteString("■")
+	}
+	for i := filled; i < width; i++ {
+		sb.WriteString("□")
+	}
+	return sb.String()
 }
