@@ -210,25 +210,22 @@ func (db *Database) compactLoop() {
 }
 
 // compact writes a full snapshot and truncates the WAL atomically.
-// This is the only place that writes the snapshot file.
-//
-// Order matters:
-//  1. Write snapshot to .tmp file
-//  2. fsync + rename (atomic on POSIX)
-//  3. Truncate WAL to zero + reset encoder
-//  4. Reset write counter
 func (db *Database) compact() error {
-	// Snapshot current in-memory state
-	db.mu.RLock()
+	// Acquire write lock to prevent concurrent memory mutations during compaction
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Acquire WAL lock to prevent concurrent appends during truncation
+	db.walMu.Lock()
+	defer db.walMu.Unlock()
+
 	tmp := db.path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		db.mu.RUnlock()
 		return err
 	}
-	err = gob.NewEncoder(f).Encode(db.store)
-	db.mu.RUnlock()
 
+	err = gob.NewEncoder(f).Encode(db.store)
 	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -237,15 +234,12 @@ func (db *Database) compact() error {
 	_ = f.Sync()
 	_ = f.Close()
 
-	// Atomic replace of snapshot
+	// Atomic replace of snapshot file
 	if err := os.Rename(tmp, db.path); err != nil {
 		return err
 	}
 
-	// Truncate WAL now that snapshot is safe
-	db.walMu.Lock()
-	defer db.walMu.Unlock()
-
+	// Truncate WAL file safely now that the snapshot is fully persistent
 	_ = db.walF.Close()
 	f2, err := os.OpenFile(db.walPath(), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
