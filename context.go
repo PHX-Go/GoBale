@@ -234,6 +234,16 @@ func (a *AnswerChain) Go() error {
 	if a.c.Update == nil || a.c.Update.CallbackQuery == nil {
 		return errors.New("no callback query in update")
 	}
+
+	// Lock the context mutex safely to mutate the keys map
+	a.c.mu.Lock()
+	if a.c.Keys == nil {
+		a.c.Keys = make(map[string]any)
+	}
+	// Flag as answered to prevent the auto-answer middleware from double-answering
+	a.c.Keys["_sys_cb_answered"] = true
+	a.c.mu.Unlock()
+
 	return a.c.Bot.BaseRequest(a.c.ctx, "answerCallbackQuery", map[string]any{
 		"callback_query_id": a.c.Update.CallbackQuery.ID,
 		"text":              a.text,
