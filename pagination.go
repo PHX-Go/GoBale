@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// normalizeWidth stretches or truncates a string to match exactly width parameter using standard ASCII spaces
+// normalizeWidth stretches or truncates a string to match exactly width parameter,
+// padding standard ASCII spaces symmetrically on both sides to keep it perfectly centered on both mobile and web.
 func normalizeWidth(s string, width int) string {
 	r := []rune(s)
 	if len(r) > width { // Only truncate if length strictly exceeds target width
@@ -18,7 +19,13 @@ func normalizeWidth(s string, width int) string {
 		}
 		return string(r[:width-1]) + "…"
 	}
-	return s + strings.Repeat(" ", width-len(r))
+
+	diff := width - len(r)
+	leftPad := diff / 2
+	rightPad := diff - leftPad
+
+	// Symmetrical padding forces the visible text to stay perfectly centered on any platform
+	return strings.Repeat(" ", leftPad) + s + strings.Repeat(" ", rightPad)
 }
 
 // PaginationBuilder configures zero-flicker, session-based paginated menus
