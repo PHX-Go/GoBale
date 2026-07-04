@@ -209,6 +209,11 @@ func (j *JalaliChain) Format(layout string) *JalaliChain {
 
 // Go executes Gregorian to Jalali conversion with selected layout
 func (j *JalaliChain) Go() string {
+	// Guard against zero-value time to prevent index out of range panics
+	if j.t.IsZero() {
+		return ""
+	}
+
 	gDays := []int{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
 	jDays := []int{31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29}
 	gy := j.t.Year() - 1600
