@@ -880,7 +880,7 @@ var (
 	resolveJSReplaceRe  = regexp.MustCompile(`(?i)location\.replace\(\s*["']([^"']+)["']\s*\)`)
 
 	// An <a> tag whose visible text mentions "download"/"دانلود" somewhere.
-	resolveDownloadKeywordAnchorRe = regexp.MustCompile(`(?is)<a\s[^>]*href=["']([^"']+)["'][^>]*>(?:(?!</a>).)*?(?:download|دانلود)(?:(?!</a>).)*?</a>`)
+	resolveDownloadKeywordAnchorRe = regexp.MustCompile(`(?is)<a\s[^>]*href=["']([^"']+)["'][^>]*>.*?(?:download|دانلود).*?</a>`)
 
 	// Any href pointing straight at a file with a common download-able
 	// extension — last-resort signal.
