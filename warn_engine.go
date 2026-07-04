@@ -12,10 +12,14 @@ import (
 type PunishmentType string
 
 const (
-	PunishWarn PunishmentType = "warn" // Sends a self-destroying warning alert
-	PunishMute PunishmentType = "mute" // Temporarily restricts writing permissions
-	PunishKick PunishmentType = "kick" // Evicts the user from the chat group
-	PunishBan  PunishmentType = "ban"  // Blocks the user from the chat group permanently
+	// PunishWarn sends a self-destroying warning alert
+	PunishWarn PunishmentType = "warn"
+	// PunishMute temporarily restricts writing permissions
+	PunishMute PunishmentType = "mute"
+	// PunishKick evicts the user from the chat group
+	PunishKick PunishmentType = "kick"
+	// PunishBan blocks the user from the chat group permanently
+	PunishBan PunishmentType = "ban"
 )
 
 // PunishStep represents a graduation warning step configuration
@@ -35,7 +39,7 @@ func Mute(duration time.Duration, messageTemplate string) PunishStep {
 	return PunishStep{Type: PunishMute, Duration: duration, Message: messageTemplate}
 }
 
-// Kick creates a group eviction step (kicks and immediately unbans)
+// Kick creates a group eviction step
 func Kick(messageTemplate string) PunishStep {
 	return PunishStep{Type: PunishKick, Message: messageTemplate}
 }
@@ -76,7 +80,7 @@ func (we *WarnEngine) Limit(n int) *WarnEngine {
 	return we
 }
 
-// Cooldown sets a duration after which a warning automatically decrements (auto-expire)
+// Cooldown sets a duration after which a warning automatically decrements
 func (we *WarnEngine) Cooldown(d time.Duration) *WarnEngine {
 	we.cooldown = d
 	return we
@@ -96,17 +100,89 @@ func (we *WarnEngine) OnFinal(step PunishStep) *WarnEngine {
 	return we
 }
 
-// AutoCommands enables automatic registration of administrative commands (/warn, /unwarn, /warns)
+// AutoCommands enables automatic registration of administrative commands
 func (we *WarnEngine) AutoCommands() *WarnEngine {
 	we.autoCmds = true
 	return we
 }
 
-// Build finalizes the WarnEngine configuration and registers commands if requested
+// Build finalizes the WarnEngine configuration and registers commands/cron tasks
 func (we *WarnEngine) Build() *WarnEngine {
 	if we.autoCmds {
 		we.RegisterCommands()
 	}
+
+	// Register background persistent warnings cleaner (runs every 1 minute)
+	if we.cooldown > 0 {
+		we.bot.Task().Every(1*time.Minute, func() {
+			db := we.bot.dbInstance
+			dbConcrete, ok := db.(*Database)
+			if !ok || dbConcrete == nil {
+				return
+			}
+
+			dbConcrete.mu.Lock()
+			now := time.Now().UnixNano() // Upgraded to UnixNano
+			var keysToDel []string
+
+			// Scan persistent store for expired timestamps safely
+			for k, val := range dbConcrete.store {
+				if strings.HasPrefix(k, "warn_expires:") {
+					if list, okSlice := val.([]int64); okSlice && len(list) > 0 {
+						var newList []int64
+						expiredCount := 0
+						for _, exp := range list {
+							if now >= exp {
+								expiredCount++
+							} else {
+								newList = append(newList, exp)
+							}
+						}
+
+						if expiredCount > 0 {
+							parts := strings.Split(k, ":")
+							if len(parts) >= 3 {
+								chatID, _ := strconv.ParseInt(parts[1], 10, 64)
+								userID, _ := strconv.ParseInt(parts[2], 10, 64)
+
+								countKey := fmt.Sprintf("warn_count:%d:%d", chatID, userID)
+								if countVal, okCount := dbConcrete.store[countKey]; okCount {
+									current := 0
+									if iVal, okInt := countVal.(int); okInt {
+										current = iVal
+									} else if iVal, okInt := countVal.(int64); okInt {
+										current = int(iVal)
+									}
+
+									newCount := current - expiredCount
+									if newCount <= 0 {
+										delete(dbConcrete.store, countKey)
+										delete(dbConcrete.store, fmt.Sprintf("warn_reasons:%d:%d", chatID, userID))
+										dbConcrete.appendWAL(walEntry{Op: walDel, Key: countKey})
+										dbConcrete.appendWAL(walEntry{Op: walDel, Key: fmt.Sprintf("warn_reasons:%d:%d", chatID, userID)})
+										keysToDel = append(keysToDel, k)
+									} else {
+										dbConcrete.store[countKey] = newCount
+										dbConcrete.store[k] = newList
+										dbConcrete.appendWAL(walEntry{Op: walSet, Key: countKey, Val: newCount})
+										dbConcrete.appendWAL(walEntry{Op: walSet, Key: k, Val: newList})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Delete fully expired keys
+			for _, k := range keysToDel {
+				delete(dbConcrete.store, k)
+				dbConcrete.appendWAL(walEntry{Op: walDel, Key: k})
+			}
+			dbConcrete.mu.Unlock()
+		})
+	}
+
 	return we
 }
 
@@ -135,9 +211,10 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 
 	countKey := fmt.Sprintf("warn_count:%d:%d", chatID, userID)
 	reasonsKey := fmt.Sprintf("warn_reasons:%d:%d", chatID, userID)
+	expiresKey := fmt.Sprintf("warn_expires:%d:%d", chatID, userID)
 	db := we.bot.dbInstance
 
-	// Log the warning reason with exact timestamp into GOB database
+	// Log the warning reason with exact timestamp
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 	newReason := fmt.Sprintf("📌 [%s] %s", nowStr, reason)
 	_ = db.Tx(func(store map[string]any) {
@@ -149,6 +226,20 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 		}
 		store[reasonsKey] = append(list, newReason)
 	})
+
+	// Set persistent expiration timestamp in database (Nanosecond precision)
+	if we.cooldown > 0 {
+		expireTime := time.Now().Add(we.cooldown).UnixNano() // Upgraded to UnixNano
+		_ = db.Tx(func(store map[string]any) {
+			var list []int64
+			if val, ok := store[expiresKey]; ok {
+				if slice, okSlice := val.([]int64); okSlice {
+					list = slice
+				}
+			}
+			store[expiresKey] = append(list, expireTime)
+		})
+	}
 
 	// Read and increment count atomically inside database transaction
 	var newCount int
@@ -186,14 +277,12 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 	}
 
 	if !hasStep {
-		// Fallback warning template
 		step = PunishStep{
 			Type:    PunishWarn,
 			Message: "⚠️ {name} عزیز، شما یک اخطار دریافت کردید.\nعلت: {reason}\n📊 اخطارها: {count} از {max}",
 		}
 	}
 
-	// Format custom variables inside message template
 	msgText := step.Message
 	if msgText == "" {
 		msgText = "⚠️ {name} عزیز، شما اخطار شماره {count} را دریافت کردید."
@@ -222,39 +311,20 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 		_, _ = c.Send().Text(msgText).Markdown().Temp(15 * time.Second).Go()
 	}
 
-	// Reset warnings from DB if max limits are reached and final step is executed
+	// Reset warnings from DB if max limits are reached
 	if newCount >= we.maxWarns {
 		_ = db.Del(countKey)
 		_ = db.Del(reasonsKey)
-	} else if we.cooldown > 0 {
-		// Schedule automatic warning expiration (cooldown decrement)
-		botInstance := we.bot
-		botInstance.Task().In(we.cooldown, func() {
-			_ = db.Tx(func(store map[string]any) {
-				if val, ok := store[countKey]; ok {
-					current := 0
-					if iVal, okInt := val.(int); okInt {
-						current = iVal
-					} else if iVal, okInt := val.(int64); okInt {
-						current = int(iVal)
-					}
-					if current > 0 {
-						// Decrement warnings safely over time
-						store[countKey] = current - 1
-					}
-				}
-			})
-		})
+		_ = db.Del(expiresKey)
 	}
 
 	return nil
 }
 
-// RegisterCommands automatically boots group administration commands: /warn, /unwarn, /warns with self-destructing alerts
+// RegisterCommands automatically boots group administration commands: /warn, /unwarn, /warns
 func (we *WarnEngine) RegisterCommands() {
-	// Register /warns command to check warning history (self-destructs after 15 seconds)
 	we.bot.On().Cmd("warns").Do(func(c *Ctx) {
-		_ = c.Del().Go() // Instantly delete the incoming command message to keep the chat tidy
+		_ = c.Del().Go()
 
 		chatID, err := c.ChatID()
 		if err != nil {
@@ -263,7 +333,6 @@ func (we *WarnEngine) RegisterCommands() {
 		targetUserID := c.SenderID()
 		targetUser := c.Message.From
 
-		// Inspect replied user's warnings if replying to a message
 		if c.Message.ReplyToMessage != nil && c.Message.ReplyToMessage.From != nil {
 			targetUserID = c.Message.ReplyToMessage.From.ID
 			targetUser = c.Message.ReplyToMessage.From
@@ -289,7 +358,6 @@ func (we *WarnEngine) RegisterCommands() {
 		}
 
 		if count == 0 {
-			// Sends a temporary 10-second alert
 			_, _ = c.Send().Text(fmt.Sprintf("🟢 کاربر %s هیچ اخطاری در این گروه ندارد.", targetUser.Mention())).Markdown().Temp(10 * time.Second).Go()
 			return
 		}
@@ -312,13 +380,11 @@ func (we *WarnEngine) RegisterCommands() {
 			Bind("history", history).
 			Go()
 
-		// Sends a temporary 15-second detailed report
 		_, _ = c.Send().Text(report).Markdown().Temp(15 * time.Second).Go()
 	})
 
-	// Register /warn command for manual admin warning (errors self-destruct after 10s)
 	we.bot.On().Cmd("warn").Do(AdminsOnly(), func(c *Ctx) {
-		_ = c.Del().Go() // Instantly delete the incoming command message to keep the chat tidy
+		_ = c.Del().Go()
 
 		if c.Message.ReplyToMessage == nil || c.Message.ReplyToMessage.From == nil {
 			_, _ = c.Send().Text("⚠️ لطفاً این دستور را روی پیام کاربر مورد نظر ریپلای کنید.").Temp(10 * time.Second).Go()
@@ -331,7 +397,6 @@ func (we *WarnEngine) RegisterCommands() {
 			reason = strings.Join(args, " ")
 		}
 
-		// Create a clean, un-recycled temporary context to prevent sync.Pool collisions
 		ctxCopy := &Ctx{
 			Bot:     c.Bot,
 			Update:  c.Update,
@@ -340,9 +405,8 @@ func (we *WarnEngine) RegisterCommands() {
 		_ = we.Warn(ctxCopy, "مدیریت: "+reason)
 	})
 
-	// Register /unwarn command to decrement warnings (all replies self-destruct after 10s)
 	we.bot.On().Cmd("unwarn").Do(AdminsOnly(), func(c *Ctx) {
-		_ = c.Del().Go() // Instantly delete the incoming command message to keep the chat tidy
+		_ = c.Del().Go()
 
 		if c.Message.ReplyToMessage == nil || c.Message.ReplyToMessage.From == nil {
 			_, _ = c.Send().Text("⚠️ لطفاً این دستور را روی پیام کاربر مورد نظر ریپلای کنید.").Temp(10 * time.Second).Go()
@@ -355,6 +419,7 @@ func (we *WarnEngine) RegisterCommands() {
 
 		countKey := fmt.Sprintf("warn_count:%d:%d", chatID, targetUserID)
 		reasonsKey := fmt.Sprintf("warn_reasons:%d:%d", chatID, targetUserID)
+		expiresKey := fmt.Sprintf("warn_expires:%d:%d", chatID, targetUserID)
 
 		var newCount int
 		_ = we.bot.dbInstance.Tx(func(store map[string]any) {
@@ -369,6 +434,13 @@ func (we *WarnEngine) RegisterCommands() {
 			if current > 0 {
 				newCount = current - 1
 				store[countKey] = newCount
+
+				// Pop the last expiration timestamp
+				if valExp, okExp := store[expiresKey]; okExp {
+					if list, okSlice := valExp.([]int64); okSlice && len(list) > 0 {
+						store[expiresKey] = list[:len(list)-1]
+					}
+				}
 			} else {
 				newCount = 0
 			}
@@ -377,6 +449,7 @@ func (we *WarnEngine) RegisterCommands() {
 		if newCount == 0 {
 			_ = we.bot.dbInstance.Del(countKey)
 			_ = we.bot.dbInstance.Del(reasonsKey)
+			_ = we.bot.dbInstance.Del(expiresKey)
 			_, _ = c.Send().Text(fmt.Sprintf("✅ تمام اخطارهای کاربر %s بخشیده و صفر شد.", targetUser.Mention())).Markdown().Temp(10 * time.Second).Go()
 		} else {
 			_, _ = c.Send().Text(fmt.Sprintf("📉 یک اخطار از کاربر %s کسر شد.\n📊 اخطارهای فعلی: %d از %d", targetUser.Mention(), newCount, we.maxWarns)).Markdown().Temp(10 * time.Second).Go()
