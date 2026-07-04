@@ -230,36 +230,6 @@ func (b *ReplyMarkupBuilder) Build() *ReplyKeyboardMarkup {
 	return b.markup
 }
 
-// NewPaginatedKeyboard constructs an inline paginated menu matrix dynamically
-func NewPaginatedKeyboard(items []InlineKeyboardButton, page, itemsPerPage int, callbackPrefix string) *InlineKeyboardMarkup {
-	if page < 1 {
-		page = 1
-	}
-	start := (page - 1) * itemsPerPage
-	end := start + itemsPerPage
-	if start > len(items) {
-		return NewInlineKeyboardMarkup()
-	}
-	if end > len(items) {
-		end = len(items)
-	}
-	var rows [][]InlineKeyboardButton
-	for i := start; i < end; i++ {
-		rows = append(rows, []InlineKeyboardButton{items[i]})
-	}
-	var navRow []InlineKeyboardButton
-	if page > 1 {
-		navRow = append(navRow, NewInlineKeyboardButtonData("⬅️ قبلی", fmt.Sprintf("%s:%d", callbackPrefix, page-1)))
-	}
-	if end < len(items) {
-		navRow = append(navRow, NewInlineKeyboardButtonData("بعدی ➡️", fmt.Sprintf("%s:%d", callbackPrefix, page+1)))
-	}
-	if len(navRow) > 0 {
-		rows = append(rows, navRow)
-	}
-	return &InlineKeyboardMarkup{InlineKeyboard: rows}
-}
-
 // NewReplyKeyboardMarkupFromSlice converts a 1D string array to reply keyboard matrix
 func NewReplyKeyboardMarkupFromSlice(items []string, cols int) *ReplyKeyboardMarkup {
 	if cols <= 0 {

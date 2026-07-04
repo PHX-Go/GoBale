@@ -188,12 +188,6 @@ func (s *SendChain) Markdown() *SendChain {
 	return s
 }
 
-// Paginated sets up automatic button pagination for the send chain
-func (s *SendChain) Paginated(items []InlineKeyboardButton, page, perPage int, prefix string) *SendChain {
-	s.markup = NewPaginatedKeyboard(items, page, perPage, prefix)
-	return s
-}
-
 // From registers the source origin chat ID for copying or forwarding
 func (s *SendChain) From(chat any) *SendChain {
 	s.from = chat
@@ -631,12 +625,6 @@ func (e *EditChain) Markup(m any) *EditChain {
 // Markdown enables Markdown styling rules for edited text
 func (e *EditChain) Markdown() *EditChain {
 	e.pm = "Markdown"
-	return e
-}
-
-// Paginated sets up automatic button pagination for edited markup
-func (e *EditChain) Paginated(items []InlineKeyboardButton, page, perPage int, prefix string) *EditChain {
-	e.markup = NewPaginatedKeyboard(items, page, perPage, prefix)
 	return e
 }
 
