@@ -166,6 +166,7 @@ func (i *InvoiceChain) Go() (*Message, error) {
 		"description":           i.desc,
 		"payload":               i.payload,
 		"provider_token":        i.token,
+		"start_parameter":       "pay",
 		"currency":              "IRR",
 		"prices":                i.prices,
 		"reply_to_message_id":   i.replyTo,
@@ -178,7 +179,6 @@ func (i *InvoiceChain) Go() (*Message, error) {
 		"disable_notification":  i.disableNotif,
 	}
 
-	// Only attach optional values if they are configured
 	if i.providerData != "" {
 		payload["provider_data"] = i.providerData
 	}
@@ -302,7 +302,7 @@ func (p *PreCheckoutChain) Go() (bool, error) {
 		return false, errors.New("missing pre_checkout ID")
 	}
 	var res bool
-	err := p.pc.bot.BaseRequest(p.pc.ctx, "answerPreCheckoutQuery", map[string]any{ // Fixed: changed p.ctx to p.pc.ctx
+	err := p.pc.bot.BaseRequest(p.pc.ctx, "answerPreCheckoutQuery", map[string]any{
 		"pre_checkout_query_id": p.id,
 		"ok":                    p.ok,
 		"error_message":         p.err,
