@@ -50,9 +50,29 @@ func (t *tokenBucket) shouldWarn(cooldown time.Duration) bool {
 	return false
 }
 
-// ChatRateLimit restricts chat message intervals using token bucket
+// ChatRateLimit restricts chat message intervals using token bucket.
+// Idle chat buckets are swept periodically to avoid unbounded memory growth.
 func ChatRateLimit(rate, capacity float64, onLimit Handler) Handler {
 	var limiters sync.Map
+
+	// Background sweeper: drops buckets untouched for over 1 hour
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			limiters.Range(func(key, value any) bool {
+				tb := value.(*tokenBucket)
+				tb.mu.Lock()
+				idle := time.Since(tb.lastRefill) > time.Hour
+				tb.mu.Unlock()
+				if idle {
+					limiters.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
+
 	return func(c *Ctx) {
 		id, err := c.ChatID()
 		if err != nil {

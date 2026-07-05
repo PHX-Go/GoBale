@@ -660,7 +660,7 @@ func (c *Ctx) ScanOptionalArgs(targets ...any) int {
 
 	limit := len(targets)
 	if len(args) < limit {
-		limit = len(targets)
+		limit = len(args) // shrink to available args, prevents out-of-range slicing
 	}
 
 	_ = ScanValues(args[:limit], " ", targets[:limit]...)

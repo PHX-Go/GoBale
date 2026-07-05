@@ -213,11 +213,12 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 	reasonsKey := fmt.Sprintf("warn_reasons:%d:%d", chatID, userID)
 	expiresKey := fmt.Sprintf("warn_expires:%d:%d", chatID, userID)
 	db := we.bot.dbInstance
+	dbFast, useTxKeys := db.(*Database) // fast path: touch only the relevant keys instead of full-store diff
 
 	// Log the warning reason with exact timestamp
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 	newReason := fmt.Sprintf("📌 [%s] %s", nowStr, reason)
-	_ = db.Tx(func(store map[string]any) {
+	reasonsFn := func(store map[string]any) {
 		var list []string
 		if val, ok := store[reasonsKey]; ok {
 			if slice, okSlice := val.([]string); okSlice {
@@ -225,12 +226,17 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 			}
 		}
 		store[reasonsKey] = append(list, newReason)
-	})
+	}
+	if useTxKeys {
+		_ = dbFast.TxKeys([]string{reasonsKey}, reasonsFn)
+	} else {
+		_ = db.Tx(reasonsFn)
+	}
 
 	// Set persistent expiration timestamp in database (Nanosecond precision)
 	if we.cooldown > 0 {
 		expireTime := time.Now().Add(we.cooldown).UnixNano() // Upgraded to UnixNano
-		_ = db.Tx(func(store map[string]any) {
+		expiresFn := func(store map[string]any) {
 			var list []int64
 			if val, ok := store[expiresKey]; ok {
 				if slice, okSlice := val.([]int64); okSlice {
@@ -238,12 +244,17 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 				}
 			}
 			store[expiresKey] = append(list, expireTime)
-		})
+		}
+		if useTxKeys {
+			_ = dbFast.TxKeys([]string{expiresKey}, expiresFn)
+		} else {
+			_ = db.Tx(expiresFn)
+		}
 	}
 
 	// Read and increment count atomically inside database transaction
 	var newCount int
-	errTx := db.Tx(func(store map[string]any) {
+	countFn := func(store map[string]any) {
 		current := 0
 		if val, ok := store[countKey]; ok {
 			if iVal, okInt := val.(int); okInt {
@@ -254,7 +265,13 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 		}
 		newCount = current + 1
 		store[countKey] = newCount
-	})
+	}
+	var errTx error
+	if useTxKeys {
+		errTx = dbFast.TxKeys([]string{countKey}, countFn)
+	} else {
+		errTx = db.Tx(countFn)
+	}
 	if errTx != nil {
 		return errTx
 	}
@@ -430,7 +447,7 @@ func (we *WarnEngine) RegisterCommands() {
 		expiresKey := fmt.Sprintf("warn_expires:%d:%d", chatID, targetUserID)
 
 		var newCount int
-		_ = we.bot.dbInstance.Tx(func(store map[string]any) {
+		unwarnFn := func(store map[string]any) {
 			current := 0
 			if val, ok := store[countKey]; ok {
 				if iVal, okInt := val.(int); okInt {
@@ -452,7 +469,12 @@ func (we *WarnEngine) RegisterCommands() {
 			} else {
 				newCount = 0
 			}
-		})
+		}
+		if dbFast, ok := we.bot.dbInstance.(*Database); ok {
+			_ = dbFast.TxKeys([]string{countKey, expiresKey}, unwarnFn)
+		} else {
+			_ = we.bot.dbInstance.Tx(unwarnFn)
+		}
 
 		if newCount == 0 {
 			_ = we.bot.dbInstance.Del(countKey)

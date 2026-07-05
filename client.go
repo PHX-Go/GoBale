@@ -326,7 +326,12 @@ func extractChatID(params any) int64 {
 	return fallback
 }
 
-// BaseRequest modification inside gobale/client.go:
+// BaseRequest sends a JSON request to the Bale Bot API.
+// Flow per call: circuit-breaker gate -> token-bucket rate limit -> up to 3
+// transient connection retries (exponential backoff) -> on HTTP 429 it honors
+// retry_after and re-enters the loop, capped at maxRetries429 to guarantee
+// termination even when ctx has no deadline. 5xx and read/decode failures
+// report into the circuit breaker; 2xx success resets it.
 func (c *Client) BaseRequest(ctx context.Context, method string, params any, result any) error {
 	// Panic-Proof Shield: Ensure context is never nil
 	if ctx == nil {
@@ -373,6 +378,9 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 		}
 	}
 	body := buf.Bytes()
+
+	const maxRetries429 = 5 // hard cap so an unbounded ctx never spins forever on 429
+	retries429 := 0
 
 	for {
 		if err := c.rateLimit.Wait(ctx); err != nil {
@@ -444,6 +452,10 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 				c.cb.RecordFailure()
 			}
 			if apiResp.Code == 429 {
+				retries429++
+				if retries429 > maxRetries429 {
+					return fmt.Errorf("api error [429]: rate limited after %d retries", maxRetries429)
+				}
 				wait := 5 * time.Second
 				if apiResp.Params != nil && apiResp.Params.RetryAfter > 0 {
 					wait = time.Duration(apiResp.Params.RetryAfter) * time.Second
@@ -469,7 +481,11 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 	}
 }
 
-// BaseRequestMultipart modification inside gobale/client.go:
+// BaseRequestMultipart sends a multipart/form-data request (file uploads) to
+// the Bale Bot API. Body bytes are fully serialized once before the retry
+// loop, so the same buffer is safely reused across attempts. Shares the exact
+// same rate-limit, retry, circuit-breaker, and 429-backoff behavior as
+// BaseRequest — kept in sync intentionally, do not let the two drift apart.
 func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params any, files []InputFile, result any) error {
 	// Panic-Proof Shield: Ensure context is never nil
 	if ctx == nil {
@@ -488,16 +504,14 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 		}
 		log.Printf("[Dry-Run Intercept] MULTIPART /%s | Params: %+v | Files: %s", method, params, strings.Join(fileNames, ", "))
 
-		// Same latency simulation as BaseRequest, so media-upload Dry-Run calls
-		// also produce a non-zero, realistic latency reading on the dashboard.
 		mockLatency := time.Duration(2+rand.Intn(7)) * time.Millisecond
 		atomic.StoreInt64(&c.NetLatencyNs, int64(mockLatency))
 
 		if result != nil {
 			if boolPtr, ok := result.(*bool); ok {
-				*boolPtr = true // Return true dynamically for any API boolean actions
+				*boolPtr = true
 			} else if strPtr, ok := result.(*string); ok {
-				*strPtr = "https://mock.bale.ai/invoice/link_123" // Return mock URL for link actions
+				*strPtr = "https://mock.bale.ai/invoice/link_123"
 			} else if msgPtr, ok := result.(*Message); ok {
 				msgPtr.MessageID = 999111
 				msgPtr.Date = time.Now().Unix()
@@ -509,10 +523,6 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 			}
 		}
 		return nil
-	}
-
-	if err := c.rateLimit.Wait(ctx); err != nil {
-		return err
 	}
 
 	url := fmt.Sprintf("%s%s/%s", c.baseURL, c.token, method)
@@ -584,59 +594,95 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 	}
 	_ = writer.Close()
 
-	var resp *http.Response
-	var reqErr error
-	start := time.Now()
+	// Body is fully serialized in memory already, safe to reuse bytes across retries
+	body := buf.Bytes()
+	contentType := writer.FormDataContentType()
 
-	// Pure attempts loop to fetch connection safely without deferring inside loops
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf.Bytes()))
-		if err != nil {
+	const maxRetries429 = 5
+	retries429 := 0
+
+	for {
+		if err := c.rateLimit.Wait(ctx); err != nil {
 			return err
 		}
-		req.Header.Set("Content-Type", writer.FormDataContentType())
 
-		resp, reqErr = c.httpClient.Do(req)
-		if reqErr != nil {
-			if attempt < 2 {
-				time.Sleep(time.Duration(100*math.Pow(3, float64(attempt))) * time.Millisecond)
-				continue
+		var resp *http.Response
+		var reqErr error
+		start := time.Now()
+
+		for attempt := 0; attempt < 3; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				return err
 			}
-			if ctx.Err() == nil {
+			req.Header.Set("Content-Type", contentType)
+
+			resp, reqErr = c.httpClient.Do(req)
+			if reqErr != nil {
+				if attempt < 2 {
+					time.Sleep(time.Duration(100*math.Pow(3, float64(attempt))) * time.Millisecond)
+					continue
+				}
+				if ctx.Err() == nil {
+					c.cb.RecordFailure()
+				}
+				return reqErr
+			}
+			break
+		}
+
+		// Read and close body immediately, safe to repeat across 429 retries
+		respBytes, errRead := func() ([]byte, error) {
+			defer func() {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}()
+			return io.ReadAll(resp.Body)
+		}()
+
+		atomic.StoreInt64(&c.NetLatencyNs, int64(time.Since(start)))
+
+		if errRead != nil {
+			c.cb.RecordFailure()
+			return errRead
+		}
+
+		var apiResp Res
+		if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+			c.cb.RecordFailure()
+			return fmt.Errorf("failed to parse Multipart JSON response (status %d): %w. Raw body: %s", resp.StatusCode, err, string(respBytes))
+		}
+
+		if !apiResp.OK {
+			if apiResp.Code >= 500 {
 				c.cb.RecordFailure()
 			}
-			return reqErr
+			if apiResp.Code == 429 {
+				retries429++
+				if retries429 > maxRetries429 {
+					return fmt.Errorf("api error [429]: rate limited after %d retries", maxRetries429)
+				}
+				wait := 5 * time.Second
+				if apiResp.Params != nil && apiResp.Params.RetryAfter > 0 {
+					wait = time.Duration(apiResp.Params.RetryAfter) * time.Second
+				}
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return ctx.Err()
+				case <-timer.C:
+					timer.Stop()
+					continue
+				}
+			}
+			return fmt.Errorf("api error [%d]: %s", apiResp.Code, apiResp.Desc)
 		}
-		break
+
+		c.cb.RecordSuccess()
+		if result != nil && apiResp.Result != nil {
+			return json.Unmarshal(apiResp.Result, result)
+		}
+		return nil
 	}
-
-	// Safely defers body draining outside of loops to prevent TIME_WAIT socket exhaustion
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-
-	atomic.StoreInt64(&c.NetLatencyNs, int64(time.Since(start)))
-
-	respBytes, errRead := io.ReadAll(resp.Body)
-	if errRead != nil {
-		c.cb.RecordFailure()
-		return errRead
-	}
-
-	var apiResp Res
-	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
-		c.cb.RecordFailure()
-		return fmt.Errorf("failed to parse Multipart JSON response (status %d): %w. Raw body: %s", resp.StatusCode, err, string(respBytes))
-	}
-
-	if !apiResp.OK {
-		return fmt.Errorf("api error [%d]: %s", apiResp.Code, apiResp.Desc)
-	}
-
-	c.cb.RecordSuccess()
-	if result != nil && apiResp.Result != nil {
-		return json.Unmarshal(apiResp.Result, result)
-	}
-	return nil
 }

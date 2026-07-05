@@ -301,6 +301,30 @@ func (db *Database) Tx(fn func(store map[string]any)) error {
 	return nil
 }
 
+// TxKeys runs fn against copies of only the specified keys and writes back
+// exactly those keys, avoiding a full-store DeepEqual diff on every call.
+func (db *Database) TxKeys(keys []string, fn func(store map[string]any)) error {
+	db.mu.Lock()
+	scoped := make(map[string]any, len(keys))
+	for _, k := range keys {
+		if v, ok := db.store[k]; ok {
+			scoped[k] = v
+		}
+	}
+
+	fn(scoped)
+
+	for _, k := range keys {
+		db.store[k] = scoped[k]
+	}
+	db.mu.Unlock()
+
+	for _, k := range keys {
+		db.appendWAL(walEntry{Op: walSet, Key: k, Val: scoped[k]})
+	}
+	return nil
+}
+
 // Close flushes a final snapshot and shuts down the compactor goroutine cleanly
 func (db *Database) Close() error {
 	close(db.closeChan)

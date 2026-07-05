@@ -626,13 +626,13 @@ func (p *PollChain) Go() {
 			err := p.run.bot.BaseRequest(ctx, "getUpdates", params, &updates)
 			if err != nil {
 				log.Printf("[GoBale Polling Error] Failed to fetch updates: %v", err)
-				time.Sleep(3 * time.Second)
-				continue
-			}
-
-			for i := range updates {
-				p.run.bot.workerChan <- &updates[i]
-				offset = updates[i].UpdateID + 1
+				// ctx-aware backoff so shutdown signal is not delayed by up to 3s
+				select {
+				case <-ctx.Done():
+					continue
+				case <-time.After(3 * time.Second):
+					continue
+				}
 			}
 		}
 	}
