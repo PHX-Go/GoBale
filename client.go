@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/rand"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -272,6 +273,59 @@ func NewClient(token string) *Client {
 	}
 }
 
+// extractChatID reads a chat_id out of the outgoing params (struct field "ChatID"
+// or map key "chat_id") so Dry-Run mocked responses reflect the real target chat
+// instead of always returning a hardcoded value.
+func extractChatID(params any) int64 {
+	const fallback int64 = 111
+	if params == nil {
+		return fallback
+	}
+	v := reflect.ValueOf(params)
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return fallback
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		f := v.FieldByName("ChatID")
+		if f.IsValid() {
+			switch f.Kind() {
+			case reflect.Int, reflect.Int32, reflect.Int64:
+				return f.Int()
+			case reflect.String:
+				var id int64
+				if _, err := fmt.Sscanf(f.String(), "%d", &id); err == nil {
+					return id
+				}
+			}
+		}
+	case reflect.Map:
+		for _, key := range v.MapKeys() {
+			if fmt.Sprintf("%v", key.Interface()) != "chat_id" {
+				continue
+			}
+			val := v.MapIndex(key).Interface()
+			switch tv := val.(type) {
+			case int64:
+				return tv
+			case int:
+				return int64(tv)
+			case int32:
+				return int64(tv)
+			case string:
+				var id int64
+				if _, err := fmt.Sscanf(tv, "%d", &id); err == nil {
+					return id
+				}
+			}
+		}
+	}
+	return fallback
+}
+
 // BaseRequest modification inside gobale/client.go:
 func (c *Client) BaseRequest(ctx context.Context, method string, params any, result any) error {
 	// Panic-Proof Shield: Ensure context is never nil
@@ -286,11 +340,23 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 	// Intercept and sandbox all outgoing messages and actions in Dry-Run mode
 	if c.DryRun && method != "getUpdates" && method != "getMe" {
 		log.Printf("[Dry-Run Intercept] POST /%s | Params: %+v", method, params)
+
+		// Simulate a realistic local network latency so the dashboard's
+		mockLatency := time.Duration(2+rand.Intn(7)) * time.Millisecond
+		atomic.StoreInt64(&c.NetLatencyNs, int64(mockLatency))
+
 		if result != nil {
 			if boolPtr, ok := result.(*bool); ok {
 				*boolPtr = true // Return true dynamically for any API boolean actions
 			} else if strPtr, ok := result.(*string); ok {
 				*strPtr = "https://mock.bale.ai/invoice/link_123" // Return mock URL for invoice link actions
+			} else if msgPtr, ok := result.(*Message); ok {
+				// Fill in real chat id from params instead of a hardcoded one,
+				// so mocked messages route correctly to sessions/handlers keyed by chat id.
+				msgPtr.MessageID = 999111
+				msgPtr.Date = time.Now().Unix()
+				msgPtr.Chat.ID = extractChatID(params)
+				msgPtr.Chat.Type = "private"
 			} else {
 				mockBytes := []byte(`{"message_id": 999111, "date": 1700000000, "chat": {"id": 111, "type": "private"}}`)
 				_ = json.Unmarshal(mockBytes, result)
@@ -312,9 +378,11 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 		if err := c.rateLimit.Wait(ctx); err != nil {
 			return err
 		}
+
 		var resp *http.Response
 		var reqErr error
 		start := time.Now()
+
 		for attempt := 0; attempt < 3; attempt++ {
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 			if err != nil {
@@ -324,6 +392,7 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 			if c.Gzip {
 				req.Header.Set("Accept-Encoding", "gzip")
 			}
+
 			resp, reqErr = c.httpClient.Do(req)
 			if reqErr != nil {
 				if attempt < 2 {
@@ -355,7 +424,6 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 			}
 			return io.ReadAll(reader)
 		}()
-
 		if errRead != nil {
 			c.cb.RecordFailure()
 			return errRead
@@ -419,11 +487,22 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 			fileNames = append(fileNames, f.FileName)
 		}
 		log.Printf("[Dry-Run Intercept] MULTIPART /%s | Params: %+v | Files: %s", method, params, strings.Join(fileNames, ", "))
+
+		// Same latency simulation as BaseRequest, so media-upload Dry-Run calls
+		// also produce a non-zero, realistic latency reading on the dashboard.
+		mockLatency := time.Duration(2+rand.Intn(7)) * time.Millisecond
+		atomic.StoreInt64(&c.NetLatencyNs, int64(mockLatency))
+
 		if result != nil {
 			if boolPtr, ok := result.(*bool); ok {
 				*boolPtr = true // Return true dynamically for any API boolean actions
 			} else if strPtr, ok := result.(*string); ok {
 				*strPtr = "https://mock.bale.ai/invoice/link_123" // Return mock URL for link actions
+			} else if msgPtr, ok := result.(*Message); ok {
+				msgPtr.MessageID = 999111
+				msgPtr.Date = time.Now().Unix()
+				msgPtr.Chat.ID = extractChatID(params)
+				msgPtr.Chat.Type = "private"
 			} else {
 				mockBytes := []byte(`{"message_id": 999111, "chat": {"id": 111, "type": "private"}}`)
 				_ = json.Unmarshal(mockBytes, result)
@@ -435,9 +514,11 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 	if err := c.rateLimit.Wait(ctx); err != nil {
 		return err
 	}
+
 	url := fmt.Sprintf("%s%s/%s", c.baseURL, c.token, method)
 	buf := new(bytes.Buffer)
 	writer := multipart.NewWriter(buf)
+
 	if params != nil {
 		v := reflect.ValueOf(params)
 		if v.Kind() == reflect.Ptr {
@@ -493,6 +574,7 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 			}
 		}
 	}
+
 	for _, f := range files {
 		part, err := writer.CreateFormFile(f.Field, f.FileName)
 		if err != nil {
@@ -513,6 +595,7 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 			return err
 		}
 		req.Header.Set("Content-Type", writer.FormDataContentType())
+
 		resp, reqErr = c.httpClient.Do(req)
 		if reqErr != nil {
 			if attempt < 2 {
@@ -546,6 +629,7 @@ func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params
 		c.cb.RecordFailure()
 		return fmt.Errorf("failed to parse Multipart JSON response (status %d): %w. Raw body: %s", resp.StatusCode, err, string(respBytes))
 	}
+
 	if !apiResp.OK {
 		return fmt.Errorf("api error [%d]: %s", apiResp.Code, apiResp.Desc)
 	}

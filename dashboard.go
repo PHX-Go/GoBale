@@ -2,10 +2,13 @@ package gobale
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/pprof"
+	"os/exec"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -30,14 +33,61 @@ func (d *DashChain) Addr(a string) *DashChain {
 	return d
 }
 
+// checkDashAuth validates the SOCKET_TOKEN against the request (query param or header).
+// FIX: previously /debug/pprof/* and /ws had zero authentication, exposing runtime
+// profiling and live metrics to anyone who could reach the port. If SOCKET_TOKEN is
+// unset, access stays open (local/dev convenience); if it is set, it's enforced.
+func checkDashAuth(r *http.Request) bool {
+	token := GetEnv[string]("SOCKET_TOKEN")
+	if token == "" {
+		return true
+	}
+	provided := r.URL.Query().Get("token")
+	if provided == "" {
+		provided = r.Header.Get("X-Socket-Token")
+	}
+	return provided == token
+}
+
+func authWrap(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !checkDashAuth(r) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("unauthorized"))
+			return
+		}
+		h(w, r)
+	}
+}
+
+// openBrowser opens the specified URL in the default browser of the OS cross-platformly
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("cmd", "/c", "start", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported operating system")
+	}
+	if err != nil {
+		log.Printf("[Browser Launch Error] Failed to auto-open dashboard: %v", err)
+	} else {
+		log.Printf("[Browser Launch Success] Auto-opened default browser at %s", url)
+	}
+}
+
 // Go fires the dashboard monitoring service and starts unified WebSocket streaming
 func (d *DashChain) Go() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	mux.HandleFunc("/debug/pprof/", authWrap(pprof.Index))
+	mux.HandleFunc("/debug/pprof/cmdline", authWrap(pprof.Cmdline))
+	mux.HandleFunc("/debug/pprof/profile", authWrap(pprof.Profile))
+	mux.HandleFunc("/debug/pprof/symbol", authWrap(pprof.Symbol))
+	mux.HandleFunc("/debug/pprof/trace", authWrap(pprof.Trace))
 
 	// Legacy fallback API endpoint
 	mux.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +130,12 @@ func (d *DashChain) Go() error {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		// FIX: enforce the same token check as pprof; previously this endpoint
+		// streamed live internal metrics to any client with no auth at all.
+		if !checkDashAuth(r) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		// Upgrade connection using the native SocketServer upgrade engine
 		d.bot.Socket().ServeHTTP(w, r)
 	})
@@ -90,7 +146,18 @@ func (d *DashChain) Go() error {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(htmlPage))
+
+		// FIX: inject SOCKET_TOKEN (if set) into the page's WebSocket URL so the
+		// browser client actually authenticates against the new /ws check above.
+		token := GetEnv[string]("SOCKET_TOKEN")
+		page := htmlPage
+		if token != "" {
+			page = strings.ReplaceAll(page,
+				`const wsUri = "ws://" + window.location.host + "/ws";`,
+				fmt.Sprintf(`const wsUri = "ws://" + window.location.host + "/ws?token=%s";`, token))
+		}
+
+		_, _ = w.Write([]byte(page))
 	})
 
 	// Periodically stream real-time metrics over WebSocket to all active dashboard clients
@@ -123,6 +190,18 @@ func (d *DashChain) Go() error {
 		}
 		d.bot.Socket().BroadcastJSON("metrics", payload)
 	})
+
+	// Async browser auto-opener right before starting the blocking server
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		port := d.addr
+		if strings.HasPrefix(port, ":") {
+			port = "http://localhost" + port
+		} else if !strings.HasPrefix(port, "http://") && !strings.HasPrefix(port, "https://") {
+			port = "http://" + port
+		}
+		openBrowser(port)
+	}()
 
 	log.Printf("dashboard server is running on http://localhost%s", d.addr)
 	server := &http.Server{
@@ -267,7 +346,7 @@ const htmlPage = `
             <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
                 <div class="flex justify-between items-start">
                     <span class="text-[11px] text-zinc-400 font-bold">دوره‌های زباله‌روب (GC)</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 00-1 1v3M4 7h16"></path></svg>
+                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                 </div>
                 <div class="mt-2">
                     <p id="num-gc" class="text-2xl font-black text-blue-400">0</p>
@@ -283,7 +362,7 @@ const htmlPage = `
 
         function initWebSocket() {
             websocket = new WebSocket(wsUri);
-            
+
             websocket.onopen = function() {
                 const badge = document.getElementById('shield-badge');
                 badge.innerText = "متصل به WebSocket Stream";
@@ -307,7 +386,7 @@ const htmlPage = `
                 badge.innerText = "قطع ارتباط! تلاش برای اتصال مجدد...";
                 badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1.5";
                 badge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span> قطع ارتباط! تلاش برای اتصال مجدد...';
-                
+
                 // Resilient auto-reconnect loop
                 setTimeout(initWebSocket, 2000);
             };
@@ -322,7 +401,7 @@ const htmlPage = `
             document.getElementById('cpu-percent').innerText = cpuVal.toFixed(2) + '%';
             const cpuBar = document.getElementById('cpu-bar');
             cpuBar.style.width = Math.min(cpuVal, 100) + '%';
-            
+
             if (cpuVal > 80) {
                 cpuBar.className = 'bg-red-500 h-1 rounded-full transition-all duration-500';
             } else if (cpuVal > 40) {
@@ -334,17 +413,33 @@ const htmlPage = `
             document.getElementById('alloc-mb').innerHTML = data.alloc_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
             document.getElementById('sys-mb').innerHTML = data.sys_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
             document.getElementById('goroutines').innerText = data.goroutines.toLocaleString();
-            
+
+            // FIX: queue-depth / queue-bar were rendered in HTML but never updated here before.
+            const queueVal = data.queue_depth;
+            document.getElementById('queue-depth').innerHTML = queueVal.toLocaleString() + ' <span class="text-xs font-normal text-zinc-500">/ 1000</span>';
+            const queueBar = document.getElementById('queue-bar');
+            queueBar.style.width = Math.min(queueVal / 10, 100) + '%';
+            if (queueVal > 800) {
+                queueBar.className = 'bg-red-500 h-1 rounded-full transition-all duration-500';
+            } else if (queueVal > 300) {
+                queueBar.className = 'bg-amber-500 h-1 rounded-full transition-all duration-500';
+            } else {
+                queueBar.className = 'bg-purple-500 h-1 rounded-full transition-all duration-500';
+            }
+
             const latencyVal = data.latency_ms;
             if (latencyVal > 0) {
                 document.getElementById('latency-ms').innerHTML = latencyVal.toFixed(1) + ' <span class="text-[10px] font-normal text-zinc-500">ms</span>';
             } else {
                 document.getElementById('latency-ms').innerHTML = '<span class="text-xs font-normal text-zinc-500">در انتظار درخواست...</span>';
             }
-            
+
             document.getElementById('total-updates').innerText = data.total_updates.toLocaleString();
             document.getElementById('active-sessions').innerText = data.active_sessions.toLocaleString();
             document.getElementById('db-keys').innerText = data.db_keys.toLocaleString();
+
+            // FIX: num-gc had a placeholder in HTML but was never written to before.
+            document.getElementById('num-gc').innerText = data.num_gc.toLocaleString();
 
             const shieldBadge = document.getElementById('shield-badge');
             // Check shield active status dynamically and update badge with pure vectors
