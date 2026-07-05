@@ -535,6 +535,12 @@ func handlePanic(b *Bot, r any, c *Ctx) {
 	if !ok {
 		err = fmt.Errorf("recovered panic: %v", r)
 	}
+
+	// Publish system error event to the central EventBus asynchronously
+	if b != nil && b.Bus != nil {
+		b.Bus.Publish("sys.error", err)
+	}
+
 	if b.OnError != nil {
 		b.OnError(err, c)
 	}

@@ -64,8 +64,9 @@ type Bot struct {
 	AutoStretch        bool
 	groupSettings      []GroupSetting
 	analyticsDB        Storage
-	paginations map[string]*PaginationBuilder
-	pagMu       sync.RWMutex
+	paginations        map[string]*PaginationBuilder
+	pagMu              sync.RWMutex
+	Bus                *EventBus
 }
 
 type BotBuilder struct {
@@ -161,21 +162,22 @@ func (b *BotBuilder) Go() (*Bot, error) {
 	_ = store.Load()
 
 	bot := &Bot{
-		Client:     NewClient(b.token),
-		Sessions:   store,
-		workerChan: make(chan *Update, 1000),
-		numWorkers: b.workers,
-		cmds:       make(map[string][]Handler),
-		texts:      make(map[string][]Handler),
-		states:     make(map[string][]Handler),
-		callbacks:  make(map[string][]Handler),
-		Blacklist:  make(map[int64]bool),
-		dbInstance: NewDatabase(DataPath("gobale_database.gob")),
-		settingsDB: NewDatabase(DataPath("gobale_settings.gob")),
-		cache:      newBotCache(),
-		safirKey:   b.safirKey,
-		safirBotID: b.safirBotID,
+		Client:      NewClient(b.token),
+		Sessions:    store,
+		workerChan:  make(chan *Update, 1000),
+		numWorkers:  b.workers,
+		cmds:        make(map[string][]Handler),
+		texts:       make(map[string][]Handler),
+		states:      make(map[string][]Handler),
+		callbacks:   make(map[string][]Handler),
+		Blacklist:   make(map[int64]bool),
+		dbInstance:  NewDatabase(DataPath("gobale_database.gob")),
+		settingsDB:  NewDatabase(DataPath("gobale_settings.gob")),
+		cache:       newBotCache(),
+		safirKey:    b.safirKey,
+		safirBotID:  b.safirBotID,
 		paginations: make(map[string]*PaginationBuilder),
+		Bus:         NewEventBus(),
 	}
 
 	bot.MaintenanceAdminID = b.adminID
@@ -838,11 +840,21 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		c.Message = u.CallbackQuery.Message
 	}
 
+	// Publish successful invoice payment events to the central EventBus asynchronously
+	if u.Message != nil && u.Message.SuccessfulPayment != nil {
+		b.Bus.Publish("payment.success", u.Message.SuccessfulPayment)
+	}
+
 	// Query state before acquiring the read lock to prevent lock contention
 	var state string
 	if u.Message != nil {
 		stateChan := b.Sessions.Get(u.Message.Chat.ID).State()
 		state, _ = stateChan.Go()
+	}
+
+	// Publish successful invoice payment events to the central EventBus asynchronously
+	if u.Message != nil && u.Message.SuccessfulPayment != nil {
+		b.Bus.Publish("payment.success", u.Message.SuccessfulPayment)
 	}
 
 	// Acquire read lock immediately to protect slice copies
@@ -871,6 +883,13 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 			parts := strings.Fields(text)
 			if len(parts) > 1 {
 				_, _ = b.Sessions.Get(u.Message.Chat.ID).Data("deep_link", parts[1]).Go()
+
+				// Publish deep link referral start events to the central EventBus asynchronously
+				b.Bus.Publish("bot.start", map[string]any{
+					"ChatID":   u.Message.Chat.ID,
+					"DeepLink": parts[1],
+					"Sender":   u.Message.From,
+				})
 			}
 		}
 
@@ -1324,4 +1343,10 @@ func (b *Bot) GetCPU() float64 {
 		return 0.0
 	}
 	return percent
+}
+
+// Event registers a central listener callback to a specific topic on the unified EventBus
+func (o *OnChain) Event(topic string, fn EventListener) *OnChain {
+	o.bot.Bus.Subscribe(topic, fn)
+	return o
 }

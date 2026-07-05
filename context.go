@@ -389,7 +389,7 @@ func (d *DownloadChain) Go() (string, error) {
 	resolved := d.fc.bot.ResolveChatID(d.chatID)
 	chatIDStr := fmt.Sprintf("%v", resolved)
 
-	// Dispatch job through the concurrent download queue
+// Dispatch job through the concurrent download queue
 	if d.useQueue {
 		initDownloadPool() // Lazy-load the pool at package level
 		resultChan := make(chan error, 1)
@@ -407,11 +407,29 @@ func (d *DownloadChain) Go() (string, error) {
 
 		globalDownloadPool.jobChan <- job
 		err := <-resultChan
+
+		// Publish file.download event on successful background queued download with ChatID
+		if err == nil {
+			d.fc.bot.Bus.Publish("file.download", map[string]any{
+				"Path":   destPath,
+				"URL":    url,
+				"ChatID": d.chatID, // Wrapped cleanly here
+			})
+		}
 		return destPath, err
 	}
 
-	// Standard resilient download without queue (updated: removed chatIDStr parameter)
+	// Standard resilient download without queue
 	err := resilientDownload(ctx, d.fc.bot.Client.httpClient, url, destPath, fileSize, d.onProgress)
+
+	// Publish file.download event on successful standard download with ChatID
+	if err == nil {
+		d.fc.bot.Bus.Publish("file.download", map[string]any{
+			"Path":   destPath,
+			"URL":    url,
+			"ChatID": d.chatID, // Wrapped cleanly here
+		})
+	}
 	return destPath, err
 }
 
@@ -666,4 +684,10 @@ func (c *Ctx) Reset() {
 			delete(c.Keys, k)
 		}
 	}
+}
+
+// ChatID explicitly registers a chat ID for the download chain
+func (d *DownloadChain) ChatID(id int64) *DownloadChain {
+	d.chatID = id
+	return d
 }

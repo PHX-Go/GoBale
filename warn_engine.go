@@ -259,6 +259,14 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 		return errTx
 	}
 
+	// Publish user warning event to the central EventBus asynchronously
+	we.bot.Bus.Publish("user.warn", map[string]any{
+		"ChatID": chatID,
+		"UserID": userID,
+		"Reason": reason,
+		"Count":  newCount,
+	})
+
 	// Resolve user's mention name safely
 	userName := ""
 	if c.Message != nil && c.Message.From != nil {

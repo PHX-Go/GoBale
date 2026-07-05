@@ -1086,6 +1086,12 @@ func (j *JoinChain) Go() {
 			joinKey := fmt.Sprintf("join_time_%d_%d", chatID, user.ID)
 			_ = c.DB().Set(joinKey, nowNs).Go()
 
+			// Publish user join event to the central EventBus asynchronously
+			c.Bot.Bus.Publish("user.join", map[string]any{
+				"ChatID": chatID,
+				"User":   user,
+			})
+
 			// Only credit human inviters
 			if c.Message.From != nil && !c.Message.From.IsBot && c.Message.From.ID != user.ID {
 				inviterID := c.Message.From.ID
@@ -1188,6 +1194,13 @@ func (e *ExitChain) Go() {
 	handler := func(c *Ctx) {
 		user := c.Message.LeftChatMember
 		if user != nil {
+			// Extract chatID safely from context
+			chatID, err := c.ChatID()
+			if err != nil {
+				c.Next()
+				return
+			}
+
 			// Remove the user ID atomically from local GOB DB if option is configured
 			if e.doRemove && e.dbKey != "" {
 				_ = c.DB().Tx(func(store map[string]any) {
@@ -1220,6 +1233,12 @@ func (e *ExitChain) Go() {
 				text = strings.ReplaceAll(text, "{title}", chatTitle)
 				_, _ = c.Send().Text(text).Go()
 			}
+
+			// Publish user exit event to the central EventBus asynchronously
+			c.Bot.Bus.Publish("user.exit", map[string]any{
+				"ChatID": chatID,
+				"User":   *user,
+			})
 		}
 		c.Next()
 	}
