@@ -634,6 +634,14 @@ func (p *PollChain) Go() {
 					continue
 				}
 			}
+
+			// Push updates to queue and advance offset to avoid fetching duplicates
+			if len(updates) > 0 {
+				for i := range updates {
+					p.run.bot.workerChan <- &updates[i]
+				}
+				offset = updates[len(updates)-1].UpdateID + 1
+			}
 		}
 	}
 }
