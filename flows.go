@@ -262,9 +262,7 @@ func (s *SurveyChain) Go() {
 
 // runStep sends a question (or edits the existing one in-place) and registers its callback handler
 func (s *SurveyChain) runStep(c *Ctx, idx int, answers []string) {
-	// Check if all steps are completed
 	if idx >= len(s.steps) {
-		// Delete the final survey question message before executing finish callback
 		_ = c.Del().Go()
 		if s.finish != nil {
 			s.finish(c, answers)
@@ -282,18 +280,16 @@ func (s *SurveyChain) runStep(c *Ctx, idx int, answers []string) {
 		builder.Row(Btn(choice).Callback(cb))
 	}
 
-	// Edit the message in-place for step > 0 to eliminate menu jumping/flickering
 	if idx == 0 {
 		_, _ = c.Send().Text(step.Question).Markup(builder.Build()).Go()
 	} else {
 		_, _ = c.Edit().Text(step.Question).Markup(builder.Build()).Go()
 	}
 
-	// Store current answers in session to survive the callback round-trip
+	// Store current answers as a raw slice directly in the session
 	answerKey := fmt.Sprintf("_survey_answers_%d", senderID)
-	_, _ = c.Session().Data(answerKey, strings.Join(answers, "||")).Go()
+	_, _ = c.Session().Data(answerKey, answers).Go()
 
-	// Schedule background cleanup to prevent memory leaks if abandoned
 	c.Bot.Task().In(15*time.Minute, func() {
 		c.Bot.mu.Lock()
 		delete(c.Bot.callbacks, callbackPrefix)
@@ -301,35 +297,24 @@ func (s *SurveyChain) runStep(c *Ctx, idx int, answers []string) {
 	})
 
 	c.Bot.On().Callback(callbackPrefix).Do(func(activeCtx *Ctx) {
-		// Clean up this step's callback handler
 		activeCtx.Bot.mu.Lock()
 		delete(activeCtx.Bot.callbacks, callbackPrefix)
 		activeCtx.Bot.mu.Unlock()
 
-		// Parse which choice was picked
 		var choiceIdx int
-		fmt.Sscanf(
-			activeCtx.Update.CallbackQuery.Data,
-			callbackPrefix+":%d",
-			&choiceIdx,
-		)
+		fmt.Sscanf(activeCtx.Update.CallbackQuery.Data, callbackPrefix+":%d", &choiceIdx)
 
 		choiceText := step.Choices[0]
 		if choiceIdx >= 0 && choiceIdx < len(step.Choices) {
 			choiceText = step.Choices[choiceIdx]
 		}
 
-		// Load previous answers from session
+		// Retrieve the slice directly without manual string splitting
 		raw, _ := activeCtx.Session().Data(answerKey).Go()
-		var prevAnswers []string
-		if rawStr, ok := raw.(string); ok && rawStr != "" {
-			prevAnswers = strings.Split(rawStr, "||")
-		}
+		prevAnswers, _ := raw.([]string)
 		newAnswers := append(prevAnswers, choiceText)
 
-		// Acknowledge callback query to stop loading spinner (Removed the old activeCtx.Del().Go()!)
 		_ = activeCtx.Answer().Go()
-
 		s.runStep(activeCtx, idx+1, newAnswers)
 	})
 }
@@ -343,7 +328,8 @@ type CaptchaChain struct {
 	button  string
 	onPass  Handler
 	onFail  Handler
-	pending sync.Map // key: "chatID_userID" -> *captchaEntry
+	pending sync.Map
+	timers  sync.Map
 }
 
 // Captcha opens the fluent captcha dot system from Bot context
@@ -394,145 +380,68 @@ func (cc *CaptchaChain) OnFail(h Handler) *CaptchaChain {
 	return cc
 }
 
-// Go registers the captcha join handler into the bot routing system safely without pool reference leaks
+// Go registers the captcha join handler and callback into the bot routing system
 func (cc *CaptchaChain) Go() {
 	callbackPrefix := "_captcha_verify"
 
 	cc.bot.On().Join().Do(func(c *Ctx) {
 		for _, user := range c.Message.NewChatMembers {
-			if user.IsBot {
-				continue
-			}
+			if user.IsBot { continue }
 
-			chatID, err := c.ChatID()
-			if err != nil {
-				continue
-			}
-
+			chatID, _ := c.ChatID()
 			userID := user.ID
+			idKey := fmt.Sprintf("%d_%d", chatID, userID)
 			callbackData := fmt.Sprintf("%s:%d:%d", callbackPrefix, chatID, userID)
+			muteKey := "captcha_mute_" + idKey
 
-			// use unique captcha_mute prefix to prevent conflict with admin mute
-			muteKey := fmt.Sprintf("captcha_mute_%d_%d", chatID, userID)
 			_ = c.DB().Set(muteKey, true).Go()
+			markup := InlineMarkup().Row(Btn(cc.button).Callback(callbackData)).Build()
+			text := replaceVars(cc.prompt, map[string]string{"name": user.Mention()})
+			msg, err := c.Bot.Send(chatID).Text(text).Markup(markup).Go()
+			if err != nil { continue }
 
-			name := user.Mention()
-			text := replaceVars(cc.prompt, map[string]string{"name": name})
-			markup := InlineMarkup().
-				Row(Btn(cc.button).Callback(callbackData)).
-				Build()
+			// Store timer to allow manual cancellation on success
+			t := time.AfterFunc(cc.timeout, func() {
+				cc.timers.Delete(idKey)
+				val, ok := cc.bot.dbInstance.Get(muteKey)
+				if !ok || val == false { return }
 
-			msg, err := c.Bot.Send(chatID).Text(text).Markup(markup).Markdown().Go()
-			if err != nil {
-				continue
-			}
-
-			captchaMsgKey := fmt.Sprintf("captcha_msg_%d_%d", chatID, userID)
-			_ = c.DB().Set(captchaMsgKey, msg.MessageID).Go()
-
-			// Capture safe local variables to avoid long-running sync.Pool references
-			botInstance := c.Bot
-			dbInstance := c.Bot.dbInstance
-			msgID := msg.MessageID
-			userName := name
-			onFailHandler := cc.onFail
-
-			time.AfterFunc(cc.timeout, func() {
-				val, ok := dbInstance.Get(muteKey)
-				if !ok {
-					return
-				}
-				if isMuted, ok := val.(bool); !ok || !isMuted {
-					return
-				}
-
-				_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
-					"chat_id":    chatID,
-					"message_id": msgID,
-				}, nil)
-
-				_ = botInstance.Chat(chatID).Ban(userID).Go()
-				_ = botInstance.Chat(chatID).Unban(userID).OnlyIfBanned(true).Go()
-
-				_ = dbInstance.Del(muteKey)
-				_ = dbInstance.Del(captchaMsgKey)
-
-				kickText := replaceVars(cc.kickMsg, map[string]string{"name": userName})
-				kickMsg, _ := botInstance.Send(chatID).Text(kickText).Go()
-				if kickMsg != nil {
-					kickMsgID := kickMsg.MessageID
-					botInstance.Task().In(5*time.Second, func() {
-						_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
-							"chat_id":    chatID,
-							"message_id": kickMsgID,
-						}, nil)
-					})
-				}
-
-				if onFailHandler != nil {
-					fc := &Ctx{Bot: botInstance, ctx: context.Background()}
-					onFailHandler(fc)
-				}
+				_ = cc.bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{"chat_id": chatID, "message_id": msg.MessageID}, nil)
+				_ = cc.bot.Chat(chatID).Ban(userID).Go()
+				_ = cc.bot.Chat(chatID).Unban(userID).OnlyIfBanned(true).Go()
+				_ = cc.bot.dbInstance.Del(muteKey)
 			})
+			cc.timers.Store(idKey, t)
 		}
 	}).Go()
 
 	cc.bot.On().Callback(callbackPrefix).Do(func(c *Ctx) {
-		if c.Update == nil || c.Update.CallbackQuery == nil {
-			return
-		}
-
 		parts := strings.Split(c.Update.CallbackQuery.Data, ":")
-		if len(parts) < 3 {
-			return
-		}
+		if len(parts) < 3 { return }
 
-		chatID, err1 := strconv.ParseInt(parts[1], 10, 64)
-		userID, err2 := strconv.ParseInt(parts[2], 10, 64)
-		if err1 != nil || err2 != nil {
-			return
-		}
+		chatID, _ := strconv.ParseInt(parts[1], 10, 64)
+		userID, _ := strconv.ParseInt(parts[2], 10, 64)
+		idKey := fmt.Sprintf("%d_%d", chatID, userID)
 
 		if c.Update.CallbackQuery.From.ID != userID {
 			_ = c.Answer().Text("این دکمه مخصوص شما نیست!").Alert().Go()
 			return
 		}
 
-		// use unique captcha_mute prefix to verify and delete the captcha key
-		muteKey := fmt.Sprintf("captcha_mute_%d_%d", chatID, userID)
-		_, okMute := c.DB().Get(muteKey).Go()
-
-		if !okMute {
-			_ = c.Answer().Text("هویت شما قبلاً تایید شده است.").Go()
-			return
-		}
-
-		_ = c.DB().Del(muteKey).Go()
-		captchaMsgKey := fmt.Sprintf("captcha_msg_%d_%d", chatID, userID)
-		valMsg, okMsg := c.DB().Get(captchaMsgKey).Go()
-		_ = c.DB().Del(captchaMsgKey).Go()
-
-		var captchaMsgID int64
-		if okMsg {
-			if id, ok := valMsg.(int64); ok {
-				captchaMsgID = id
-			} else if id, ok := valMsg.(int); ok {
-				captchaMsgID = int64(id)
+		// Stop and remove the timer immediately on success
+		if val, ok := cc.timers.Load(idKey); ok {
+			if t, okTimer := val.(*time.Timer); okTimer {
+				t.Stop()
 			}
+			cc.timers.Delete(idKey)
 		}
 
-		if captchaMsgID > 0 {
-			_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
-				"chat_id":    chatID,
-				"message_id": captchaMsgID,
-			}, nil)
-		}
+		muteKey := "captcha_mute_" + idKey
+		_ = c.DB().Del(muteKey).Go()
+		_ = c.Del().Go() // Delete captcha message
+		_ = c.Answer().Text("✅ تایید شدید!").Go()
 
-		_ = c.Answer().Text("✅ تایید شدید! خوش آمدید.").Go()
-
-		if cc.onPass != nil {
-			cc.onPass(c)
-		}
+		if cc.onPass != nil { cc.onPass(c) }
 	})
 }
 

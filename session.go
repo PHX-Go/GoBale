@@ -456,8 +456,9 @@ func (s *Session) Float64(key string, defaultVal ...float64) float64 {
 }
 
 func init() {
-	// Register sessionDTO globally inside GOB engine on startup
+	// Register sessionDTO and common slices globally on startup
 	gob.Register(sessionDTO{})
+	gob.Register([]string{})
 }
 
 func SessionGet[T any](s *Session, key string) (T, bool) {

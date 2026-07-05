@@ -172,7 +172,6 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		callbacks:   make(map[string][]Handler),
 		Blacklist:   make(map[int64]bool),
 		dbInstance:  NewDatabase(DataPath("gobale_database.gob")),
-		settingsDB:  NewDatabase(DataPath("gobale_settings.gob")),
 		cache:       newBotCache(),
 		safirKey:    b.safirKey,
 		safirBotID:  b.safirBotID,
@@ -604,11 +603,6 @@ func (p *PollChain) Go() {
 			// Safely close and flush the main GOB database on shutdown
 			if p.run.bot.dbInstance != nil {
 				_ = p.run.bot.dbInstance.Close()
-			}
-
-			// Safely close and flush the settings GOB database on shutdown
-			if p.run.bot.settingsDB != nil {
-				_ = p.run.bot.settingsDB.Close()
 			}
 
 			// Safely close and flush the analytics database on shutdown
