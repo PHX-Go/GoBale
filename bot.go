@@ -586,9 +586,11 @@ func (p *PollChain) Go() {
 			}
 			p.run.bot.mu.RUnlock()
 
-			// Clean and release the dashboard HTTP server port immediately
+			// Clean and release the dashboard HTTP server port immediately with a timeout context
 			if p.run.bot.dashServer != nil {
-				_ = p.run.bot.dashServer.Shutdown(context.Background())
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = p.run.bot.dashServer.Shutdown(shutdownCtx)
+				cancel()
 			}
 
 			// Forcefully stop and release all background cron tasks
@@ -691,7 +693,7 @@ func (w *WebChain) Ngrok(apiURL ...string) *WebChain {
 	return w
 }
 
-// Go registers webhook URLs and starts HTTP/HTTPS server with auto resources cleanup
+// Go registers webhook URLs and starts HTTP/HTTPS server with graceful resources cleanup
 func (w *WebChain) Go() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -734,58 +736,85 @@ func (w *WebChain) Go() error {
 		Addr:    w.addr,
 		Handler: mux,
 	}
+
+	// Create an error channel to catch startup server errors
+	errChan := make(chan error, 1)
+
+	// Run the HTTP/HTTPS server in the background
 	go func() {
-		<-ctx.Done()
-		_ = server.Shutdown(context.Background())
-		close(w.run.bot.workerChan)
-		w.run.bot.workersWg.Wait()
-
-		w.run.bot.stopDefense() // Clean up defense monitoring goroutine on exit
-
-		// Clean and release the dashboard HTTP server port immediately on Webhook shutdown
-		if w.run.bot.dashServer != nil {
-			_ = w.run.bot.dashServer.Shutdown(context.Background())
+		var err error
+		if w.insecure || (w.cert == "" && w.key == "") {
+			if w.run.bot.loggerInstance != nil {
+				w.run.bot.loggerInstance.Log(LevelWarn, "[GoBale Webhook Warn] ", "Webhook is running in INSECURE (HTTP-only) mode. This is strictly recommended for local development or tunnel testing (ngrok) only! Do NOT use this in Production servers.", nil)
+			}
+			err = server.ListenAndServe()
+		} else {
+			err = server.ListenAndServeTLS(w.cert, w.key)
 		}
 
-		// Forcefully stop and release all background cron tasks on Webhook shutdown
-		w.run.bot.muTasks.Lock()
-		for _, task := range w.run.bot.tasks {
-			task.Stop()
+		if err != nil && err != http.ErrServerClosed {
+			errChan <- err
 		}
-		w.run.bot.tasks = nil
-		w.run.bot.muTasks.Unlock()
-
-		// Safely close and flush the main GOB database on Webhook shutdown
-		if w.run.bot.dbInstance != nil {
-			_ = w.run.bot.dbInstance.Close()
-		}
-
-		// Safely close and flush the settings GOB database on Webhook shutdown
-		if w.run.bot.settingsDB != nil {
-			_ = w.run.bot.settingsDB.Close()
-		}
-
-		// Safely close and flush the analytics database on shutdown
-		if w.run.bot.analyticsDB != nil {
-			_ = w.run.bot.analyticsDB.Close()
-		}
-
-		// Safely close GOB store cleanup goroutine using io.Closer on Webhook shutdown
-		_ = w.run.bot.Sessions.Close()
-
-		// Forcefully close and release all idle TCP socket connections to prevent socket leaks on Webhook shutdown
-		w.run.bot.Client.httpClient.CloseIdleConnections()
+		close(errChan)
 	}()
 
-	// If insecure is configured or no SSL certificates are provided, boot in plain HTTP
-	if w.insecure || (w.cert == "" && w.key == "") {
-		if w.run.bot.loggerInstance != nil {
-			w.run.bot.loggerInstance.Log(LevelWarn, "[GoBale Webhook Warn] ", "Webhook is running in INSECURE (HTTP-only) mode. This is strictly recommended for local development or tunnel testing (ngrok) only! Do NOT use this in Production servers.", nil)
-		}
-		return server.ListenAndServe()
+	// Block until system interrupt signal is caught or the server crashes
+	select {
+	case <-ctx.Done():
+		// System interrupt caught, proceeding with graceful cleanup
+	case err := <-errChan:
+		// Server failed to start
+		return err
 	}
 
-	return server.ListenAndServeTLS(w.cert, w.key)
+	// 1. Shutdown the HTTP Webhook server with a safety timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = server.Shutdown(shutdownCtx)
+	cancel()
+
+	// 2. Safely drain workers to process remaining messages
+	close(w.run.bot.workerChan)
+	w.run.bot.workersWg.Wait()
+
+	w.run.bot.stopDefense()
+
+	// 3. Clean and release the dashboard HTTP server port immediately with a timeout context
+	if w.run.bot.dashServer != nil {
+		dashShutdownCtx, dashCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = w.run.bot.dashServer.Shutdown(dashShutdownCtx)
+		dashCancel()
+	}
+
+	// 4. Forcefully stop and release all background cron tasks on Webhook shutdown
+	w.run.bot.muTasks.Lock()
+	for _, task := range w.run.bot.tasks {
+		task.Stop()
+	}
+	w.run.bot.tasks = nil
+	w.run.bot.muTasks.Unlock()
+
+	// 5. Safely close and flush the main GOB database on Webhook shutdown
+	if w.run.bot.dbInstance != nil {
+		_ = w.run.bot.dbInstance.Close()
+	}
+
+	// 6. Safely close and flush the settings GOB database on Webhook shutdown
+	if w.run.bot.settingsDB != nil {
+		_ = w.run.bot.settingsDB.Close()
+	}
+
+	// 7. Safely close and flush the analytics database on shutdown
+	if w.run.bot.analyticsDB != nil {
+		_ = w.run.bot.analyticsDB.Close()
+	}
+
+	// 8. Safely close GOB store cleanup goroutine using io.Closer on Webhook shutdown
+	_ = w.run.bot.Sessions.Close()
+
+	// 9. Forcefully close and release all idle TCP socket connections to prevent socket leaks on Webhook shutdown
+	w.run.bot.Client.httpClient.CloseIdleConnections()
+
+	return nil
 }
 
 // fetchNgrokURL queries local ngrok API to resolve the active public forwarding URL

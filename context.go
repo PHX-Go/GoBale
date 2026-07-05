@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -389,7 +390,7 @@ func (d *DownloadChain) Go() (string, error) {
 	resolved := d.fc.bot.ResolveChatID(d.chatID)
 	chatIDStr := fmt.Sprintf("%v", resolved)
 
-// Dispatch job through the concurrent download queue
+	// Dispatch job through the concurrent download queue
 	if d.useQueue {
 		initDownloadPool() // Lazy-load the pool at package level
 		resultChan := make(chan error, 1)
@@ -690,4 +691,20 @@ func (c *Ctx) Reset() {
 func (d *DownloadChain) ChatID(id int64) *DownloadChain {
 	d.chatID = id
 	return d
+}
+
+// SetTransport allows safely wrapping or overriding the client's network transport
+func (c *Client) SetTransport(wrap func(original http.RoundTripper) http.RoundTripper) {
+	if c.httpClient == nil {
+		return
+	}
+
+	// Use default transport if no custom transport is currently configured
+	original := c.httpClient.Transport
+	if original == nil {
+		original = http.DefaultTransport
+	}
+
+	// Apply the wrapper closure to intercept network traffic
+	c.httpClient.Transport = wrap(original)
 }
