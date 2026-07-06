@@ -67,7 +67,9 @@ type Bot struct {
 	paginations        map[string]*PaginationBuilder
 	pagMu              sync.RWMutex
 	menus              map[string]*MenuNode
+	menusAtomic        atomic.Value
 	replyButtons       map[string]bool
+	replyButtonsAtomic atomic.Value
 	menusOnce          sync.Once
 	menuMaxWidth       int
 	Bus                *EventBus
@@ -626,12 +628,17 @@ func (p *PollChain) Go() {
 			p.run.bot.Client.httpClient.CloseIdleConnections()
 			return
 		default:
-			params := map[string]any{"offset": offset, "limit": 100, "timeout": 20}
+			// Explicitly request message, edited_message and callback_query updates from Bale
+			params := map[string]any{
+				"offset":          offset,
+				"limit":           100,
+				"timeout":         20,
+				"allowed_updates": []string{"message", "edited_message", "callback_query", "pre_checkout_query"},
+			}
 			var updates []Update
 			err := p.run.bot.BaseRequest(ctx, "getUpdates", params, &updates)
 			if err != nil {
 				log.Printf("[GoBale Polling Error] Failed to fetch updates: %v", err)
-				// ctx-aware backoff so shutdown signal is not delayed by up to 3s
 				select {
 				case <-ctx.Done():
 					continue
@@ -640,10 +647,43 @@ func (p *PollChain) Go() {
 				}
 			}
 
-			// Push updates to queue and advance offset to avoid fetching duplicates
+			// Push updates to queue and advance offset, with raw pre-scan interceptor
 			if len(updates) > 0 {
 				for i := range updates {
-					p.run.bot.workerChan <- &updates[i]
+					u := &updates[i]
+
+					// Raw Pre-Scan Interceptor: Detects and deletes critical threats before even pushing to worker queue!
+					if p.run.bot.PreScanUpdate(u) {
+						var chatID, msgID int64
+						if u.Message != nil {
+							chatID = u.Message.Chat.ID
+							msgID = u.Message.MessageID
+						} else if u.EditedMessage != nil {
+							chatID = u.EditedMessage.Chat.ID
+							msgID = u.EditedMessage.MessageID
+						}
+
+						if chatID != 0 && msgID > 0 {
+							// Capture local parameters to prevent nil-pointer dereferences on background execution
+							botInstance := p.run.bot
+
+							// Run deletion immediately in a native goroutine with panic recovery
+							go func() {
+								defer func() {
+									if r := recover(); r != nil {
+										handlePanic(botInstance, r, nil)
+									}
+								}()
+								_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+									"chat_id":    chatID,
+									"message_id": msgID,
+								}, nil)
+							}()
+						}
+						continue // Skip pushing this malicious update to workers completely
+					}
+
+					p.run.bot.workerChan <- u
 				}
 				offset = updates[len(updates)-1].UpdateID + 1
 			}
@@ -735,6 +775,38 @@ func (w *WebChain) Go() error {
 			rw.WriteHeader(http.StatusBadRequest)
 			return
 		}
+
+		// Raw Pre-Scan Interceptor inside Webhook gateway level with native goroutine
+		if w.run.bot.PreScanUpdate(&update) {
+			var chatID, msgID int64
+			if update.Message != nil {
+				chatID = update.Message.Chat.ID
+				msgID = update.Message.MessageID
+			} else if update.EditedMessage != nil {
+				chatID = update.EditedMessage.Chat.ID
+				msgID = update.EditedMessage.MessageID
+			}
+
+			if chatID != 0 && msgID > 0 {
+				botInstance := w.run.bot
+
+				// Run deletion immediately in a native goroutine with panic recovery
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							handlePanic(botInstance, r, nil)
+						}
+					}()
+					_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": msgID,
+					}, nil)
+				}()
+			}
+			rw.WriteHeader(http.StatusOK) // Acknowledge webhook success but drop the update
+			return
+		}
+
 		w.run.bot.workerChan <- &update
 		rw.WriteHeader(http.StatusOK)
 	})
@@ -1019,7 +1091,7 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		chain = append(chain, b.editMsg...)
 	}
 
-	b.mu.RUnlock() // Release read lock safely
+	b.mu.RUnlock()
 
 	if len(chain) > 0 {
 		c.handlers = chain

@@ -937,3 +937,70 @@ func (b *Bot) GroupHistoryPruner() Handler {
 		c.Next()
 	}
 }
+
+// PreScanUpdate performs an ultra-fast raw scan on incoming updates to intercept critical threats instantly
+func (b *Bot) PreScanUpdate(u *Update) bool {
+	if u == nil {
+		return false
+	}
+
+	var msg *Message
+	if u.Message != nil {
+		msg = u.Message
+	} else if u.EditedMessage != nil {
+		msg = u.EditedMessage
+	}
+
+	if msg == nil {
+		return false
+	}
+
+	// SECURITY BYPASS: Never scan or block messages sent by bots
+	if msg.From != nil && msg.From.IsBot {
+		return false
+	}
+
+	textToScan := msg.Text
+	if textToScan == "" && msg.Caption != "" {
+		textToScan = msg.Caption
+	}
+
+	if textToScan == "" {
+		return false
+	}
+
+	runes := []rune(textToScan)
+	totalCombining := 0
+	enclosingCombining := 0
+	foreignComplexCount := 0
+
+	for _, r := range runes {
+		// Instant block on zero-width bidi bombs
+		if isZeroWidth(r) || isRTLOverride(r) {
+			return true
+		}
+		if isForeignComplexScript(r) {
+			foreignComplexCount++
+		}
+		if isCombiningMark(r) {
+			totalCombining++
+			if isSymbolCombiningMark(r) {
+				enclosingCombining++
+			}
+		}
+	}
+
+	// Calculate combining marks density
+	densityRatio := float64(totalCombining) / float64(len(runes))
+
+	// Severe threat triggers (based on our upgraded 3D shield)
+	highDensity := totalCombining > 3 && densityRatio > 0.10
+	isSymbolCrash := enclosingCombining > 2
+	isForeignCrash := foreignComplexCount > 2
+
+	if highDensity || isSymbolCrash || isForeignCrash {
+		return true
+	}
+
+	return false
+}

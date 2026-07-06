@@ -138,34 +138,43 @@ func normalizeMenuWidth(s string, width int) string {
 // CompileMenus automatically registers stateful middleware, callback routers, and caches all menu resources
 func (b *Bot) CompileMenus() {
 	b.menusOnce.Do(func() {
-		// A. Cache all reply keyboard buttons on startup for high-performance O(1) lookups
-		b.mu.Lock()
-		b.replyButtons = make(map[string]bool)
-		for _, node := range b.menus {
-			if !node.IsInline {
-				for _, row := range node.Rows {
-					for _, btn := range row {
-						b.replyButtons[strings.TrimSpace(btn.Text)] = true
+		// Encapsulate caching under a safe, local lock scope with defer to prevent deadlocks on panics
+		func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+
+			b.replyButtons = make(map[string]bool)
+			for _, node := range b.menus {
+				if node == nil {
+					continue
+				}
+				if !node.IsInline {
+					for _, row := range node.Rows {
+						for _, btn := range row {
+							b.replyButtons[strings.TrimSpace(btn.Text)] = true
+						}
+					}
+					if node.ParentID != "" {
+						b.replyButtons[strings.TrimSpace(node.backLabel)] = true
+					}
+					if node.closeLabel != "" {
+						b.replyButtons[strings.TrimSpace(node.closeLabel)] = true
 					}
 				}
-				if node.ParentID != "" {
-					b.replyButtons[strings.TrimSpace(node.backLabel)] = true
-				}
-				if node.closeLabel != "" {
-					b.replyButtons[strings.TrimSpace(node.closeLabel)] = true
-				}
 			}
-		}
 
-		// B. Precompute and Cache both Keyboard and stretched Text for every menu node (Zero Transition Latency!)
-		for _, node := range b.menus {
-			node.CachedKeyboard = b.BuildMenuKeyboard(node)
-			node.CachedText = node.TextVal
-			if node.stretch {
-				node.CachedText = stretchText(node.TextVal)
+			// Precompute and Cache both Keyboard and stretched Text for every menu node (Zero Transition Latency!)
+			for _, node := range b.menus {
+				if node == nil {
+					continue
+				}
+				node.CachedKeyboard = b.BuildMenuKeyboard(node)
+				node.CachedText = node.TextVal
+				if node.stretch {
+					node.CachedText = stretchText(node.TextVal)
+				}
 			}
-		}
-		b.mu.Unlock()
+		}()
 
 		// 1. Stateful global middleware to intercept Reply Keyboards without route collisions
 		b.On().Use(func(c *Ctx) {
@@ -184,8 +193,7 @@ func (b *Bot) CompileMenus() {
 							// Dynamically match and handle Close Menu event
 							if node.closeLabel != "" && text == strings.TrimSpace(node.closeLabel) {
 								c.Abort()
-								_ = c.Del().Go() // Silently delete user's input message
-
+								_ = c.Del().Go()
 								// Delete all previous menu messages asynchronously
 								var msgIDs []int64
 								if rawIDs, errIDs := c.Session().Data("_menu_msg_ids").Go(); errIDs == nil && rawIDs != nil {
@@ -222,7 +230,7 @@ func (b *Bot) CompileMenus() {
 
 							// Dynamically match the customized back button label
 							if node.ParentID != "" && text == strings.TrimSpace(node.backLabel) {
-								c.Abort() // Abort downstream handlers
+								c.Abort()
 								_ = c.SendMenu("back")
 								return
 							}
@@ -231,7 +239,7 @@ func (b *Bot) CompileMenus() {
 							for _, row := range node.Rows {
 								for _, btn := range row {
 									if text == strings.TrimSpace(btn.Text) {
-										c.Abort() // Abort downstream handlers
+										c.Abort()
 										if btn.Handler != nil {
 											btn.Handler(c)
 										}
@@ -294,6 +302,8 @@ func (b *Bot) CompileMenus() {
 				}
 			}
 		})
+		b.menusAtomic.Store(b.menus)
+		b.replyButtonsAtomic.Store(b.replyButtons)
 	})
 }
 
@@ -302,7 +312,7 @@ func (b *Bot) BuildMenuKeyboard(node *MenuNode) any {
 	// Calculate max button label length for perfect ASCII centering across the entire keyboard
 	maxLen := 0
 	if node.stretch {
-		maxLen = 40 // Enforce baseline minimum width of 40 to strictly align with the stretched message bubble (Updated to 40)
+		maxLen = 40 // Enforce baseline minimum width of 40 to strictly align with the stretched message bubble
 		for _, row := range node.Rows {
 			for _, btn := range row {
 				if l := len([]rune(btn.Text)); l > maxLen {
@@ -552,4 +562,30 @@ func (c *Ctx) SendMenu(menuID string) error {
 		SessionSet(sess, "_menu_msg_id", msg.MessageID)
 	}
 	return err
+}
+
+// GetMenuNode retrieves a compiled menu node in a completely lock-free, high-performance manner
+func (b *Bot) GetMenuNode(id string) (*MenuNode, bool) {
+	val := b.menusAtomic.Load()
+	if val == nil {
+		// Fallback to read-lock if the atomic container is not populated yet
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		node, ok := b.menus[id]
+		return node, ok
+	}
+	node, ok := val.(map[string]*MenuNode)[id]
+	return node, ok
+}
+
+// IsReplyButton checks if a text matches any reply button in a completely lock-free manner
+func (b *Bot) IsReplyButton(text string) bool {
+	val := b.replyButtonsAtomic.Load()
+	if val == nil {
+		// Fallback to read-lock if the atomic container is not populated yet
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		return b.replyButtons[text]
+	}
+	return val.(map[string]bool)[text]
 }
