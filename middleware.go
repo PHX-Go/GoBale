@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 )
 
 // tokenBucket manages request limits for rate limiting thread-safely
@@ -276,57 +275,6 @@ func Cooldown(dur time.Duration, alert string) Handler {
 		}
 		c.Next()
 	}
-}
-
-// AntiCrash shields the bot routing channels from combining-mark payloads
-func AntiCrash() Handler {
-	return func(c *Ctx) {
-		if c.Message != nil && c.Message.Text != "" {
-			if IsCrashPayload(c.Message.Text) {
-				_ = c.Del().Go()
-				c.Abort()
-				return
-			}
-		}
-		c.Next()
-	}
-}
-
-// IsCrashPayload checks for malicious character overload crashes
-func IsCrashPayload(text string) bool {
-	runes := []rune(text)
-	if len(runes) > 4096 {
-		return true
-	}
-	consec := 0
-	total := 0
-	for _, r := range runes {
-		mark := false
-		if r >= 0x0300 && r <= 0x036F {
-			mark = true
-		}
-		if (r >= 0x0610 && r <= 0x061A) || (r >= 0x064B && r <= 0x065F) || (r >= 0x06D6 && r <= 0x06ED) {
-			mark = true
-		}
-		if unicode.Is(unicode.Mn, r) {
-			mark = true
-		}
-		if mark {
-			consec++
-			total++
-			if consec > 5 {
-				return true
-			}
-		} else {
-			consec = 0
-		}
-	}
-	if len(runes) > 15 {
-		if float64(total)/float64(len(runes)) > 0.35 {
-			return true
-		}
-	}
-	return false
 }
 
 // AdminsOnly restricts execution of the handler to group administrators and deletes access warning after 5s
