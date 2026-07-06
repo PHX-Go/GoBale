@@ -65,7 +65,8 @@ func NewGOBStore(filePath string) *GOBStore {
 	// Start background cleanup and periodic auto-save loops
 	go func() {
 		cleanupTicker := time.NewTicker(1 * time.Hour)
-		saveTicker := time.NewTicker(10 * time.Minute) // Auto-save sessions periodically
+		// Auto-save sessions periodically
+		saveTicker := time.NewTicker(10 * time.Minute)
 		defer cleanupTicker.Stop()
 		defer saveTicker.Stop()
 
@@ -456,9 +457,10 @@ func (s *Session) Float64(key string, defaultVal ...float64) float64 {
 }
 
 func init() {
-	// Register sessionDTO and common slices globally on startup
+	// Register sessionDTO and slices globally inside GOB engine on startup
 	gob.Register(sessionDTO{})
 	gob.Register([]string{})
+	gob.Register([]int64{})
 }
 
 func SessionGet[T any](s *Session, key string) (T, bool) {

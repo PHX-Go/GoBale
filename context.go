@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -42,7 +41,7 @@ func (c *Ctx) Abort() {
 	c.index = int8(len(c.handlers))
 }
 
-// ChatID extracts and returns the current chat identifier safely
+// ChatID extracts and returns the current chat identifier safely, supporting dynamic callback fallbacks
 func (c *Ctx) ChatID() (int64, error) {
 	if c.Update == nil {
 		return 0, errors.New("nil update")
@@ -53,8 +52,13 @@ func (c *Ctx) ChatID() (int64, error) {
 	if c.Update.EditedMessage != nil {
 		return c.Update.EditedMessage.Chat.ID, nil
 	}
-	if c.Update.CallbackQuery != nil && c.Update.CallbackQuery.Message != nil {
-		return c.Update.CallbackQuery.Message.Chat.ID, nil
+	if c.Update.CallbackQuery != nil {
+		// If Bale server omits the chat object inside the callback message, fallback to Sender ID
+		if c.Update.CallbackQuery.Message != nil && c.Update.CallbackQuery.Message.Chat.ID != 0 {
+			return c.Update.CallbackQuery.Message.Chat.ID, nil
+		}
+		// Fallback safely to Callback Sender ID (perfectly matches Chat ID in PV chats)
+		return c.Update.CallbackQuery.From.ID, nil
 	}
 	return 0, errors.New("cannot determine chat ID")
 }
@@ -255,7 +259,8 @@ func (a *AnswerChain) Go() error {
 // File initializes file management and actions chain using ID and captures safe chat IDs
 func (c *Ctx) File(fileID string) *FileChain {
 	origName := ""
-	chatID, _ := c.ChatID() // Capture the Chat ID synchronously before context recycling
+	// Capture the Chat ID synchronously before context recycling
+	chatID, _ := c.ChatID()
 	if c.Message != nil {
 		if c.Message.Document != nil && c.Message.Document.FileID == fileID {
 			origName = c.Message.Document.FileName
@@ -286,9 +291,10 @@ type FileChain struct {
 // Download starts file downloading fluent chain
 func (f *FileChain) Download() *DownloadChain {
 	return &DownloadChain{
-		fc:     f,
-		name:   f.origName,
-		chatID: f.chatID, // Transfer the captured Chat ID
+		fc:   f,
+		name: f.origName,
+		// Transfer the captured Chat ID
+		chatID: f.chatID,
 	}
 }
 
@@ -661,7 +667,8 @@ func (c *Ctx) ScanOptionalArgs(targets ...any) int {
 
 	limit := len(targets)
 	if len(args) < limit {
-		limit = len(args) // shrink to available args, prevents out-of-range slicing
+		// shrink to available args, prevents out-of-range slicing
+		limit = len(args)
 	}
 
 	_ = ScanValues(args[:limit], " ", targets[:limit]...)
@@ -691,20 +698,4 @@ func (c *Ctx) Reset() {
 func (d *DownloadChain) ChatID(id int64) *DownloadChain {
 	d.chatID = id
 	return d
-}
-
-// SetTransport allows safely wrapping or overriding the client's network transport
-func (c *Client) SetTransport(wrap func(original http.RoundTripper) http.RoundTripper) {
-	if c.httpClient == nil {
-		return
-	}
-
-	// Use default transport if no custom transport is currently configured
-	original := c.httpClient.Transport
-	if original == nil {
-		original = http.DefaultTransport
-	}
-
-	// Apply the wrapper closure to intercept network traffic
-	c.httpClient.Transport = wrap(original)
 }

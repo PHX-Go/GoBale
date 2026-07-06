@@ -67,7 +67,9 @@ type Bot struct {
 	paginations        map[string]*PaginationBuilder
 	pagMu              sync.RWMutex
 	menus              map[string]*MenuNode
+	replyButtons       map[string]bool
 	menusOnce          sync.Once
+	menuMaxWidth       int
 	Bus                *EventBus
 }
 
@@ -164,22 +166,23 @@ func (b *BotBuilder) Go() (*Bot, error) {
 	_ = store.Load()
 
 	bot := &Bot{
-		Client:      NewClient(b.token),
-		Sessions:    store,
-		workerChan:  make(chan *Update, 1000),
-		numWorkers:  b.workers,
-		cmds:        make(map[string][]Handler),
-		texts:       make(map[string][]Handler),
-		states:      make(map[string][]Handler),
-		callbacks:   make(map[string][]Handler),
-		Blacklist:   make(map[int64]bool),
-		dbInstance:  NewDatabase(DataPath("gobale_database.gob")),
-		menus:       make(map[string]*MenuNode),
-		cache:       newBotCache(),
-		safirKey:    b.safirKey,
-		safirBotID:  b.safirBotID,
-		paginations: make(map[string]*PaginationBuilder),
-		Bus:         NewEventBus(),
+		Client:       NewClient(b.token),
+		Sessions:     store,
+		workerChan:   make(chan *Update, 1000),
+		numWorkers:   b.workers,
+		cmds:         make(map[string][]Handler),
+		texts:        make(map[string][]Handler),
+		states:       make(map[string][]Handler),
+		callbacks:    make(map[string][]Handler),
+		Blacklist:    make(map[int64]bool),
+		dbInstance:   NewDatabase(DataPath("gobale_database.gob")),
+		cache:        newBotCache(),
+		safirKey:     b.safirKey,
+		safirBotID:   b.safirBotID,
+		paginations:  make(map[string]*PaginationBuilder),
+		Bus:          NewEventBus(),
+		menus:        make(map[string]*MenuNode),
+		replyButtons: make(map[string]bool),
 	}
 
 	bot.MaintenanceAdminID = b.adminID
@@ -236,7 +239,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 		// 2. Resolve target chat ID
 		var resolved any
-		if targetChat != "" { // Fixed: Check string empty
+		if targetChat != "" {
 			resolved = c.Bot.ResolveChatID(targetChat)
 		} else {
 			id, _ := c.ChatID()
@@ -574,7 +577,8 @@ func (p *PollChain) Go() {
 			close(p.run.bot.workerChan)
 			p.run.bot.workersWg.Wait()
 
-			p.run.bot.stopDefense() // Clean up defense monitoring goroutine on exit
+			// Clean up defense monitoring goroutine on exit
+			p.run.bot.stopDefense()
 
 			// Fire all registered OnStop lifecycle hooks sequentially with safe panic recovery
 			p.run.bot.mu.RLock()

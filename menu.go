@@ -1,6 +1,7 @@
 package gobale
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -9,8 +10,8 @@ import (
 // MenuButton represents a single action inside the dynamic menu builder
 type MenuButton struct {
 	Text     string
-	TargetID string  // Next sub-menu ID to transition to
-	Handler  Handler // Optional custom logic to execute on click
+	TargetID string
+	Handler  Handler
 }
 
 // MenuNode represents a single menu page containing layout and buttons
@@ -21,8 +22,8 @@ type MenuNode struct {
 	IsInline   bool
 	Rows       [][]MenuButton
 	backLabel  string
-	stretch    bool   // Support framework's text stretching
-	closeLabel string // Custom close menu button label
+	stretch    bool
+	closeLabel string
 }
 
 // MenuBtn initiates a menu button fluent configuration
@@ -32,7 +33,7 @@ func MenuBtn(text string) MenuButton {
 
 // Target configures the button to transition to another menu ID
 func (b MenuButton) Target(menuID string) MenuButton {
-	b.TargetID = menuID // Update TargetID field safely
+	b.TargetID = menuID
 	return b
 }
 
@@ -52,9 +53,9 @@ type MenuChain struct {
 func (b *Bot) Menu(id string) *MenuChain {
 	node := &MenuNode{
 		ID:        id,
-		IsInline:  true, // Default to inline glass keyboards
+		IsInline:  true,
 		backLabel: "🔙 بازگشت",
-		stretch:   true, // Default to true to enable framework's alignment
+		stretch:   true,
 	}
 	b.mu.Lock()
 	if b.menus == nil {
@@ -148,7 +149,7 @@ func (b *Bot) CompileMenus() {
 						node, ok := b.menus[menuID]
 						b.mu.RUnlock()
 
-						if ok && !node.IsInline {
+						if ok && node != nil && !node.IsInline {
 							// Dynamically match and handle Close Menu event
 							if node.closeLabel != "" && text == node.closeLabel {
 								c.Abort()
@@ -158,12 +159,27 @@ func (b *Bot) CompileMenus() {
 									_ = c.Del().Go()
 								}
 
-								// Delete the menu message
-								if prevMsgID := c.Session().Int64("_menu_msg_id"); prevMsgID > 0 {
-									_ = b.BaseRequest(c.ctx, "deleteMessage", map[string]any{
-										"chat_id":    c.Message.Chat.ID,
-										"message_id": prevMsgID,
-									}, nil)
+								// Delete all previous menu messages asynchronously
+								var msgIDs []int64
+								if rawIDs, errIDs := c.Session().Data("_menu_msg_ids").Go(); errIDs == nil && rawIDs != nil {
+									if ids, okSlice := rawIDs.([]int64); okSlice {
+										msgIDs = ids
+									}
+								}
+								if len(msgIDs) > 0 {
+									botInstance := c.Bot
+									ctx := c.ctx
+									chatID, _ := c.ChatID()
+									for _, id := range msgIDs {
+										if id > 0 {
+											c.Go(func() {
+												_ = botInstance.BaseRequest(ctx, "deleteMessage", map[string]any{
+													"chat_id":    chatID,
+													"message_id": id,
+												}, nil)
+											})
+										}
+									}
 								}
 
 								// Collapse user's keyboard and send a self-destroying message
@@ -171,6 +187,7 @@ func (b *Bot) CompileMenus() {
 
 								// Reset session states
 								_, _ = c.Session().Data("_current_menu", "").Go()
+								_, _ = c.Session().Data("_menu_msg_ids", []int64{}).Go()
 								_, _ = c.Session().Data("_menu_msg_id", 0).Go()
 								_, _ = c.Session().Data("_menu_history", []string{}).Go()
 								return
@@ -219,6 +236,7 @@ func (b *Bot) CompileMenus() {
 
 				// Reset session states
 				_, _ = c.Session().Data("_current_menu", "").Go()
+				_, _ = c.Session().Data("_menu_msg_ids", []int64{}).Go()
 				_, _ = c.Session().Data("_menu_msg_id", 0).Go()
 				_, _ = c.Session().Data("_menu_history", []string{}).Go()
 				return
@@ -257,7 +275,7 @@ func (b *Bot) BuildMenuKeyboard(node *MenuNode) any {
 	// Calculate max button label length for perfect ASCII centering across the entire keyboard
 	maxLen := 0
 	if node.stretch {
-		maxLen = 45 // Enforce baseline minimum width of 45 to strictly align with the stretched message bubble
+		maxLen = 40 // Enforce baseline minimum width of 40 to guarantee maximum full-width on all devices
 		for _, row := range node.Rows {
 			for _, btn := range row {
 				if l := len([]rune(btn.Text)); l > maxLen {
@@ -309,7 +327,8 @@ func (b *Bot) BuildMenuKeyboard(node *MenuNode) any {
 			if node.stretch && maxLen > 0 {
 				closeText = normalizeMenuWidth(closeText, maxLen)
 			}
-			builder.Row(Btn(closeText).Callback("_menu:close")) // Trigger dynamic close router
+			// Trigger dynamic close router
+			builder.Row(Btn(closeText).Callback("_menu:close"))
 		}
 		return builder.Build()
 	}
@@ -343,7 +362,7 @@ func (b *Bot) BuildMenuKeyboard(node *MenuNode) any {
 	return builder.Build()
 }
 
-// SendMenu displays a configured menu directly, automatically deleting the previous menu message to prevent clutter
+// SendMenu displays a configured menu directly, automatically deleting the previous menu message asynchronously
 func (c *Ctx) SendMenu(menuID string) error {
 	targetID := menuID
 
@@ -386,12 +405,25 @@ func (c *Ctx) SendMenu(menuID string) error {
 		return fmt.Errorf("menu %q not found", targetID)
 	}
 
-	// 1. Maintain dynamic back-stack navigation history (only for forward movements)
+	// Maintain dynamic back-stack navigation history (only for forward movements)
 	var currentMenu string
 	raw, err := c.Session().Data("_current_menu").Go()
 	if err == nil && raw != nil {
 		currentMenu, _ = raw.(string)
 	}
+
+	// Detect if transitioning from a Reply Keyboard to an Inline Keyboard
+	wasReply := false
+	if currentMenu != "" {
+		c.Bot.mu.RLock()
+		curNode, okCur := c.Bot.menus[currentMenu]
+		c.Bot.mu.RUnlock()
+		if okCur && curNode != nil && !curNode.IsInline {
+			wasReply = true
+		}
+	}
+
+	isToInline := node.IsInline
 
 	if currentMenu != "" && currentMenu != targetID && menuID != "back" {
 		var history []string
@@ -421,14 +453,53 @@ func (c *Ctx) SendMenu(menuID string) error {
 
 	isInlineEdit := c.Update != nil && c.Update.CallbackQuery != nil && node.IsInline
 
-	// 2. Automatically delete previous menu message only if NOT editing in-place (Anti-Flicker)
-	if !isInlineEdit {
-		if prevMsgID := c.Session().Int64("_menu_msg_id"); prevMsgID > 0 {
-			_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
-				"chat_id":    c.Message.Chat.ID,
-				"message_id": prevMsgID,
-			}, nil)
+	// Resolve the safe, robust chat ID using c.ChatID() instead of raw c.Message.Chat.ID
+	chatID, errChat := c.ChatID()
+	if errChat != nil {
+		return errChat
+	}
+
+	// Fetch dynamic multi-deletions list from session
+	var msgIDs []int64
+	if rawIDs, errIDs := c.Session().Data("_menu_msg_ids").Go(); errIDs == nil && rawIDs != nil {
+		if ids, okSlice := rawIDs.([]int64); okSlice {
+			msgIDs = ids
 		}
+	}
+
+	// 2. Automatically delete previous menu messages asynchronously if NOT editing in-place (Anti-Flicker)
+	if !isInlineEdit && len(msgIDs) > 0 {
+		botInstance := c.Bot
+
+		// Flush all active old menu messages in parallel using context.Background() to prevent cancels
+		for _, id := range msgIDs {
+			if id > 0 {
+				c.Go(func() {
+					_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": id,
+					}, nil)
+				})
+			}
+		}
+		// Reset the ids list as they are now deleted
+		msgIDs = []int64{}
+	}
+
+	// If transitioning from Reply to Inline, force-collapse the reply keyboard asynchronously (UX Smoothness)
+	if wasReply && isToInline {
+		botInstance := c.Bot
+
+		c.Go(func() {
+			// Send a temporary invisible message to collapse the reply keyboard and delete it instantly (Using context.Background())
+			tempMsg, err := botInstance.Send(chatID).Text("🔒").MarkupRemove().Context(context.Background()).Go()
+			if err == nil && tempMsg != nil {
+				_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": tempMsg.MessageID,
+				}, nil)
+			}
+		})
 	}
 
 	// Save active menu ID to session
@@ -436,22 +507,36 @@ func (c *Ctx) SendMenu(menuID string) error {
 
 	kb := c.Bot.BuildMenuKeyboard(node)
 
-	// 3. If already inside a callback query (Inline transition), edit in-place to prevent flicker
+	// If already inside a callback query (Inline transition), edit in-place to prevent flicker
 	if isInlineEdit {
 		msg, err := c.Edit().Text(node.TextVal).Markup(kb).Stretch(node.stretch).Go()
 		if err != nil && !strings.Contains(err.Error(), "message is not modified") {
 			// Suppress annoying "message is not modified" API error safely
 			return err
 		}
-		if err == nil && msg != nil {
+		if msg != nil && msg.MessageID > 0 {
+			// Update active messages stack for subsequent cleanup
+			found := false
+			for _, id := range msgIDs {
+				if id == msg.MessageID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				msgIDs = append(msgIDs, msg.MessageID)
+			}
+			_, _ = c.Session().Data("_menu_msg_ids", msgIDs).Go()
 			_, _ = c.Session().Data("_menu_msg_id", msg.MessageID).Go()
 		}
 		return nil
 	}
 
-	// 4. Send as a fresh message and save its ID to session
+	// Send as a fresh message and save its ID to session active stack (Robust multi-cleanup)
 	msg, err := c.Send().Text(node.TextVal).Markup(kb).Stretch(node.stretch).Go()
-	if err == nil && msg != nil {
+	if msg != nil && msg.MessageID > 0 {
+		msgIDs = append(msgIDs, msg.MessageID)
+		_, _ = c.Session().Data("_menu_msg_ids", msgIDs).Go()
 		_, _ = c.Session().Data("_menu_msg_id", msg.MessageID).Go()
 	}
 	return err

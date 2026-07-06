@@ -1,6 +1,7 @@
 package gobale
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -56,6 +57,7 @@ type ZalgoRule struct {
 
 func (z *ZalgoRule) Name() string { return "ZalgoShield" }
 
+// Detect evaluates combining marks, zero-width characters, RTL overrides, and foreign scripts
 func (z *ZalgoRule) Detect(text string) DetectionResult {
 	runes := []rune(text)
 	totalRunes := len(runes)
@@ -73,7 +75,8 @@ func (z *ZalgoRule) Detect(text string) DetectionResult {
 	for _, r := range runes {
 		if isZeroWidth(r) || isRTLOverride(r) {
 			invisibleControlCount++
-			if invisibleControlCount > 4 { // Strict bidi limit to prevent client lags
+			// Strict bidi limit to prevent client lags
+			if invisibleControlCount > 4 {
 				suspiciousChars = append(suspiciousChars, r)
 			}
 			continue
@@ -282,6 +285,7 @@ func (h *HomoglyphRule) skeletonize(s string) string {
 	return sb.String()
 }
 
+// Detect inspects words to flag mixed-scripts, Punycode, or close mimics of protected keywords
 func (h *HomoglyphRule) Detect(text string) DetectionResult {
 	words := strings.Fields(strings.ToLower(text))
 	var suspicious []rune
@@ -321,21 +325,10 @@ func (h *HomoglyphRule) Detect(text string) DetectionResult {
 			}
 		}
 
-		// C. Create uniform skeleton using confusables mapping (Blocks ALL generic modified text)
+		// C. Create uniform skeleton using confusables mapping
 		skel := h.skeletonize(decoded)
-		if skel != decoded {
-			reasons = append(reasons, fmt.Sprintf("Confusable homoglyph characters detected in '%s' (ASCII skeleton: '%s')", decoded, skel))
-			if severity < 6 {
-				severity = 6
-			}
-			for _, r := range decoded {
-				if _, exists := h.confusablesMap[r]; exists {
-					suspicious = append(suspicious, r)
-				}
-			}
-		}
 
-		// D. Edit Distance against protected sensitive keywords/brands
+		// D. Edit Distance against protected sensitive keywords/brands (Blocks visual mimics like 'adm1n' safely)
 		for _, protected := range h.protectedWords {
 			protectedLower := strings.ToLower(protected)
 			protectedSkel := h.skeletonize(protectedLower)
@@ -346,11 +339,17 @@ func (h *HomoglyphRule) Detect(text string) DetectionResult {
 			for v := range variants {
 				dist := levenshtein(v, protectedSkel)
 
-				// Flag if highly similar to a protected brand but not exactly the brand
+				// Flag only if highly similar to a protected brand but not exactly the brand
 				if decoded != protectedLower && dist <= 2 {
 					reasons = append(reasons, fmt.Sprintf("Brand spoofing threat: '%s' is highly similar to protected keyword '%s'", decoded, protected))
 					if severity < 9 {
 						severity = 9 // Critical phishing threat
+					}
+					// Collect actual confusable characters used in the spoofed word
+					for _, r := range decoded {
+						if _, exists := h.confusablesMap[r]; exists {
+							suspicious = append(suspicious, r)
+						}
 					}
 				}
 			}
@@ -378,7 +377,7 @@ type AntiCrashChain struct {
 	maxLen         int
 	useHomo        bool
 	protectedWords []string
-	warnEngine     *WarnEngine // Injected WarnEngine
+	warnEngine     *WarnEngine
 	onViolation    func(c *Ctx, results []DetectionResult)
 }
 
@@ -517,12 +516,26 @@ func (a *AntiCrashChain) Go() Handler {
 			return
 		}
 
+		// Scan both message text and media captions to prevent bypass attempts
 		textToScan := msg.Text
 		if textToScan == "" && msg.Caption != "" {
 			textToScan = msg.Caption
 		}
 
 		if textToScan == "" {
+			c.Next()
+			return
+		}
+
+		// Trim standard spaces, non-breaking spaces (\u00a0), and braille blanks (\u2800) for exact match
+		trimmedText := strings.Trim(textToScan, " \t\n\r\u2800\u00a0")
+
+		// SECURITY BYPASS: Perform a lightning-fast O(1) map lookup (Zero Lag!)
+		c.Bot.mu.RLock()
+		isReplyButton := c.Bot.replyButtons[trimmedText]
+		c.Bot.mu.RUnlock()
+
+		if isReplyButton {
 			c.Next()
 			return
 		}
@@ -797,7 +810,8 @@ func isSymbolCombiningMark(r rune) bool {
 	if unicode.Is(unicode.Me, r) {
 		return true
 	}
-	if r >= 0x20D0 && r <= 0x20FF { // Combining Diacritical Marks for Symbols
+	// Combining Diacritical Marks for Symbols
+	if r >= 0x20D0 && r <= 0x20FF {
 		return true
 	}
 	return false
@@ -817,12 +831,45 @@ func isForeignComplexScript(r rune) bool {
 	return false
 }
 
+// PVClutterShield automatically deletes reply keyboard button clicks in PV to keep menus clean,
+// while preserving standard text commands and conversational inputs in background safely.
+func (b *Bot) PVClutterShield() Handler {
+	return func(c *Ctx) {
+		// Only run on fresh user messages in private chats (PV)
+		if c.IsPrivate() && c.Update != nil && c.Update.Message != nil && c.Message != nil && c.Message.MessageID > 0 {
+			// Trim standard spaces and invisible braille blanks for exact match
+			trimmedText := strings.Trim(c.Message.Text, " \t\n\r\u2800\u00a0")
+
+			// Perform an ultra-fast O(1) map lookup (Zero Lag!)
+			c.Bot.mu.RLock()
+			isReplyClick := c.Bot.replyButtons[trimmedText]
+			c.Bot.mu.RUnlock()
+
+			if isReplyClick {
+				// Capture safe local copies of the parameters to prevent nil-pointer dereferences after Context recycling
+				botInstance := c.Bot
+				chatID := c.Message.Chat.ID
+				msgID := c.Message.MessageID
+
+				// Use context.Background() to prevent the cancellation of background delete requests
+				c.Go(func() {
+					_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": msgID,
+					}, nil)
+				})
+			}
+		}
+		c.Next()
+	}
+}
+
 // GroupHistoryPruner deletes the previous message of a non-admin user when they send a new one
-// to prevent them from editing old messages into crash/Zalgo payloads.
+// asynchronously to prevent edit-obfuscation bypasses safely without introducing lag.
 func (b *Bot) GroupHistoryPruner() Handler {
 	return func(c *Ctx) {
-		// Ignore private chats, service messages, or empty messages
-		if c.Message == nil || c.IsPrivate() || c.Message.Text == "" {
+		// Ignore private chats, inline button clicks, service messages, or empty messages
+		if c.Message == nil || c.IsPrivate() || c.Message.Text == "" || (c.Update != nil && c.Update.CallbackQuery != nil) {
 			c.Next()
 			return
 		}
@@ -838,7 +885,7 @@ func (b *Bot) GroupHistoryPruner() Handler {
 		userID := c.SenderID()
 		key := fmt.Sprintf("last_user_msg:%d:%d", chatID, userID)
 
-		// Fetch and delete their previous active message in this group
+		// Fetch and delete their previous active message asynchronously (Zero Lag!)
 		if val, ok := c.DB().Get(key).Go(); ok {
 			var prevMsgID int64
 			if id, okInt := val.(int64); okInt {
@@ -848,29 +895,21 @@ func (b *Bot) GroupHistoryPruner() Handler {
 			}
 
 			if prevMsgID > 0 {
-				// Silently delete the previous message to prevent edit-obfuscation
-				_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
-					"chat_id":    chatID,
-					"message_id": prevMsgID,
-				}, nil)
+				// Capture safe local copies of the parameters to prevent nil-pointer dereferences after Context recycling
+				botInstance := c.Bot
+
+				// Use context.Background() to prevent the cancellation of background delete requests
+				c.Go(func() {
+					_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": prevMsgID,
+					}, nil)
+				})
 			}
 		}
 
 		// Store the current message ID as the new last message reference
 		_ = c.DB().Set(key, c.Message.MessageID).Go()
-		c.Next()
-	}
-}
-
-// PVClutterShield automatically deletes any user-sent message in PV immediately after processing,
-// completely blocking their ability to edit any sent message into a Zalgo/crash payload.
-func (b *Bot) PVClutterShield() Handler {
-	return func(c *Ctx) {
-		// Only run in private chats (PV) and ensure c.Message is populated
-		if c.IsPrivate() && c.Message != nil && c.Message.MessageID > 0 {
-			// Silently delete the user's incoming message instantly
-			_ = c.Del().Go()
-		}
 		c.Next()
 	}
 }
