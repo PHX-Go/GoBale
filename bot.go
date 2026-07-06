@@ -66,6 +66,8 @@ type Bot struct {
 	analyticsDB        Storage
 	paginations        map[string]*PaginationBuilder
 	pagMu              sync.RWMutex
+	menus              map[string]*MenuNode
+	menusOnce          sync.Once
 	Bus                *EventBus
 }
 
@@ -172,6 +174,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		callbacks:   make(map[string][]Handler),
 		Blacklist:   make(map[int64]bool),
 		dbInstance:  NewDatabase(DataPath("gobale_database.gob")),
+		menus:       make(map[string]*MenuNode),
 		cache:       newBotCache(),
 		safirKey:    b.safirKey,
 		safirBotID:  b.safirBotID,
@@ -546,6 +549,8 @@ func (p *PollChain) Go() {
 		log.Printf("[GoBale Webhook Clear Warn] %v", errClear)
 	}
 
+	p.run.bot.CompileMenus()
+
 	p.run.bot.StartWorkers(ctx)
 	offset := -1
 
@@ -691,6 +696,9 @@ func (w *WebChain) Ngrok(apiURL ...string) *WebChain {
 func (w *WebChain) Go() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	w.run.bot.CompileMenus()
+
 	w.run.bot.StartWorkers(ctx)
 
 	// Automatically resolve dynamic public URL from local ngrok agent if configured

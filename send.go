@@ -233,7 +233,7 @@ func (s *SendChain) Confirm(yesCallback, noCallback string) *SendChain {
 	return s
 }
 
-// Settings builds the dynamic configuration keyboard natively supporting remote group IDs
+// Settings builds the dynamic configuration keyboard natively supporting dynamic back buttons
 func (s *SendChain) Settings(chatID ...any) *SendChain {
 	resolved := s.bot.ResolveChatID(s.chat)
 	if len(chatID) > 0 {
@@ -263,9 +263,17 @@ func (s *SendChain) Settings(chatID ...any) *SendChain {
 			}
 		}
 
-		// Encode the targeted group ID directly into the callback data (e.g. _sys_cfg:g_lock:-100123)
 		callbackKey := fmt.Sprintf("_sys_cfg:%s:%v", entry.Key, resolved)
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
+	}
+
+	// Automatically append back button to settings panel if opened from a dynamic menu
+	if cid, ok := resolved.(int64); ok {
+		if sess := s.bot.Sessions.Get(cid); sess != nil {
+			if menuID := sess.String("_current_menu"); menuID != "" {
+				builder.Row(Btn("🔙 بازگشت").Callback(fmt.Sprintf("_menu:%s", menuID)))
+			}
+		}
 	}
 	s.bot.mu.RUnlock()
 
@@ -562,19 +570,13 @@ func stretchText(text string) string {
 			maxLen = l
 		}
 	}
-
 	// Set target stretch limit suitable for standard mobile screen widths
-	targetMinLen := 35
+	targetMinLen := 40
 	if maxLen < targetMinLen {
 		diff := targetMinLen - maxLen
-
 		var sb strings.Builder
 		sb.WriteString(text)
-
-		// Add a standard space first as a safe word break
 		sb.WriteString(" ")
-
-		// Fill only the exact difference dynamically with invisible braille spaces
 		for i := 0; i < diff-1; i++ {
 			sb.WriteString("\u2800")
 		}
@@ -628,7 +630,7 @@ func (e *EditChain) Markdown() *EditChain {
 	return e
 }
 
-// Settings builds the dynamic system configuration keyboard automatically inside Edit supporting remote group targets
+// Settings builds the dynamic configuration keyboard natively supporting dynamic back buttons inside Edit
 func (e *EditChain) Settings(chatID ...any) *EditChain {
 	id, err := e.c.ChatID()
 	if err != nil && len(chatID) == 0 {
@@ -648,7 +650,6 @@ func (e *EditChain) Settings(chatID ...any) *EditChain {
 	for _, entry := range e.c.Bot.settings {
 		status := "🔴 خاموش"
 		if entry.IsLocal {
-			// Read group-isolated config dynamically in-place
 			dbKey := fmt.Sprintf("group_config_%v_%s", resolved, entry.Key)
 			val, ok := db.Get(dbKey)
 			active := entry.Default
@@ -661,15 +662,20 @@ func (e *EditChain) Settings(chatID ...any) *EditChain {
 				status = "🟢 روشن"
 			}
 		} else {
-			// Read global pointer configuration in-place
 			if entry.Ptr != nil && *entry.Ptr {
 				status = "🟢 روشن"
 			}
 		}
 
-		// Encode the targeted group ID directly into the callback data (e.g. _sys_cfg:g_lock:-100123)
 		callbackKey := fmt.Sprintf("_sys_cfg:%s:%v", entry.Key, resolved)
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
+	}
+
+	// NEW: Automatically append Back button to Settings panel inside Edit
+	if sess := e.c.Session(); sess != nil {
+		if menuID := sess.String("_current_menu"); menuID != "" {
+			builder.Row(Btn("🔙 بازگشت").Callback(fmt.Sprintf("_menu:%s", menuID)))
+		}
 	}
 	e.c.Bot.mu.RUnlock()
 
