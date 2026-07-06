@@ -833,31 +833,55 @@ func isForeignComplexScript(r rune) bool {
 
 // PVClutterShield automatically deletes reply keyboard button clicks in PV to keep menus clean,
 // while preserving standard text commands and conversational inputs in background safely.
+// It also auto-collapses any open reply keyboards when a new text command is executed.
 func (b *Bot) PVClutterShield() Handler {
 	return func(c *Ctx) {
 		// Only run on fresh user messages in private chats (PV)
 		if c.IsPrivate() && c.Update != nil && c.Update.Message != nil && c.Message != nil && c.Message.MessageID > 0 {
-			// Trim standard spaces and invisible braille blanks for exact match
-			trimmedText := strings.Trim(c.Message.Text, " \t\n\r\u2800\u00a0")
+			text := c.Message.Text
+			trimmedText := strings.Trim(text, " \t\n\r\u2800\u00a0")
 
 			// Perform an ultra-fast O(1) map lookup (Zero Lag!)
 			c.Bot.mu.RLock()
 			isReplyClick := c.Bot.replyButtons[trimmedText]
 			c.Bot.mu.RUnlock()
 
-			if isReplyClick {
-				// Capture safe local copies of the parameters to prevent nil-pointer dereferences after Context recycling
-				botInstance := c.Bot
-				chatID := c.Message.Chat.ID
-				msgID := c.Message.MessageID
+			botInstance := c.Bot
+			chatID := c.Message.Chat.ID
+			msgID := c.Message.MessageID
 
-				// Use context.Background() to prevent the cancellation of background delete requests
+			if isReplyClick {
+				// Delete the reply button click message in the background
 				c.Go(func() {
 					_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
 						"chat_id":    chatID,
 						"message_id": msgID,
 					}, nil)
 				})
+			} else if strings.HasPrefix(trimmedText, "/") {
+				sess := c.Session()
+				hasOpenReplyMenu := false
+				if currentID, ok := SessionGet[string](sess, "_current_menu"); ok && currentID != "" {
+					c.Bot.mu.RLock()
+					curNode, okNode := c.Bot.menus[currentID]
+					c.Bot.mu.RUnlock()
+					if okNode && curNode != nil && !curNode.IsInline {
+						hasOpenReplyMenu = true
+					}
+				}
+
+				if hasOpenReplyMenu {
+					c.Go(func() {
+						tempMsg, err := botInstance.Send(chatID).Text("\u200C").MarkupRemove().Context(context.Background()).Go()
+						if err == nil && tempMsg != nil && tempMsg.MessageID > 0 {
+							time.Sleep(150 * time.Millisecond)
+							_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+								"chat_id":    chatID,
+								"message_id": tempMsg.MessageID,
+							}, nil)
+						}
+					})
+				}
 			}
 		}
 		c.Next()

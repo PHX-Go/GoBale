@@ -16,14 +16,16 @@ type MenuButton struct {
 
 // MenuNode represents a single menu page containing layout and buttons
 type MenuNode struct {
-	ID         string
-	TextVal    string
-	ParentID   string
-	IsInline   bool
-	Rows       [][]MenuButton
-	backLabel  string
-	stretch    bool
-	closeLabel string
+	ID             string
+	TextVal        string
+	ParentID       string
+	IsInline       bool
+	Rows           [][]MenuButton
+	backLabel      string
+	stretch        bool
+	closeLabel     string
+	CachedKeyboard any
+	CachedText     string
 }
 
 // MenuBtn initiates a menu button fluent configuration
@@ -133,13 +135,42 @@ func normalizeMenuWidth(s string, width int) string {
 	return strings.Repeat(" ", leftPad) + s + strings.Repeat(" ", rightPad)
 }
 
-// CompileMenus automatically registers stateful middleware and callback routers
+// CompileMenus automatically registers stateful middleware, callback routers, and caches all menu resources
 func (b *Bot) CompileMenus() {
 	b.menusOnce.Do(func() {
+		// A. Cache all reply keyboard buttons on startup for high-performance O(1) lookups
+		b.mu.Lock()
+		b.replyButtons = make(map[string]bool)
+		for _, node := range b.menus {
+			if !node.IsInline {
+				for _, row := range node.Rows {
+					for _, btn := range row {
+						b.replyButtons[strings.TrimSpace(btn.Text)] = true
+					}
+				}
+				if node.ParentID != "" {
+					b.replyButtons[strings.TrimSpace(node.backLabel)] = true
+				}
+				if node.closeLabel != "" {
+					b.replyButtons[strings.TrimSpace(node.closeLabel)] = true
+				}
+			}
+		}
+
+		// B. Precompute and Cache both Keyboard and stretched Text for every menu node (Zero Transition Latency!)
+		for _, node := range b.menus {
+			node.CachedKeyboard = b.BuildMenuKeyboard(node)
+			node.CachedText = node.TextVal
+			if node.stretch {
+				node.CachedText = stretchText(node.TextVal)
+			}
+		}
+		b.mu.Unlock()
+
 		// 1. Stateful global middleware to intercept Reply Keyboards without route collisions
 		b.On().Use(func(c *Ctx) {
 			if c.Message != nil && c.Message.Text != "" {
-				text := c.Message.Text
+				text := strings.Trim(c.Message.Text, " \t\n\r\u2800\u00a0")
 
 				// Retrieve user's current menu ID from their active Session
 				raw, err := c.Session().Data("_current_menu").Go()
@@ -151,13 +182,9 @@ func (b *Bot) CompileMenus() {
 
 						if ok && node != nil && !node.IsInline {
 							// Dynamically match and handle Close Menu event
-							if node.closeLabel != "" && text == node.closeLabel {
+							if node.closeLabel != "" && text == strings.TrimSpace(node.closeLabel) {
 								c.Abort()
-
-								// Safely delete user's input message (Only allowed in groups/supergroups)
-								if !c.IsPrivate() {
-									_ = c.Del().Go()
-								}
+								_ = c.Del().Go() // Silently delete user's input message
 
 								// Delete all previous menu messages asynchronously
 								var msgIDs []int64
@@ -194,7 +221,7 @@ func (b *Bot) CompileMenus() {
 							}
 
 							// Dynamically match the customized back button label
-							if node.ParentID != "" && text == node.backLabel {
+							if node.ParentID != "" && text == strings.TrimSpace(node.backLabel) {
 								c.Abort() // Abort downstream handlers
 								_ = c.SendMenu("back")
 								return
@@ -203,7 +230,7 @@ func (b *Bot) CompileMenus() {
 							// Match and route standard Reply Keyboard menu buttons
 							for _, row := range node.Rows {
 								for _, btn := range row {
-									if text == btn.Text {
+									if text == strings.TrimSpace(btn.Text) {
 										c.Abort() // Abort downstream handlers
 										if btn.Handler != nil {
 											btn.Handler(c)
@@ -275,7 +302,7 @@ func (b *Bot) BuildMenuKeyboard(node *MenuNode) any {
 	// Calculate max button label length for perfect ASCII centering across the entire keyboard
 	maxLen := 0
 	if node.stretch {
-		maxLen = 40 // Enforce baseline minimum width of 40 to guarantee maximum full-width on all devices
+		maxLen = 40 // Enforce baseline minimum width of 40 to strictly align with the stretched message bubble (Updated to 40)
 		for _, row := range node.Rows {
 			for _, btn := range row {
 				if l := len([]rune(btn.Text)); l > maxLen {
@@ -327,7 +354,6 @@ func (b *Bot) BuildMenuKeyboard(node *MenuNode) any {
 			if node.stretch && maxLen > 0 {
 				closeText = normalizeMenuWidth(closeText, maxLen)
 			}
-			// Trigger dynamic close router
 			builder.Row(Btn(closeText).Callback("_menu:close"))
 		}
 		return builder.Build()
@@ -365,34 +391,29 @@ func (b *Bot) BuildMenuKeyboard(node *MenuNode) any {
 // SendMenu displays a configured menu directly, automatically deleting the previous menu message asynchronously
 func (c *Ctx) SendMenu(menuID string) error {
 	targetID := menuID
+	sess := c.Session()
 
-	// Resolve virtual back-navigation target
+	// Resolve virtual back-navigation target using native fast in-memory SessionGet
 	if menuID == "back" {
 		var history []string
-		rawHist, errHist := c.Session().Data("_menu_history").Go()
-		if errHist == nil && rawHist != nil {
-			if h, okSlice := rawHist.([]string); okSlice {
-				history = h
-			}
+		if rawHist, ok := SessionGet[[]string](sess, "_menu_history"); ok {
+			history = rawHist
 		}
 
 		if len(history) > 0 {
 			targetID = history[len(history)-1]
 			history = history[:len(history)-1]
-			_, _ = c.Session().Data("_menu_history", history).Go()
+			SessionSet(sess, "_menu_history", history)
 		} else {
 			// Fallback to static ParentID of the current active menu
-			rawCurrent, errCurrent := c.Session().Data("_current_menu").Go()
-			if errCurrent == nil && rawCurrent != nil {
-				if currentID, ok := rawCurrent.(string); ok && currentID != "" {
-					c.Bot.mu.RLock()
-					curNode, okNode := c.Bot.menus[currentID]
-					c.Bot.mu.RUnlock()
-					if okNode && curNode != nil && curNode.ParentID != "" {
-						targetID = curNode.ParentID
-					} else {
-						return fmt.Errorf("no parent menu or history found to go back")
-					}
+			if currentID, ok := SessionGet[string](sess, "_current_menu"); ok && currentID != "" {
+				c.Bot.mu.RLock()
+				curNode, okNode := c.Bot.menus[currentID]
+				c.Bot.mu.RUnlock()
+				if okNode && curNode != nil && curNode.ParentID != "" {
+					targetID = curNode.ParentID
+				} else {
+					return fmt.Errorf("no parent menu or history found to go back")
 				}
 			}
 		}
@@ -405,12 +426,8 @@ func (c *Ctx) SendMenu(menuID string) error {
 		return fmt.Errorf("menu %q not found", targetID)
 	}
 
-	// Maintain dynamic back-stack navigation history (only for forward movements)
-	var currentMenu string
-	raw, err := c.Session().Data("_current_menu").Go()
-	if err == nil && raw != nil {
-		currentMenu, _ = raw.(string)
-	}
+	// 1. Maintain dynamic back-stack navigation history in-memory (only for forward movements)
+	currentMenu, _ := SessionGet[string](sess, "_current_menu")
 
 	// Detect if transitioning from a Reply Keyboard to an Inline Keyboard
 	wasReply := false
@@ -427,18 +444,15 @@ func (c *Ctx) SendMenu(menuID string) error {
 
 	if currentMenu != "" && currentMenu != targetID && menuID != "back" {
 		var history []string
-		rawHist, errHist := c.Session().Data("_menu_history").Go()
-		if errHist == nil && rawHist != nil {
-			if h, okSlice := rawHist.([]string); okSlice {
-				history = h
-			}
+		if rawHist, ok := SessionGet[[]string](sess, "_menu_history"); ok {
+			history = rawHist
 		}
 
 		// Detect if we are navigating backward through history
 		isBack := false
 		for i, hID := range history {
 			if hID == targetID {
-				history = history[:i] // trim future forward stack
+				history = history[:i]
 				isBack = true
 				break
 			}
@@ -448,7 +462,7 @@ func (c *Ctx) SendMenu(menuID string) error {
 		if !isBack && node.ParentID != "" && currentMenu != node.ParentID {
 			history = append(history, currentMenu)
 		}
-		_, _ = c.Session().Data("_menu_history", history).Go()
+		SessionSet(sess, "_menu_history", history)
 	}
 
 	isInlineEdit := c.Update != nil && c.Update.CallbackQuery != nil && node.IsInline
@@ -459,19 +473,15 @@ func (c *Ctx) SendMenu(menuID string) error {
 		return errChat
 	}
 
-	// Fetch dynamic multi-deletions list from session
+	// Fetch dynamic multi-deletions list from session in-memory
 	var msgIDs []int64
-	if rawIDs, errIDs := c.Session().Data("_menu_msg_ids").Go(); errIDs == nil && rawIDs != nil {
-		if ids, okSlice := rawIDs.([]int64); okSlice {
-			msgIDs = ids
-		}
+	if rawIDs, ok := SessionGet[[]int64](sess, "_menu_msg_ids"); ok {
+		msgIDs = rawIDs
 	}
 
 	// 2. Automatically delete previous menu messages asynchronously if NOT editing in-place (Anti-Flicker)
 	if !isInlineEdit && len(msgIDs) > 0 {
 		botInstance := c.Bot
-
-		// Flush all active old menu messages in parallel using context.Background() to prevent cancels
 		for _, id := range msgIDs {
 			if id > 0 {
 				c.Go(func() {
@@ -482,34 +492,36 @@ func (c *Ctx) SendMenu(menuID string) error {
 				})
 			}
 		}
-		// Reset the ids list as they are now deleted
 		msgIDs = []int64{}
 	}
 
-	// If transitioning from Reply to Inline, force-collapse the reply keyboard asynchronously (UX Smoothness)
-	if wasReply && isToInline {
-		botInstance := c.Bot
+	// Save active menu ID to session in-memory
+	SessionSet(sess, "_current_menu", targetID)
 
-		c.Go(func() {
-			// Send a temporary invisible message to collapse the reply keyboard and delete it instantly (Using context.Background())
-			tempMsg, err := botInstance.Send(chatID).Text("🔒").MarkupRemove().Context(context.Background()).Go()
-			if err == nil && tempMsg != nil {
-				_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
-					"chat_id":    chatID,
-					"message_id": tempMsg.MessageID,
-				}, nil)
+	// Load precompiled/cached keyboard and text instantly (Zero lag, zero CPU/allocation overhead)
+	kb := node.CachedKeyboard
+	text := node.CachedText
+
+	// 3. Reply → Inline transition: send ONE real message with the actual menu text + ReplyKeyboardRemove
+	if wasReply && isToInline {
+		msg, err := c.Bot.Send(chatID).Text(text).MarkupRemove().Context(c.ctx).Go()
+		if err != nil {
+			return err
+		}
+		if msg != nil && msg.MessageID > 0 {
+			if kb != nil {
+				_, _ = c.Bot.Edit(chatID, msg.MessageID).Markup(kb).Go()
 			}
-		})
+			msgIDs = append(msgIDs, msg.MessageID)
+			SessionSet(sess, "_menu_msg_ids", msgIDs)
+			SessionSet(sess, "_menu_msg_id", msg.MessageID)
+		}
+		return nil
 	}
 
-	// Save active menu ID to session
-	_, _ = c.Session().Data("_current_menu", targetID).Go()
-
-	kb := c.Bot.BuildMenuKeyboard(node)
-
-	// If already inside a callback query (Inline transition), edit in-place to prevent flicker
+	// 4. If already inside a callback query (Inline transition), edit in-place to prevent flicker
 	if isInlineEdit {
-		msg, err := c.Edit().Text(node.TextVal).Markup(kb).Stretch(node.stretch).Go()
+		msg, err := c.Edit().Text(text).Markup(kb).Go()
 		if err != nil && !strings.Contains(err.Error(), "message is not modified") {
 			// Suppress annoying "message is not modified" API error safely
 			return err
@@ -526,18 +538,18 @@ func (c *Ctx) SendMenu(menuID string) error {
 			if !found {
 				msgIDs = append(msgIDs, msg.MessageID)
 			}
-			_, _ = c.Session().Data("_menu_msg_ids", msgIDs).Go()
-			_, _ = c.Session().Data("_menu_msg_id", msg.MessageID).Go()
+			SessionSet(sess, "_menu_msg_ids", msgIDs)
+			SessionSet(sess, "_menu_msg_id", msg.MessageID)
 		}
 		return nil
 	}
 
-	// Send as a fresh message and save its ID to session active stack (Robust multi-cleanup)
-	msg, err := c.Send().Text(node.TextVal).Markup(kb).Stretch(node.stretch).Go()
+	// 5. Send as a fresh message and save its ID to session active stack (Robust multi-cleanup)
+	msg, err := c.Send().Text(text).Markup(kb).Go()
 	if msg != nil && msg.MessageID > 0 {
 		msgIDs = append(msgIDs, msg.MessageID)
-		_, _ = c.Session().Data("_menu_msg_ids", msgIDs).Go()
-		_, _ = c.Session().Data("_menu_msg_id", msg.MessageID).Go()
+		SessionSet(sess, "_menu_msg_ids", msgIDs)
+		SessionSet(sess, "_menu_msg_id", msg.MessageID)
 	}
 	return err
 }

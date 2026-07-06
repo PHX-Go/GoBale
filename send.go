@@ -560,29 +560,29 @@ func (s *SendChain) Context(ctx context.Context) *SendChain {
 	return s
 }
 
-// stretchText ensures the message bubble is wide enough for inline keyboards without adding empty vertical lines
+// stretchText ensures every single line of a multi-line message is stretched using ONLY standard spaces to prevent any symbol corruption
 func stretchText(text string) string {
 	lines := strings.Split(text, "\n")
-	maxLen := 0
-	for _, line := range lines {
-		l := len([]rune(line))
-		if l > maxLen {
-			maxLen = l
+	targetMinLen := 40 // Set strictly to 40 as requested
+
+	var sb strings.Builder
+	for idx, line := range lines {
+		runes := []rune(line)
+		l := len(runes)
+
+		sb.WriteString(line)
+		if l < targetMinLen {
+			diff := targetMinLen - l
+			// Use ONLY standard ASCII spaces to guarantee 100% visual invisibility and safety on all clients
+			for i := 0; i < diff; i++ {
+				sb.WriteString(" ")
+			}
+		}
+		if idx < len(lines)-1 {
+			sb.WriteString("\n")
 		}
 	}
-	// Set target stretch limit suitable for standard mobile screen widths
-	targetMinLen := 40
-	if maxLen < targetMinLen {
-		diff := targetMinLen - maxLen
-		var sb strings.Builder
-		sb.WriteString(text)
-		sb.WriteString(" ")
-		for i := 0; i < diff-1; i++ {
-			sb.WriteString("\u2800")
-		}
-		return sb.String()
-	}
-	return text
+	return sb.String()
 }
 
 // EditChain manages fluent message edits dynamically
