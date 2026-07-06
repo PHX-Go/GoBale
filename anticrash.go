@@ -498,20 +498,28 @@ func (a *AntiCrashChain) Go() Handler {
 	}
 
 	return func(c *Ctx) {
-		if c.Message == nil {
+		// Capture either Message or EditedMessage safely to protect against edit bypasses
+		var msg *Message
+		if c.Message != nil {
+			msg = c.Message
+		} else if c.Update != nil && c.Update.EditedMessage != nil {
+			msg = c.Update.EditedMessage
+		}
+
+		if msg == nil {
 			c.Next()
 			return
 		}
 
 		// SECURITY BYPASS: Never scan or block messages sent by bots (prevent self-blocking & infinite loops)
-		if c.Message.From != nil && c.Message.From.IsBot {
+		if msg.From != nil && msg.From.IsBot {
 			c.Next()
 			return
 		}
 
-		textToScan := c.Message.Text
-		if textToScan == "" && c.Message.Caption != "" {
-			textToScan = c.Message.Caption
+		textToScan := msg.Text
+		if textToScan == "" && msg.Caption != "" {
+			textToScan = msg.Caption
 		}
 
 		if textToScan == "" {
@@ -523,8 +531,23 @@ func (a *AntiCrashChain) Go() Handler {
 		if len(results) > 0 {
 			if a.onViolation != nil {
 				a.onViolation(c, results)
+			} else if a.warnEngine != nil {
+				// Delete the malicious message/edit immediately
+				_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
+					"chat_id":    msg.Chat.ID,
+					"message_id": msg.MessageID,
+				}, nil)
+
+				// Trigger WarnEngine with the exact violation reason
+				_ = a.warnEngine.Warn(c, results[0].Reason)
+				c.Abort()
 			} else {
-				_ = c.Del().Go()
+				// Use the correct message ID to delete (works for both new and edited messages)
+				_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
+					"chat_id":    msg.Chat.ID,
+					"message_id": msg.MessageID,
+				}, nil)
+
 				warnText := "🚨 *[سپر امنیتی]* پیام شما حاوی کاراکترهای مخرب، اسپم یا نویسه‌های غیرمجاز بود و حذف گردید."
 				_, _ = c.Send().Text(warnText).Markdown().Temp(5 * time.Second).Go()
 				c.Abort()
@@ -792,4 +815,62 @@ func isForeignComplexScript(r rune) bool {
 		return true
 	}
 	return false
+}
+
+// GroupHistoryPruner deletes the previous message of a non-admin user when they send a new one
+// to prevent them from editing old messages into crash/Zalgo payloads.
+func (b *Bot) GroupHistoryPruner() Handler {
+	return func(c *Ctx) {
+		// Ignore private chats, service messages, or empty messages
+		if c.Message == nil || c.IsPrivate() || c.Message.Text == "" {
+			c.Next()
+			return
+		}
+
+		// Bypass group administrators and owner
+		isAdmin, err := c.Chat().IsAdmin().Go()
+		if err == nil && isAdmin {
+			c.Next()
+			return
+		}
+
+		chatID, _ := c.ChatID()
+		userID := c.SenderID()
+		key := fmt.Sprintf("last_user_msg:%d:%d", chatID, userID)
+
+		// Fetch and delete their previous active message in this group
+		if val, ok := c.DB().Get(key).Go(); ok {
+			var prevMsgID int64
+			if id, okInt := val.(int64); okInt {
+				prevMsgID = id
+			} else if id, okInt := val.(int); okInt {
+				prevMsgID = int64(id)
+			}
+
+			if prevMsgID > 0 {
+				// Silently delete the previous message to prevent edit-obfuscation
+				_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": prevMsgID,
+				}, nil)
+			}
+		}
+
+		// Store the current message ID as the new last message reference
+		_ = c.DB().Set(key, c.Message.MessageID).Go()
+		c.Next()
+	}
+}
+
+// PVClutterShield automatically deletes any user-sent message in PV immediately after processing,
+// completely blocking their ability to edit any sent message into a Zalgo/crash payload.
+func (b *Bot) PVClutterShield() Handler {
+	return func(c *Ctx) {
+		// Only run in private chats (PV) and ensure c.Message is populated
+		if c.IsPrivate() && c.Message != nil && c.Message.MessageID > 0 {
+			// Silently delete the user's incoming message instantly
+			_ = c.Del().Go()
+		}
+		c.Next()
+	}
 }
