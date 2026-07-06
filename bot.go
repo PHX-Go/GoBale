@@ -891,11 +891,6 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 		state, _ = stateChan.Go()
 	}
 
-	// Publish successful invoice payment events to the central EventBus asynchronously
-	if u.Message != nil && u.Message.SuccessfulPayment != nil {
-		b.Bus.Publish("payment.success", u.Message.SuccessfulPayment)
-	}
-
 	// Acquire read lock immediately to protect slice copies
 	b.mu.RLock()
 
@@ -903,6 +898,11 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 	chain = append(chain, b.middlewares...)
 
 	if u.Message != nil {
+		// CAPTION BYPASS GUARD: Copy Caption to Text if Text is empty (closes loopholes across all filters)
+		if u.Message.Text == "" && u.Message.Caption != "" {
+			u.Message.Text = u.Message.Caption
+		}
+
 		// Dynamically normalize message text on-the-fly to keep original raw field untouched
 		text := ToEnDigits(u.Message.Text)
 
@@ -987,6 +987,11 @@ func (b *Bot) processUpdate(ctx context.Context, u *Update) {
 	} else if u.PreCheckoutQuery != nil {
 		chain = append(chain, b.preCheckouts...)
 	} else if u.EditedMessage != nil {
+		// CAPTION BYPASS GUARD: Copy Edited Caption to Edited Text if Text is empty
+		if u.EditedMessage.Text == "" && u.EditedMessage.Caption != "" {
+			u.EditedMessage.Text = u.EditedMessage.Caption
+		}
+
 		c.Message = u.EditedMessage
 
 		// Get cached original text and update with new edited text <<<
