@@ -514,3 +514,18 @@ func DataPath(filename string) string {
 	// Joins path using OS-specific path separators safely
 	return filepath.Join("data", filename)
 }
+
+// Convert interface numeric values to int64 safely
+func asInt64(val any) (int64, bool) {
+	switch v := val.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	}
+	return 0, false
+}

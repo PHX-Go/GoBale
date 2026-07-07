@@ -312,19 +312,12 @@ func (a *AnalyticsChain) Go() (*AnalyticsResult, error) {
 		prefix = "stat_lifetime"
 	}
 
-	// Dynamic Type-Coercive helper to safly cast any GOB numeric type to int64
+	// Read analytics counter value with generic conversion helper
 	getVal := func(metric string) int64 {
 		key := fmt.Sprintf("%s:%d:%s", prefix, chatID, metric)
 		if val, ok := db.Get(key); ok {
-			switch v := val.(type) {
-			case int64:
-				return v
-			case int:
-				return int64(v)
-			case int32:
-				return int64(v)
-			case float64:
-				return int64(v)
+			if num, okNum := asInt64(val); okNum {
+				return num
 			}
 		}
 		return 0

@@ -210,10 +210,7 @@ func (dp *DownloadPool) start(workers int) {
 	})
 }
 
-// resilientDownload handles range-resuming, multi-attempt retries, browser-mimicking
-// headers, unknown sizes, stall detection and post-download size verification.
-// It also resolves indirect links (share pages, landing pages with a
-// "Download" button, etc.) into a direct file URL before downloading.
+// Resilient download handling range-resuming, multi-attempt retries and stall detection
 func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPath string, expectedSize int64, onProgress func(percent float64)) error {
 	const maxRetries = 5
 	var currentSize int64 = 0
@@ -221,191 +218,150 @@ func resilientDownload(ctx context.Context, client *http.Client, urlStr, destPat
 	var lastErr error
 	var alreadyResolved bool
 
+	// Resolve download URL initially
 	if resolved, err := ResolveDownloadURL(ctx, client, urlStr); err == nil && resolved.URL != "" {
 		urlStr = resolved.URL
 		alreadyResolved = true
 	}
-	// If resolution errored, we just fall through and try urlStr as-is —
-	// it may already be a direct link that no resolver needed to touch.
 
+	// Check existing file size to support download resuming
 	if stat, err := os.Stat(destPath); err == nil {
 		currentSize = stat.Size()
 	}
 
+	// Start retry loop
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		// Per-attempt context that can be cancelled either by the caller (ctx)
-		// or by the stall watchdog below.
-		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		// Execute attempt inside local closure to ensure resource cleanup via defer
+		attemptErr := func() error {
+			attemptCtx, attemptCancel := context.WithCancel(ctx)
+			defer attemptCancel()
 
-		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, urlStr, nil)
-		if err != nil {
-			attemptCancel()
-			return err
-		}
-
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-		if parsedURL, err := neturl.Parse(urlStr); err == nil {
-			req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
-		}
-
-		if currentSize > 0 {
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", currentSize))
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			attemptCancel()
-			lastErr = err
-			if ctx.Err() != nil {
-				return ctx.Err()
+			req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, urlStr, nil)
+			if err != nil {
+				return err
 			}
-			time.Sleep(backoffWithJitter(attempt))
-			continue
-		}
 
-		// Fail fast on non-retryable client errors instead of burning all retries.
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-			resp.Body.Close()
-			attemptCancel()
-			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-				return nil
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+			if parsedURL, err := neturl.Parse(urlStr); err == nil {
+				req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
 			}
-			if !isRetryableStatus(resp.StatusCode) {
+
+			if currentSize > 0 {
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", currentSize))
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+				if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+					return nil
+				}
+				if !isRetryableStatus(resp.StatusCode) {
+					return fmt.Errorf("unexpected http status code: %d (%s)", resp.StatusCode, resp.Status)
+				}
 				return fmt.Errorf("unexpected http status code: %d (%s)", resp.StatusCode, resp.Status)
 			}
-			lastErr = fmt.Errorf("unexpected http status code: %d (%s)", resp.StatusCode, resp.Status)
-			time.Sleep(backoffWithJitter(attempt))
-			continue
-		}
 
-		// The URL looked direct (or resolution said so) but actually served a
-		// landing page instead of a file — try resolving it for real before
-		// burning through retries on something that will never be a file.
-		if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
-			resp.Body.Close()
-			attemptCancel()
-
-			if !alreadyResolved {
-				if resolved, rerr := ResolveDownloadURL(ctx, client, urlStr); rerr == nil && resolved.URL != "" && resolved.URL != urlStr {
-					urlStr = resolved.URL
-					alreadyResolved = true
-					continue
-				}
-			}
-			lastErr = fmt.Errorf("server returned an html page instead of a file (link may require manual resolution)")
-			time.Sleep(backoffWithJitter(attempt))
-			continue
-		}
-
-		isResume := resp.StatusCode == http.StatusPartialContent
-		if resp.StatusCode == http.StatusOK {
-			currentSize = 0
-			isResume = false
-		}
-
-		var out *os.File
-		if isResume {
-			out, err = os.OpenFile(destPath, os.O_WRONLY|os.O_APPEND, 0600)
-		} else {
-			out, err = os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-		}
-		if err != nil {
-			resp.Body.Close()
-			attemptCancel()
-			return err
-		}
-
-		totalSize := resp.ContentLength
-		if isResume {
-			totalSize += currentSize
-		}
-		if totalSize <= 0 {
-			totalSize = expectedSize
-		}
-
-		// Stall watchdog: aborts the attempt if no bytes arrive for StallTimeout,
-		// without capping the total duration of a healthy, slow transfer.
-		watchdog := time.AfterFunc(StallTimeout, attemptCancel)
-
-		var buffer = make([]byte, 32*1024)
-		var readErr error
-		var bytesRead int
-
-		for {
-			if attemptCtx.Err() != nil {
-				watchdog.Stop()
-				out.Close()
-				resp.Body.Close()
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				readErr = attemptCtx.Err()
-				break
-			}
-
-			bytesRead, readErr = resp.Body.Read(buffer)
-			if bytesRead > 0 {
-				watchdog.Reset(StallTimeout)
-
-				_, writeErr := out.Write(buffer[:bytesRead])
-				if writeErr != nil {
-					watchdog.Stop()
-					out.Close()
-					resp.Body.Close()
-					attemptCancel()
-					return writeErr
-				}
-				currentSize += int64(bytesRead)
-
-				if onProgress != nil {
-					if totalSize > 0 {
-						pct := int(float64(currentSize) / float64(totalSize) * 100.0)
-						if pct > lastPct {
-							if pct > 100 {
-								pct = 100
-							}
-							lastPct = pct
-							onProgress(float64(pct))
-						}
-					} else {
-						mbs := float64(currentSize) / (1024 * 1024)
-						onProgress(-mbs)
+			if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
+				if !alreadyResolved {
+					if resolved, rerr := ResolveDownloadURL(ctx, client, urlStr); rerr == nil && resolved.URL != "" && resolved.URL != urlStr {
+						urlStr = resolved.URL
+						alreadyResolved = true
+						return fmt.Errorf("resolved landing page, retrying on direct link")
 					}
 				}
+				return fmt.Errorf("server returned an html page instead of a file")
 			}
 
-			if readErr != nil {
-				break
+			isResume := resp.StatusCode == http.StatusPartialContent
+			if resp.StatusCode == http.StatusOK {
+				currentSize = 0
+				isResume = false
 			}
-		}
 
-		watchdog.Stop()
-		out.Close()
-		resp.Body.Close()
-		attemptCancel()
-
-		if readErr == io.EOF {
-			// Verify the file we ended up with actually matches the
-			// size the server told us to expect, instead of trusting a clean
-			// EOF blindly (a server can close early and still look "clean").
-			if totalSize > 0 && currentSize != totalSize {
-				lastErr = fmt.Errorf("incomplete download: got %d bytes, expected %d", currentSize, totalSize)
-				time.Sleep(backoffWithJitter(attempt))
-				continue
+			var out *os.File
+			if isResume {
+				out, err = os.OpenFile(destPath, os.O_WRONLY|os.O_APPEND, 0600)
+			} else {
+				out, err = os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 			}
+			if err != nil {
+				return err
+			}
+			defer out.Close()
+
+			totalSize := resp.ContentLength
+			if isResume {
+				totalSize += currentSize
+			}
+			if totalSize <= 0 {
+				totalSize = expectedSize
+			}
+
+			watchdog := time.AfterFunc(StallTimeout, attemptCancel)
+			defer watchdog.Stop()
+
+			var buffer = make([]byte, 32*1024)
+			for {
+				if attemptCtx.Err() != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return attemptCtx.Err()
+				}
+
+				bytesRead, readErr := resp.Body.Read(buffer)
+				if bytesRead > 0 {
+					watchdog.Reset(StallTimeout)
+
+					_, writeErr := out.Write(buffer[:bytesRead])
+					if writeErr != nil {
+						return writeErr
+					}
+					currentSize += int64(bytesRead)
+
+					if onProgress != nil {
+						if totalSize > 0 {
+							pct := int(float64(currentSize) / float64(totalSize) * 100.0)
+							if pct > lastPct {
+								if pct > 100 {
+									pct = 100
+								}
+								lastPct = pct
+								onProgress(float64(pct))
+							}
+						} else {
+							mbs := float64(currentSize) / (1024 * 1024)
+							onProgress(-mbs)
+						}
+					}
+				}
+
+				if readErr != nil {
+					if readErr == io.EOF {
+						if totalSize > 0 && currentSize != totalSize {
+							return fmt.Errorf("incomplete download: got %d bytes, expected %d", currentSize, totalSize)
+						}
+						return nil
+					}
+					return readErr
+				}
+			}
+		}()
+
+		if attemptErr == nil {
 			return nil
 		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		lastErr = readErr
+		lastErr = attemptErr
 		time.Sleep(backoffWithJitter(attempt))
 	}
 

@@ -277,9 +277,11 @@ func (db *Database) Del(k string) error {
 	return nil
 }
 
-// Tx runs a safe isolated transaction on the in-memory store and flushes all changes via WAL
+// Execute transactional operation with safe deferred unlock
 func (db *Database) Tx(fn func(store map[string]any)) error {
 	db.mu.Lock()
+	defer db.mu.Unlock()
+
 	before := make(map[string]any, len(db.store))
 	for k, v := range db.store {
 		before[k] = v
@@ -293,7 +295,6 @@ func (db *Database) Tx(fn func(store map[string]any)) error {
 			changes = append(changes, walEntry{Op: walSet, Key: k, Val: v})
 		}
 	}
-	db.mu.Unlock()
 
 	for _, entry := range changes {
 		db.appendWAL(entry)
