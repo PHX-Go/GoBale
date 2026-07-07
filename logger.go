@@ -3,7 +3,6 @@ package gobale
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -89,36 +88,55 @@ type GoBaleLogger struct {
 	rotateW    *RotateWriter
 }
 
-// NewGoBaleLogger configures structured slog handler with rotating files and console outputs
-func NewGoBaleLogger(level slog.Level, path string, toConsole bool, jsonFormat bool) *GoBaleLogger {
-	var writer io.Writer
+// NewGoBaleLogger configures structured slog handler with optional shamsi ladder formatting
+func NewGoBaleLogger(level slog.Level, path string, toConsole bool, jsonFormat bool, ladderShamsi bool) *GoBaleLogger {
+	var handlers []slog.Handler
 	var rotateW *RotateWriter
-
-	if path != "" {
-		rotateW = NewRotateWriter(path, 10*1024*1024, 3)
-		if toConsole {
-			writer = io.MultiWriter(os.Stdout, rotateW)
-		} else {
-			writer = rotateW
-		}
-	} else {
-		writer = os.Stdout
-	}
 
 	opts := &slog.HandlerOptions{
 		Level:     level,
 		AddSource: true,
 	}
 
-	var handler slog.Handler
-	if jsonFormat {
-		handler = slog.NewJSONHandler(writer, opts)
+	// Configure structured file logging if path is provided
+	if path != "" {
+		rotateW = NewRotateWriter(path, 10*1024*1024, 3)
+		var fileHandler slog.Handler
+		if jsonFormat {
+			fileHandler = slog.NewJSONHandler(rotateW, opts)
+		} else {
+			fileHandler = slog.NewTextHandler(rotateW, opts)
+		}
+		handlers = append(handlers, fileHandler)
+	}
+
+	// Configure console output (with optional ladder shamsi formatting)
+	if toConsole {
+		var consoleHandler slog.Handler
+		if ladderShamsi {
+			consoleHandler = &LadderShamsiHandler{level: level}
+		} else if jsonFormat {
+			consoleHandler = slog.NewJSONHandler(os.Stdout, opts)
+		} else {
+			consoleHandler = slog.NewTextHandler(os.Stdout, opts)
+		}
+		handlers = append(handlers, consoleHandler)
+	}
+
+	// Ensure at least stdout handler exists
+	if len(handlers) == 0 {
+		handlers = append(handlers, slog.NewTextHandler(os.Stdout, opts))
+	}
+
+	var finalHandler slog.Handler
+	if len(handlers) == 1 {
+		finalHandler = handlers[0]
 	} else {
-		handler = slog.NewTextHandler(writer, opts)
+		finalHandler = &TeeHandler{handlers: handlers}
 	}
 
 	return &GoBaleLogger{
-		slogLogger: slog.New(handler),
+		slogLogger: slog.New(finalHandler),
 		rotateW:    rotateW,
 	}
 }
@@ -260,4 +278,113 @@ func (l *LogChain) Group(name string, attrs ...slog.Attr) *LogChain {
 // Go executes the structured logging pipeline using optimized LogAttrs
 func (l *LogChain) Go() {
 	l.logger.LogAttrs(l.ctx, l.level, l.msg, l.attrs...)
+}
+
+// NewCustomLogger instantiates a GoBaleLogger using a custom slog.Handler
+func NewCustomLogger(handler slog.Handler) *GoBaleLogger {
+	return &GoBaleLogger{
+		slogLogger: slog.New(handler),
+	}
+}
+
+// LadderShamsiHandler implements slog.Handler to pretty-print shamsi logs vertically
+type LadderShamsiHandler struct {
+	level slog.Level
+	attrs []slog.Attr
+}
+
+// Enabled checks if the record level meets the configured severity
+func (h *LadderShamsiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level
+}
+
+// Handle converts Gregorian time to Jalali and pretty-prints attributes recursively
+func (h *LadderShamsiHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Convert standard gregorian time to native Jalali format (e.g. 1405/4/16)
+	shamsiDate := Jalali(r.Time).Format("yyyy/m/d").Go()
+	timeStr := fmt.Sprintf("%s %s", shamsiDate, r.Time.Format("15:04:05"))
+
+	levelStr := r.Level.String()
+
+	// Print main bracket header of the ladder log event
+	fmt.Printf("┌ [%s] [%s] %s\n", timeStr, levelStr, r.Message)
+
+	// Combine pre-attached attributes with dynamic attributes
+	var allAttrs []slog.Attr
+	allAttrs = append(allAttrs, h.attrs...)
+	r.Attrs(func(a slog.Attr) bool {
+		allAttrs = append(allAttrs, a)
+		return true
+	})
+
+	// Print every attribute on its own indented step
+	for i, a := range allAttrs {
+		connector := "├"
+		if i == len(allAttrs)-1 {
+			connector = "└"
+		}
+		fmt.Printf("%s   %s: %v\n", connector, a.Key, a.Value.Any())
+	}
+
+	// Print standard footer line if no attributes exist
+	if len(allAttrs) == 0 {
+		fmt.Println("└──────────────────────────────────────────────────")
+	}
+	return nil
+}
+
+// WithAttrs returns a new handler containing pre-attached attributes
+func (h *LadderShamsiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &LadderShamsiHandler{
+		level: h.level,
+		attrs: append(h.attrs, attrs...),
+	}
+}
+
+// WithGroup satisfies standard slog.Handler interface specs
+func (h *LadderShamsiHandler) WithGroup(name string) slog.Handler {
+	return h
+}
+
+// TeeHandler fanouts records to multiple slog.Handlers simultaneously
+type TeeHandler struct {
+	handlers []slog.Handler
+}
+
+// Enabled checks if any sub-handler accepts this log level
+func (t *TeeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range t.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+// Handle dispatches records safely to all enabled sub-handlers
+func (t *TeeHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, h := range t.handlers {
+		if h.Enabled(ctx, r.Level) {
+			_ = h.Handle(ctx, r)
+		}
+	}
+	return nil
+}
+
+// WithAttrs appends attributes to all sub-handlers
+func (t *TeeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newHandlers := make([]slog.Handler, len(t.handlers))
+	for i, h := range t.handlers {
+		newHandlers[i] = h.WithAttrs(attrs)
+	}
+	return &TeeHandler{handlers: newHandlers}
+}
+
+// WithGroup configures structural groups for all sub-handlers
+func (t *TeeHandler) WithGroup(name string) slog.Handler {
+	newHandlers := make([]slog.Handler, len(t.handlers))
+	for i, h := range t.handlers {
+		newHandlers[i] = h.WithGroup(name)
+	}
+	return &TeeHandler{handlers: newHandlers}
 }

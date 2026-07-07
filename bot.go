@@ -193,8 +193,8 @@ func (b *BotBuilder) Go() (*Bot, error) {
 	if b.logger != nil {
 		bot.loggerInstance = b.logger
 	} else {
-		// Configure structured slog default configuration (LevelInfo, TextHandler)
-		bot.loggerInstance = NewGoBaleLogger(slog.LevelInfo, "bot.log", true, false)
+		// Configure structured slog default (LevelInfo, bot.log, console dual-output, Text, shamsi-ladder enabled)
+		bot.loggerInstance = NewGoBaleLogger(slog.LevelInfo, "bot.log", true, false, false)
 	}
 
 	if b.bgTasks > 0 {
@@ -1473,4 +1473,34 @@ func (b *Bot) GetCPU() float64 {
 func (o *OnChain) Event(topic string, fn EventListener) *OnChain {
 	o.bot.Bus.Subscribe(topic, fn)
 	return o
+}
+
+// LogText configures the bot builder with standard structured text logger
+func (b *BotBuilder) LogText(path string, level ...slog.Level) *BotBuilder {
+	l := slog.LevelInfo
+	if len(level) > 0 {
+		l = level[0]
+	}
+	b.logger = NewGoBaleLogger(l, path, true, false, false)
+	return b
+}
+
+// LogJSON configures the bot builder with highly structured JSON logger
+func (b *BotBuilder) LogJSON(path string, level ...slog.Level) *BotBuilder {
+	l := slog.LevelInfo
+	if len(level) > 0 {
+		l = level[0]
+	}
+	b.logger = NewGoBaleLogger(l, path, true, true, false)
+	return b
+}
+
+// LogLadder configures shamsi date conversion and beautiful ladder box-drawing logger
+func (b *BotBuilder) LogLadder(path string, level ...slog.Level) *BotBuilder {
+	l := slog.LevelInfo
+	if len(level) > 0 {
+		l = level[0]
+	}
+	b.logger = NewGoBaleLogger(l, path, true, false, true)
+	return b
 }
