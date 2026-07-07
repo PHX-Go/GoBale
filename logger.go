@@ -594,13 +594,13 @@ func (l *LoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	return resp, nil
 }
 
-// EnableNetworkInterceptor wraps the active HTTP client transport with our LoggingRoundTripper
+// EnableNetworkInterceptor wraps the HTTP client transport with our LoggingRoundTripper
 func (b *Bot) EnableNetworkInterceptor() {
+	if b.loggerInstance == nil {
+		return
+	}
 	if b.Client != nil && b.Client.httpClient != nil {
 		currentTransport := b.Client.httpClient.Transport
-		if currentTransport == nil {
-			currentTransport = http.DefaultTransport
-		}
 		b.Client.httpClient.Transport = &LoggingRoundTripper{
 			proxied: currentTransport,
 			bot:     b,

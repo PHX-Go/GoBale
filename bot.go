@@ -217,8 +217,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 	if b.logger != nil {
 		bot.loggerInstance = b.logger
 	} else {
-		// Configure structured slog default (LevelInfo, bot.log, console dual-output, Text, shamsi-ladder enabled)
-		bot.loggerInstance = NewGoBaleLogger(slog.LevelInfo, "bot.log", true, false, false)
+		bot.loggerInstance = nil
 	}
 
 	// Enable the low-level HTTP transport packet interceptor at startup
