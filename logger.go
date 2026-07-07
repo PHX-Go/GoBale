@@ -388,7 +388,7 @@ func (h *LadderShamsiHandler) WithGroup(name string) slog.Handler {
 	return h
 }
 
-// printNested recursively formats primitive types and unmarshals raw JSON strings using UseNumber
+// printNested recursively formats primitive types, maps, structs, and unmarshals raw JSON strings using UseNumber
 func printNested(key string, val any, indent string, isLast bool) {
 	if val == nil {
 		printLine(indent, key, "<nil>", isLast)
@@ -447,6 +447,36 @@ func printNested(key string, val any, indent string, isLast bool) {
 
 		for i, kStr := range sortedKeys {
 			printNested(kStr, keyMap[kStr].Interface(), nextIndent, i == len(sortedKeys)-1)
+		}
+
+	case reflect.Struct:
+		fmt.Printf("%s%s %s:\n", indent, connector, key)
+		nextIndent := indent + "│   "
+		if isLast {
+			nextIndent = indent + "    "
+		}
+
+		t := v.Type()
+		var fields []string
+		fieldMap := make(map[string]reflect.Value)
+		for i := 0; i < v.NumField(); i++ {
+			sf := t.Field(i)
+			// Skip unexported fields
+			if !sf.IsExported() {
+				continue
+			}
+			name := sf.Name
+			// Read json tag to display correct API key names if available
+			if tag := sf.Tag.Get("json"); tag != "" && tag != "-" {
+				name = strings.Split(tag, ",")[0]
+			}
+			fields = append(fields, name)
+			fieldMap[name] = v.Field(i)
+		}
+		sort.Strings(fields)
+
+		for i, fName := range fields {
+			printNested(fName, fieldMap[fName].Interface(), nextIndent, i == len(fields)-1)
 		}
 
 	case reflect.Slice, reflect.Array:
