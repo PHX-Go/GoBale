@@ -170,6 +170,12 @@ func (d *DelChain) Go() error {
 					d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_daily:%d:deletions", id), 1)
 					d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_lifetime:%d:deletions", id), 1)
 				}
+
+				// Log delayed deletion structurally
+				d.c.Bot.Log().Info("حذف پیام با موفقیت (با تاخیر) انجام شد").
+					Int64("chat_id", id).
+					Int64("message_id", msgID).
+					Go()
 			}
 		})
 		return nil
@@ -206,6 +212,12 @@ func (d *DelChain) Go() error {
 			d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_daily:%d:deletions", id), 1)
 			d.c.Bot.incrementAnalyticsCount(fmt.Sprintf("stat_lifetime:%d:deletions", id), 1)
 		}
+
+		// Log instant deletion structurally
+		d.c.Bot.Log().Info("حذف پکت شبکه (Outgoing Delete)").
+			Int64("chat_id", id).
+			Int64("message_id", d.c.Message.MessageID).
+			Go()
 	}
 	return errDel
 }

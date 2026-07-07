@@ -1,12 +1,20 @@
 package gobale
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 )
 
 // RotateWriter implements io.Writer with automatic file size-based rotation and backup limits
@@ -84,8 +92,11 @@ func (rw *RotateWriter) Write(p []byte) (n int, err error) {
 
 // GoBaleLogger wraps slog.Logger with configurations for dynamic dual-output formats
 type GoBaleLogger struct {
-	slogLogger *slog.Logger
-	rotateW    *RotateWriter
+	slogLogger           *slog.Logger
+	rotateW              *RotateWriter
+	SuppressHTTP         bool
+	SuppressGetUpdates   bool
+	SuppressEmptyUpdates bool
 }
 
 // NewGoBaleLogger configures structured slog handler with optional shamsi ladder formatting
@@ -114,7 +125,7 @@ func NewGoBaleLogger(level slog.Level, path string, toConsole bool, jsonFormat b
 	if toConsole {
 		var consoleHandler slog.Handler
 		if ladderShamsi {
-			consoleHandler = &LadderShamsiHandler{level: level}
+			consoleHandler = &LadderShamsiHandler{Level: level}
 		} else if jsonFormat {
 			consoleHandler = slog.NewJSONHandler(os.Stdout, opts)
 		} else {
@@ -155,8 +166,6 @@ func (b *Bot) Log() *LogChain {
 	var slogL *slog.Logger
 	if b.loggerInstance != nil {
 		slogL = b.loggerInstance.slogLogger
-	} else {
-		slogL = slog.Default()
 	}
 	return &LogChain{
 		logger: slogL,
@@ -169,8 +178,6 @@ func (c *Ctx) Log() *LogChain {
 	var slogL *slog.Logger
 	if c.Bot.loggerInstance != nil {
 		slogL = c.Bot.loggerInstance.slogLogger
-	} else {
-		slogL = slog.Default()
 	}
 
 	chain := &LogChain{
@@ -178,15 +185,21 @@ func (c *Ctx) Log() *LogChain {
 		ctx:    c.ctx,
 	}
 
-	id, _ := c.ChatID()
-	if id > 0 {
-		chain = chain.Int64("chat_id", id)
+	// Capture chat_id only if the logger is actually active
+	if slogL != nil {
+		id, _ := c.ChatID()
+		if id > 0 {
+			chain = chain.Int64("chat_id", id)
+		}
 	}
 	return chain
 }
 
 // Debug registers debug level and sets main log message
 func (l *LogChain) Debug(msg string) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.level = slog.LevelDebug
 	l.msg = msg
 	return l
@@ -194,6 +207,9 @@ func (l *LogChain) Debug(msg string) *LogChain {
 
 // Info registers info level and sets main log message
 func (l *LogChain) Info(msg string) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.level = slog.LevelInfo
 	l.msg = msg
 	return l
@@ -201,6 +217,9 @@ func (l *LogChain) Info(msg string) *LogChain {
 
 // Warn registers warn level and sets main log message
 func (l *LogChain) Warn(msg string) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.level = slog.LevelWarn
 	l.msg = msg
 	return l
@@ -208,6 +227,9 @@ func (l *LogChain) Warn(msg string) *LogChain {
 
 // Error registers error level and sets main log message
 func (l *LogChain) Error(msg string) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.level = slog.LevelError
 	l.msg = msg
 	return l
@@ -215,58 +237,81 @@ func (l *LogChain) Error(msg string) *LogChain {
 
 // Str appends a structured string attribute
 func (l *LogChain) Str(key, val string) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.attrs = append(l.attrs, slog.String(key, val))
 	return l
 }
 
 // Int appends a structured integer attribute
 func (l *LogChain) Int(key string, val int) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.attrs = append(l.attrs, slog.Int(key, val))
 	return l
 }
 
 // Int64 appends a structured int64 attribute
 func (l *LogChain) Int64(key string, val int64) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.attrs = append(l.attrs, slog.Int64(key, val))
 	return l
 }
 
 // Bool appends a structured boolean attribute
 func (l *LogChain) Bool(key string, val bool) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.attrs = append(l.attrs, slog.Bool(key, val))
 	return l
 }
 
 // Float appends a structured float64 attribute
 func (l *LogChain) Float(key string, val float64) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.attrs = append(l.attrs, slog.Float64(key, val))
 	return l
 }
 
 // Any appends any dynamic interface attribute
 func (l *LogChain) Any(key string, val any) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	l.attrs = append(l.attrs, slog.Any(key, val))
 	return l
 }
 
 // Err appends a standard structured error attribute if non-nil
 func (l *LogChain) Err(err error) *LogChain {
-	if err != nil {
-		l.attrs = append(l.attrs, slog.Any("error", err))
+	if l.logger == nil || err == nil {
+		return l
 	}
+	l.attrs = append(l.attrs, slog.Any("error", err))
 	return l
 }
 
 // Context registers custom execution context
 func (l *LogChain) Context(ctx context.Context) *LogChain {
-	if ctx != nil {
-		l.ctx = ctx
+	if l.logger == nil || ctx == nil {
+		return l
 	}
+	l.ctx = ctx
 	return l
 }
 
 // Group appends grouped nested attributes
 func (l *LogChain) Group(name string, attrs ...slog.Attr) *LogChain {
+	if l.logger == nil {
+		return l
+	}
 	args := make([]any, len(attrs))
 	for i, attr := range attrs {
 		args[i] = attr
@@ -277,6 +322,9 @@ func (l *LogChain) Group(name string, attrs ...slog.Attr) *LogChain {
 
 // Go executes the structured logging pipeline using optimized LogAttrs
 func (l *LogChain) Go() {
+	if l.logger == nil {
+		return
+	}
 	l.logger.LogAttrs(l.ctx, l.level, l.msg, l.attrs...)
 }
 
@@ -287,23 +335,21 @@ func NewCustomLogger(handler slog.Handler) *GoBaleLogger {
 	}
 }
 
-// LadderShamsiHandler implements slog.Handler to pretty-print shamsi logs vertically
+// LadderShamsiHandler pretty-prints shamsi logs recursively in a box-drawing nested tree
 type LadderShamsiHandler struct {
-	level slog.Level
+	Level slog.Level
 	attrs []slog.Attr
 }
 
 // Enabled checks if the record level meets the configured severity
 func (h *LadderShamsiHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return level >= h.level
+	return level >= h.Level
 }
 
-// Handle converts Gregorian time to Jalali and pretty-prints attributes recursively
+// Handle converts Gregorian time to Jalali and renders recursive shamsi ladder box logs using json.Indent
 func (h *LadderShamsiHandler) Handle(ctx context.Context, r slog.Record) error {
-	// Convert standard gregorian time to native Jalali format (e.g. 1405/4/16)
 	shamsiDate := Jalali(r.Time).Format("yyyy/m/d").Go()
 	timeStr := fmt.Sprintf("%s %s", shamsiDate, r.Time.Format("15:04:05"))
-
 	levelStr := r.Level.String()
 
 	// Print main bracket header of the ladder log event
@@ -317,16 +363,12 @@ func (h *LadderShamsiHandler) Handle(ctx context.Context, r slog.Record) error {
 		return true
 	})
 
-	// Print every attribute on its own indented step
+	// Print every attribute recursively utilizing the json.Indent ladder engine
 	for i, a := range allAttrs {
-		connector := "├"
-		if i == len(allAttrs)-1 {
-			connector = "└"
-		}
-		fmt.Printf("%s   %s: %v\n", connector, a.Key, a.Value.Any())
+		isLast := i == len(allAttrs)-1
+		printNested(a.Key, a.Value.Any(), "", isLast)
 	}
 
-	// Print standard footer line if no attributes exist
 	if len(allAttrs) == 0 {
 		fmt.Println("└──────────────────────────────────────────────────")
 	}
@@ -336,7 +378,7 @@ func (h *LadderShamsiHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs returns a new handler containing pre-attached attributes
 func (h *LadderShamsiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &LadderShamsiHandler{
-		level: h.level,
+		Level: h.Level,
 		attrs: append(h.attrs, attrs...),
 	}
 }
@@ -344,6 +386,99 @@ func (h *LadderShamsiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup satisfies standard slog.Handler interface specs
 func (h *LadderShamsiHandler) WithGroup(name string) slog.Handler {
 	return h
+}
+
+// printNested recursively formats primitive types and unmarshals raw JSON strings using UseNumber
+func printNested(key string, val any, indent string, isLast bool) {
+	if val == nil {
+		printLine(indent, key, "<nil>", isLast)
+		return
+	}
+
+	// Check if the value is a raw JSON string (unmarshals using UseNumber to preserve exact formats)
+	if s, ok := val.(string); ok {
+		trimmed := strings.TrimSpace(s)
+		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+			decoder := json.NewDecoder(strings.NewReader(trimmed))
+			decoder.UseNumber()
+			var generic any
+			if decoder.Decode(&generic) == nil {
+				printNested(key, generic, indent, isLast)
+				return
+			}
+		}
+	}
+
+	v := reflect.ValueOf(val)
+
+	// Safely dereference pointers and interface wrappers
+	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			printLine(indent, key, "<nil>", isLast)
+			return
+		}
+		v = v.Elem()
+	}
+
+	connector := "├─"
+	if isLast {
+		connector = "└─"
+	}
+
+	switch v.Kind() {
+	case reflect.Map:
+		fmt.Printf("%s%s %s:\n", indent, connector, key)
+		nextIndent := indent + "│   "
+		if isLast {
+			nextIndent = indent + "    "
+		}
+
+		// Sort keys to maintain a stable, predictable console layout
+		keys := v.MapKeys()
+		var sortedKeys []string
+		keyMap := make(map[string]reflect.Value, len(keys))
+		for _, k := range keys {
+			kStr := fmt.Sprintf("%v", k.Interface())
+			sortedKeys = append(sortedKeys, kStr)
+			keyMap[kStr] = v.MapIndex(k)
+		}
+		sort.Strings(sortedKeys)
+
+		for i, kStr := range sortedKeys {
+			printNested(kStr, keyMap[kStr].Interface(), nextIndent, i == len(sortedKeys)-1)
+		}
+
+	case reflect.Slice, reflect.Array:
+		// Fast path for raw byte slices to avoid recursive formatting loops
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			fmt.Printf("%s%s %s: %s\n", indent, connector, key, string(v.Bytes()))
+			return
+		}
+
+		fmt.Printf("%s%s %s:\n", indent, connector, key)
+		nextIndent := indent + "│   "
+		if isLast {
+			nextIndent = indent + "    "
+		}
+		l := v.Len()
+		for i := 0; i < l; i++ {
+			printNested(fmt.Sprintf("[%d]", i), v.Index(i).Interface(), nextIndent, i == l-1)
+		}
+
+	default:
+		// Prints primitive types including json.Number safely as raw integers
+		fmt.Printf("%s%s %s: %v\n", indent, connector, key, v.Interface())
+	}
+}
+
+// printLine outputs a formatted single-line bracket step
+func printLine(indent, key, val string, isLast bool) {
+	connector := "├─"
+	if isLast {
+		connector = "└─"
+	}
+	fmt.Printf("%s%s %s: %s\n", indent, connector, key, val)
 }
 
 // TeeHandler fanouts records to multiple slog.Handlers simultaneously
@@ -387,4 +522,88 @@ func (t *TeeHandler) WithGroup(name string) slog.Handler {
 		newHandlers[i] = h.WithGroup(name)
 	}
 	return &TeeHandler{handlers: newHandlers}
+}
+
+// LoggingRoundTripper intercepts low-level HTTP roundtrips to log raw request and response bytes
+type LoggingRoundTripper struct {
+	proxied http.RoundTripper
+	bot     *Bot
+}
+
+// RoundTrip intercepts, clones, and pretty-prints raw network packets in shamsi ladder format
+func (l *LoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	isGetUpdates := strings.Contains(req.URL.Path, "getUpdates")
+
+	var reqBody []byte
+	if req.Body != nil {
+		var err error
+		reqBody, err = io.ReadAll(req.Body)
+		if err == nil {
+			// Restore read closer for the actual HTTP execution
+			req.Body = io.NopCloser(bytes.NewReader(reqBody))
+		}
+	}
+
+	start := time.Now()
+	resp, err := l.proxied.RoundTrip(req)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var respBody []byte
+	if resp.Body != nil {
+		var err error
+		respBody, err = io.ReadAll(resp.Body)
+		if err == nil {
+			// Restore read closer for the client JSON decoder
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		}
+	}
+
+	// Bypass logging if global suppression is enabled
+	if l.bot.loggerInstance != nil {
+		if l.bot.loggerInstance.SuppressHTTP {
+			return resp, nil
+		}
+		if isGetUpdates {
+			if l.bot.loggerInstance.SuppressGetUpdates {
+				return resp, nil
+			}
+			if l.bot.loggerInstance.SuppressEmptyUpdates {
+				// Parse response body to check if result slice is empty [1]
+				var apiResponse struct {
+					Result []any `json:"result"`
+				}
+				if json.Unmarshal(respBody, &apiResponse) == nil && len(apiResponse.Result) == 0 {
+					return resp, nil // Suppress empty polling updates silently [1]
+				}
+			}
+		}
+	}
+
+	// Log raw low-level HTTP transaction details cleanly in the Shamsi ladder
+	l.bot.Log().Info("تبادل پکت شبکه").
+		Str("url", req.URL.Path).
+		Str("request", string(reqBody)).
+		Str("response", string(respBody)).
+		Any("latency", elapsed).
+		Go()
+
+	return resp, nil
+}
+
+// EnableNetworkInterceptor wraps the active HTTP client transport with our LoggingRoundTripper
+func (b *Bot) EnableNetworkInterceptor() {
+	if b.Client != nil && b.Client.httpClient != nil {
+		currentTransport := b.Client.httpClient.Transport
+		if currentTransport == nil {
+			currentTransport = http.DefaultTransport
+		}
+		b.Client.httpClient.Transport = &LoggingRoundTripper{
+			proxied: currentTransport,
+			bot:     b,
+		}
+	}
 }

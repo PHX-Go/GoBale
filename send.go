@@ -683,7 +683,7 @@ func (e *EditChain) Settings(chatID ...any) *EditChain {
 	return e
 }
 
-// Go executes the edit operation on Bale servers safely with a single unified BaseRequest call
+// Go executes the edit operation on Bale servers safely with output logs
 func (e *EditChain) Go() (*Message, error) {
 	if e.c.Message == nil {
 		return nil, errors.New("no message in context to edit")
@@ -726,6 +726,12 @@ func (e *EditChain) Go() (*Message, error) {
 
 	if err != nil {
 		logErr(e.c.Bot, "[Edit Error] ", err)
+	} else {
+		// Log outgoing edit requests structurally
+		e.c.Bot.Log().Info("ویرایش پکت شبکه (Outgoing Edit)").
+			Any("chat_id", id).
+			Any("payload", &msg).
+			Go()
 	}
 
 	return &msg, err
@@ -1050,7 +1056,7 @@ func (e *BotEditChain) Go() (*Message, error) {
 	return &msg, err
 }
 
-// executeUpload processes the final message transmission with progress context
+// executeUpload processes the final message transmission with progress context and output logs
 func (s *SendChain) executeUpload(ctx context.Context) (*Message, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1094,6 +1100,14 @@ func (s *SendChain) executeUpload(ctx context.Context) (*Message, error) {
 		err = s.bot.BaseRequest(ctx, "sendMessage", payload, &msg)
 	} else {
 		return nil, errors.New("empty payload parameters")
+	}
+
+	if err == nil {
+		// Log outgoing send requests structurally
+		s.bot.Log().Info("ارسال پکت شبکه (Outgoing Send)").
+			Any("chat_id", resolved).
+			Any("payload", &msg).
+			Go()
 	}
 
 	return &msg, err

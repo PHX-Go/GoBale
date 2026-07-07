@@ -108,6 +108,30 @@ func (b *BotBuilder) Logger(l *GoBaleLogger) *BotBuilder {
 	return b
 }
 
+// SuppressEmptyUpdates sets whether to bypass/suppress getUpdates logs only when result is empty [1]
+func (b *BotBuilder) SuppressEmptyUpdates(v bool) *BotBuilder {
+	if b.logger != nil {
+		b.logger.SuppressEmptyUpdates = v
+	}
+	return b
+}
+
+// SuppressHTTP sets whether to bypass/suppress all low-level HTTP transaction logs
+func (b *BotBuilder) SuppressHTTP(v bool) *BotBuilder {
+	if b.logger != nil {
+		b.logger.SuppressHTTP = v
+	}
+	return b
+}
+
+// SuppressGetUpdates sets whether to bypass/suppress getUpdates polling logs specifically
+func (b *BotBuilder) SuppressGetUpdates(v bool) *BotBuilder {
+	if b.logger != nil {
+		b.logger.SuppressGetUpdates = v
+	}
+	return b
+}
+
 // SetLogger replaces the active logger instance of the bot dynamically thread-safely
 func (b *Bot) SetLogger(l *GoBaleLogger) {
 	b.mu.Lock()
@@ -196,6 +220,9 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		// Configure structured slog default (LevelInfo, bot.log, console dual-output, Text, shamsi-ladder enabled)
 		bot.loggerInstance = NewGoBaleLogger(slog.LevelInfo, "bot.log", true, false, false)
 	}
+
+	// Enable the low-level HTTP transport packet interceptor at startup
+	bot.EnableNetworkInterceptor()
 
 	if b.bgTasks > 0 {
 		bot.bgSemaphore = make(chan struct{}, b.bgTasks)
@@ -631,13 +658,13 @@ func (p *PollChain) Go() {
 			p.run.bot.Client.httpClient.CloseIdleConnections()
 			return
 		default:
-			// Explicitly request message, edited_message and callback_query updates from Bale
+			// Omit allowed_updates to receive all supported updates without any filter restrictions
 			params := map[string]any{
-				"offset":          offset,
-				"limit":           100,
-				"timeout":         20,
-				"allowed_updates": []string{"message", "edited_message", "callback_query", "pre_checkout_query"},
+				"offset":  offset,
+				"limit":   100,
+				"timeout": 1,
 			}
+
 			var updates []Update
 			err := p.run.bot.BaseRequest(ctx, "getUpdates", params, &updates)
 			if err != nil {
@@ -1503,4 +1530,42 @@ func (b *BotBuilder) LogLadder(path string, level ...slog.Level) *BotBuilder {
 	}
 	b.logger = NewGoBaleLogger(l, path, true, false, true)
 	return b
+}
+
+// APIChain handles fluent execution of custom, arbitrary, or unreleased Bale API methods
+type APIChain struct {
+	bot    *Bot
+	ctx    context.Context
+	method string
+	params map[string]any
+}
+
+// API initiates a custom or undocumented API method request builder
+func (b *Bot) API(method string) *APIChain {
+	return &APIChain{
+		bot:    b,
+		ctx:    context.Background(),
+		method: method,
+		params: make(map[string]any),
+	}
+}
+
+// Param appends a dynamic key-value parameter to the arbitrary request payload
+func (a *APIChain) Param(key string, val any) *APIChain {
+	a.params[key] = val
+	return a
+}
+
+// Go executes the arbitrary API method on Bale servers and parses into target interface
+func (a *APIChain) Go(result ...any) (any, error) {
+	var target any
+	if len(result) > 0 {
+		target = result[0]
+	} else {
+		var generic map[string]any
+		target = &generic
+	}
+
+	err := a.bot.BaseRequest(a.ctx, a.method, a.params, target)
+	return target, err
 }
