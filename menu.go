@@ -3,6 +3,7 @@ package gobale
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +27,14 @@ type MenuNode struct {
 	closeLabel     string
 	CachedKeyboard any
 	CachedText     string
+	// Dynamic key generator based on chat identifier
+	DynamicKey func(chatID int64) string
+	// Dynamic keyboard builder function
+	DynamicKeyboard func(chatID int64) any
+	// Dynamic text builder function
+	DynamicText func(chatID int64) string
+	// Custom TTL duration for dynamic menu entries
+	TTL time.Duration
 }
 
 // MenuBtn initiates a menu button fluent configuration
@@ -451,30 +460,6 @@ func (c *Ctx) SendMenu(menuID string) error {
 	}
 
 	isToInline := node.IsInline
-
-	if currentMenu != "" && currentMenu != targetID && menuID != "back" {
-		var history []string
-		if rawHist, ok := SessionGet[[]string](sess, "_menu_history"); ok {
-			history = rawHist
-		}
-
-		// Detect if we are navigating backward through history
-		isBack := false
-		for i, hID := range history {
-			if hID == targetID {
-				history = history[:i]
-				isBack = true
-				break
-			}
-		}
-
-		// Push to history only if navigating forward to a non-parent page
-		if !isBack && node.ParentID != "" && currentMenu != node.ParentID {
-			history = append(history, currentMenu)
-		}
-		SessionSet(sess, "_menu_history", history)
-	}
-
 	isInlineEdit := c.Update != nil && c.Update.CallbackQuery != nil && node.IsInline
 
 	// Resolve the safe, robust chat ID using c.ChatID() instead of raw c.Message.Chat.ID
@@ -508,9 +493,50 @@ func (c *Ctx) SendMenu(menuID string) error {
 	// Save active menu ID to session in-memory
 	SessionSet(sess, "_current_menu", targetID)
 
-	// Load precompiled/cached keyboard and text instantly (Zero lag, zero CPU/allocation overhead)
+	// Load static precompiled keyboard and text as default
 	kb := node.CachedKeyboard
 	text := node.CachedText
+
+	// Resolve user-specific dynamic text if generator is defined
+	if node.DynamicText != nil {
+		textKey := "menu:txt:" + node.ID
+		if node.DynamicKey != nil {
+			textKey = "menu:txt:" + node.DynamicKey(chatID)
+		}
+		if cached, ok := c.Cache().Get(textKey).Go(); ok {
+			if str, okStr := cached.(string); okStr {
+				text = str
+			}
+		} else {
+			text = node.DynamicText(chatID)
+			if node.stretch {
+				text = stretchText(text)
+			}
+			ttl := node.TTL
+			if ttl == 0 {
+				ttl = 5 * time.Minute
+			}
+			c.Cache().Set(textKey, text, ttl).Go()
+		}
+	}
+
+	// Resolve user-specific dynamic keyboard if generator is defined
+	if node.DynamicKeyboard != nil {
+		kbKey := "menu:kb:" + node.ID
+		if node.DynamicKey != nil {
+			kbKey = "menu:kb:" + node.DynamicKey(chatID)
+		}
+		if cached, ok := c.Cache().Get(kbKey).Go(); ok {
+			kb = cached
+		} else {
+			kb = node.DynamicKeyboard(chatID)
+			ttl := node.TTL
+			if ttl == 0 {
+				ttl = 5 * time.Minute
+			}
+			c.Cache().Set(kbKey, kb, ttl).Go()
+		}
+	}
 
 	// 3. Reply → Inline transition: send ONE real message with the actual menu text + ReplyKeyboardRemove
 	if wasReply && isToInline {
@@ -588,4 +614,11 @@ func (b *Bot) IsReplyButton(text string) bool {
 		return b.replyButtons[text]
 	}
 	return val.(map[string]bool)[text]
+}
+
+// InvalidateMenu clears dynamic menu cache entries for a specific chat
+func (c *Ctx) InvalidateMenu(menuID string, chatID int64) {
+	chatIDStr := strconv.FormatInt(chatID, 10)
+	c.Cache().Del("menu:kb:" + menuID + ":" + chatIDStr).Go()
+	c.Cache().Del("menu:txt:" + menuID + ":" + chatIDStr).Go()
 }
