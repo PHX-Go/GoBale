@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,7 +42,7 @@ type Bot struct {
 	Maintenance        bool
 	MaintenanceAdminID int64
 	MaintenanceText    string
-	loggerInstance     *Logger
+	loggerInstance     *GoBaleLogger
 	totalUpdates       uint64
 	i18n               map[string]map[string]string
 	OnError            func(err error, c *Ctx)
@@ -80,7 +81,7 @@ type BotBuilder struct {
 	workers    int
 	gzip       bool
 	bgTasks    int
-	logger     *Logger
+	logger     *GoBaleLogger
 	proxy      string
 	dryRun     bool
 	adminID    int64
@@ -102,13 +103,13 @@ func (b *BotBuilder) DryRun() *BotBuilder {
 }
 
 // Logger registers a custom Logger instance into the bot builder fluidly
-func (b *BotBuilder) Logger(l *Logger) *BotBuilder {
+func (b *BotBuilder) Logger(l *GoBaleLogger) *BotBuilder {
 	b.logger = l
 	return b
 }
 
 // SetLogger replaces the active logger instance of the bot dynamically thread-safely
-func (b *Bot) SetLogger(l *Logger) {
+func (b *Bot) SetLogger(l *GoBaleLogger) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if l != nil {
@@ -192,7 +193,8 @@ func (b *BotBuilder) Go() (*Bot, error) {
 	if b.logger != nil {
 		bot.loggerInstance = b.logger
 	} else {
-		bot.loggerInstance = NewLogger(LevelInfo, "bot.log", true)
+		// Configure structured slog default configuration (LevelInfo, TextHandler)
+		bot.loggerInstance = NewGoBaleLogger(slog.LevelInfo, "bot.log", true, false)
 	}
 
 	if b.bgTasks > 0 {
@@ -212,7 +214,8 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 	bot.OnError = func(err error, c *Ctx) {
 		if bot.loggerInstance != nil {
-			bot.loggerInstance.Log(LevelError, "[Runtime Error] ", "%v", []any{err})
+			// Use standard structured logs to format runtime exceptions
+			bot.Log().Error("[Runtime Error]").Err(err).Go()
 		}
 	}
 
@@ -750,12 +753,12 @@ func (w *WebChain) Go() error {
 		fetchedURL, err := fetchNgrokURL(w.ngrokAPI)
 		if err != nil {
 			if w.run.bot.loggerInstance != nil {
-				w.run.bot.loggerInstance.Log(LevelError, "[Webhook Ngrok Error] ", "failed to auto-resolve ngrok URL: %v", []any{err})
+				w.run.bot.Log().Error("failed to auto-resolve ngrok URL").Err(err).Go()
 			}
 		} else {
 			w.url = fetchedURL
 			if w.run.bot.loggerInstance != nil {
-				w.run.bot.loggerInstance.Log(LevelInfo, "[Webhook Ngrok Info] ", "successfully auto-resolved ngrok URL: %s", []any{w.url})
+				w.run.bot.Log().Info("successfully auto-resolved ngrok URL").Str("url", w.url).Go()
 			}
 		}
 	}
@@ -823,7 +826,7 @@ func (w *WebChain) Go() error {
 		var err error
 		if w.insecure || (w.cert == "" && w.key == "") {
 			if w.run.bot.loggerInstance != nil {
-				w.run.bot.loggerInstance.Log(LevelWarn, "[GoBale Webhook Warn] ", "Webhook is running in INSECURE (HTTP-only) mode. This is strictly recommended for local development or tunnel testing (ngrok) only! Do NOT use this in Production servers.", nil)
+				w.run.bot.Log().Warn("Webhook is running in INSECURE (HTTP-only) mode. Recommended for development only!").Go()
 			}
 			err = server.ListenAndServe()
 		} else {
@@ -1210,8 +1213,9 @@ func (r *RouteChain) Cooldown(d time.Duration, alert string) *RouteChain {
 
 // logErr automatically logs non-nil errors into the central logger instance safely
 func logErr(b *Bot, prefix string, err error) {
-	if err != nil && b.loggerInstance != nil {
-		b.loggerInstance.Log(LevelError, prefix, "%v", []any{err})
+	if err != nil {
+		// Log structural errors utilizing standard error attributes
+		b.Log().Error(prefix).Err(err).Go()
 	}
 }
 

@@ -1,218 +1,263 @@
 package gobale
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
-// LogLevel defines severity tags for logger filters
-type LogLevel int
-
-// Supported logging levels
-const (
-	LevelDebug LogLevel = iota
-	LevelInfo
-	LevelWarn
-	LevelError
-)
-
-// Logger manages central log destinations, visual color outputs, and native automatic log rotation
-type Logger struct {
-	mu        sync.Mutex
-	level     LogLevel
-	file      *os.File
-	toConsole bool
-	path      string
-	maxSize   int64
-	currSize  int64
-	backups   int
+// RotateWriter implements io.Writer with automatic file size-based rotation and backup limits
+type RotateWriter struct {
+	mu       sync.Mutex
+	path     string
+	file     *os.File
+	maxSize  int64
+	currSize int64
+	backups  int
 }
 
-// NewLogger instantiates a thread-safe system logger with native adaptive log rotation defaults
-func NewLogger(level LogLevel, path string, toConsole bool) *Logger {
-	l := &Logger{
-		level:     level,
-		toConsole: toConsole,
-		path:      path,
-		maxSize:   10 * 1024 * 1024, // 10 Megabytes default size limit
-		backups:   3,                // Retain maximum 3 backup files on disk
+// NewRotateWriter instantiates a thread-safe rotating file stream writer
+func NewRotateWriter(path string, maxSize int64, backups int) *RotateWriter {
+	rw := &RotateWriter{
+		path:    path,
+		maxSize: maxSize,
+		backups: backups,
 	}
-	if path != "" {
-		l.openAndSetSize()
-	}
-	return l
+	rw.openAndSetSize()
+	return rw
 }
 
-// openAndSetSize opens the active file stream and reads its current size
-func (l *Logger) openAndSetSize() {
-	// Auto-create parent directory if it does not exist
-	if dir := filepath.Dir(l.path); dir != "" && dir != "." {
+func (rw *RotateWriter) openAndSetSize() {
+	if dir := filepath.Dir(rw.path); dir != "" && dir != "." {
 		_ = os.MkdirAll(dir, 0755)
 	}
-
-	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(rw.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
-		l.file = file
+		rw.file = file
 		if info, err := file.Stat(); err == nil {
-			l.currSize = info.Size()
+			rw.currSize = info.Size()
 		}
 	}
 }
 
-// MaxSize configures custom file rotation size limit in Megabytes fluidly
-func (l *Logger) MaxSize(megabytes int64) *Logger {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.maxSize = megabytes * 1024 * 1024
-	return l
-}
-
-// Backups configures maximum backup files to preserve on system disk fluidly
-func (l *Logger) Backups(n int) *Logger {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if n >= 0 {
-		l.backups = n
+func (rw *RotateWriter) rotate() {
+	if rw.file != nil {
+		_ = rw.file.Close()
+		rw.file = nil
 	}
-	return l
-}
-
-// rotate closes active file, shifts old backups, deletes stale logs, and opens a new stream
-func (l *Logger) rotate() {
-	if l.file != nil {
-		_ = l.file.Close()
-		l.file = nil
-	}
-
-	// Clean active file directly if backups are disabled
-	if l.backups == 0 {
-		_ = os.Remove(l.path)
-		l.openAndSetSize()
+	if rw.backups == 0 {
+		_ = os.Remove(rw.path)
+		rw.openAndSetSize()
 		return
 	}
-
-	// Sequentially shift and rename old backup files (e.g., .2 to .3, .1 to .2)
-	for i := l.backups; i >= 1; i-- {
-		oldPath := fmt.Sprintf("%s.%d", l.path, i)
-		if i == l.backups {
+	for i := rw.backups; i >= 1; i-- {
+		oldPath := fmt.Sprintf("%s.%d", rw.path, i)
+		if i == rw.backups {
 			_ = os.Remove(oldPath)
 			continue
 		}
-		newPath := fmt.Sprintf("%s.%d", l.path, i+1)
+		newPath := fmt.Sprintf("%s.%d", rw.path, i+1)
 		_ = os.Rename(oldPath, newPath)
 	}
-
-	// Rename the active log file to become the first backup .1
-	_ = os.Rename(l.path, l.path+".1")
-
-	// Open a fresh new empty log file stream
-	l.openAndSetSize()
+	_ = os.Rename(rw.path, rw.path+".1")
+	rw.openAndSetSize()
 }
 
-// Log handles final logs formatting, stream printing, and triggers automatic rotation on overflow
-func (l *Logger) Log(level LogLevel, prefix, format string, args []any) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if level < l.level {
-		return
+func (rw *RotateWriter) Write(p []byte) (n int, err error) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	if rw.file == nil {
+		return 0, fmt.Errorf("file not open")
 	}
-	timeStr := time.Now().Format("2006-01-02 15:04:05")
-	msg := fmt.Sprintf(format, args...)
-	var levelStr string
-	var color string
-	switch level {
-	case LevelDebug:
-		levelStr = "DEBUG"
-		color = "\033[36m"
-	case LevelInfo:
-		levelStr = "INFO"
-		color = "\033[32m"
-	case LevelWarn:
-		levelStr = "WARN"
-		color = "\033[33m"
-	case LevelError:
-		levelStr = "ERROR"
-		color = "\033[31m"
-	}
-	if l.file != nil {
-		rawLine := fmt.Sprintf("%s [%s] %s%s\n", timeStr, levelStr, prefix, msg)
-		bytesWritten, err := l.file.WriteString(rawLine)
-		if err == nil {
-			l.currSize += int64(bytesWritten)
-			// Trigger atomic automatic file rotation if size exceeds configured maxSize
-			if l.currSize >= l.maxSize {
-				l.rotate()
-			}
+	n, err = rw.file.Write(p)
+	if err == nil {
+		rw.currSize += int64(n)
+		if rw.currSize >= rw.maxSize {
+			rw.rotate()
 		}
 	}
-	if l.toConsole {
-		fmt.Printf("%s %s[%s]\033[0m %s%s\n", timeStr, color, levelStr, prefix, msg)
+	return n, err
+}
+
+// GoBaleLogger wraps slog.Logger with configurations for dynamic dual-output formats
+type GoBaleLogger struct {
+	slogLogger *slog.Logger
+	rotateW    *RotateWriter
+}
+
+// NewGoBaleLogger configures structured slog handler with rotating files and console outputs
+func NewGoBaleLogger(level slog.Level, path string, toConsole bool, jsonFormat bool) *GoBaleLogger {
+	var writer io.Writer
+	var rotateW *RotateWriter
+
+	if path != "" {
+		rotateW = NewRotateWriter(path, 10*1024*1024, 3)
+		if toConsole {
+			writer = io.MultiWriter(os.Stdout, rotateW)
+		} else {
+			writer = rotateW
+		}
+	} else {
+		writer = os.Stdout
+	}
+
+	opts := &slog.HandlerOptions{
+		Level:     level,
+		AddSource: true,
+	}
+
+	var handler slog.Handler
+	if jsonFormat {
+		handler = slog.NewJSONHandler(writer, opts)
+	} else {
+		handler = slog.NewTextHandler(writer, opts)
+	}
+
+	return &GoBaleLogger{
+		slogLogger: slog.New(handler),
+		rotateW:    rotateW,
 	}
 }
 
-// LogChain handles fluent logging setups ending with a Go terminal
+// LogChain provides a high-performance, fluent structured dot-system API wrapping slog
 type LogChain struct {
-	logger *Logger
-	prefix string
-	level  LogLevel
-	format string
-	args   []any
+	logger *slog.Logger
+	level  slog.Level
+	msg    string
+	attrs  []slog.Attr
+	ctx    context.Context
 }
 
-// Log opens unified LogChain dot system from the Bot context safely with Singleton Instance
+// Log opens fluent structured LogChain from Bot context safely
 func (b *Bot) Log() *LogChain {
-	return &LogChain{logger: b.loggerInstance, prefix: ""}
-}
-
-// Log opens unified LogChain dot system from the Handler context safely with Singleton Instance
-func (c *Ctx) Log() *LogChain {
-	id, _ := c.ChatID()
-	var prefix string
-	if id > 0 {
-		prefix = fmt.Sprintf("[Chat: %d] ", id)
+	var slogL *slog.Logger
+	if b.loggerInstance != nil {
+		slogL = b.loggerInstance.slogLogger
+	} else {
+		slogL = slog.Default()
 	}
 	return &LogChain{
-		logger: c.Bot.loggerInstance,
-		prefix: prefix,
+		logger: slogL,
+		ctx:    context.Background(),
 	}
 }
 
-// Debug registers a debug level stream log
-func (l *LogChain) Debug(format string, args ...any) *LogChain {
-	l.level = LevelDebug
-	l.format = format
-	l.args = args
+// Log opens fluent structured LogChain from Handler context capturing current chatID
+func (c *Ctx) Log() *LogChain {
+	var slogL *slog.Logger
+	if c.Bot.loggerInstance != nil {
+		slogL = c.Bot.loggerInstance.slogLogger
+	} else {
+		slogL = slog.Default()
+	}
+
+	chain := &LogChain{
+		logger: slogL,
+		ctx:    c.ctx,
+	}
+
+	id, _ := c.ChatID()
+	if id > 0 {
+		chain = chain.Int64("chat_id", id)
+	}
+	return chain
+}
+
+// Debug registers debug level and sets main log message
+func (l *LogChain) Debug(msg string) *LogChain {
+	l.level = slog.LevelDebug
+	l.msg = msg
 	return l
 }
 
-// Info registers an info level stream log
-func (l *LogChain) Info(format string, args ...any) *LogChain {
-	l.level = LevelInfo
-	l.format = format
-	l.args = args
+// Info registers info level and sets main log message
+func (l *LogChain) Info(msg string) *LogChain {
+	l.level = slog.LevelInfo
+	l.msg = msg
 	return l
 }
 
-// Warn registers a warn level stream log
-func (l *LogChain) Warn(format string, args ...any) *LogChain {
-	l.level = LevelWarn
-	l.format = format
-	l.args = args
+// Warn registers warn level and sets main log message
+func (l *LogChain) Warn(msg string) *LogChain {
+	l.level = slog.LevelWarn
+	l.msg = msg
 	return l
 }
 
-// Error registers an error level stream log
-func (l *LogChain) Error(format string, args ...any) *LogChain {
-	l.level = LevelError
-	l.format = format
-	l.args = args
+// Error registers error level and sets main log message
+func (l *LogChain) Error(msg string) *LogChain {
+	l.level = slog.LevelError
+	l.msg = msg
 	return l
 }
 
-// Go executes the printing pipeline on stream destinations
+// Str appends a structured string attribute
+func (l *LogChain) Str(key, val string) *LogChain {
+	l.attrs = append(l.attrs, slog.String(key, val))
+	return l
+}
+
+// Int appends a structured integer attribute
+func (l *LogChain) Int(key string, val int) *LogChain {
+	l.attrs = append(l.attrs, slog.Int(key, val))
+	return l
+}
+
+// Int64 appends a structured int64 attribute
+func (l *LogChain) Int64(key string, val int64) *LogChain {
+	l.attrs = append(l.attrs, slog.Int64(key, val))
+	return l
+}
+
+// Bool appends a structured boolean attribute
+func (l *LogChain) Bool(key string, val bool) *LogChain {
+	l.attrs = append(l.attrs, slog.Bool(key, val))
+	return l
+}
+
+// Float appends a structured float64 attribute
+func (l *LogChain) Float(key string, val float64) *LogChain {
+	l.attrs = append(l.attrs, slog.Float64(key, val))
+	return l
+}
+
+// Any appends any dynamic interface attribute
+func (l *LogChain) Any(key string, val any) *LogChain {
+	l.attrs = append(l.attrs, slog.Any(key, val))
+	return l
+}
+
+// Err appends a standard structured error attribute if non-nil
+func (l *LogChain) Err(err error) *LogChain {
+	if err != nil {
+		l.attrs = append(l.attrs, slog.Any("error", err))
+	}
+	return l
+}
+
+// Context registers custom execution context
+func (l *LogChain) Context(ctx context.Context) *LogChain {
+	if ctx != nil {
+		l.ctx = ctx
+	}
+	return l
+}
+
+// Group appends grouped nested attributes
+func (l *LogChain) Group(name string, attrs ...slog.Attr) *LogChain {
+	args := make([]any, len(attrs))
+	for i, attr := range attrs {
+		args[i] = attr
+	}
+	l.attrs = append(l.attrs, slog.Group(name, args...))
+	return l
+}
+
+// Go executes the structured logging pipeline using optimized LogAttrs
 func (l *LogChain) Go() {
-	l.logger.Log(l.level, l.prefix, l.format, l.args)
+	l.logger.LogAttrs(l.ctx, l.level, l.msg, l.attrs...)
 }

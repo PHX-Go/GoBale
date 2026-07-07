@@ -883,7 +883,12 @@ func AntiSpamProfile(banOnMatch bool, bannedKeywords []string) Handler {
 				}
 			}
 			if matched {
-				c.Bot.Log().Warn("Detected spam profile on join: UserID=%d, Keyword=%q", user.ID, matchedKeyword).Go()
+				// Log structural profiles variables sequentially
+				c.Bot.Log().Warn("Detected spam profile on join").
+					Int64("user_id", user.ID).
+					Str("keyword", matchedKeyword).
+					Go()
+
 				if banOnMatch {
 					_ = c.Chat().Ban(user.ID).Go()
 					_, _ = c.Send().
@@ -931,7 +936,11 @@ func AntiSelfBot(minInterval time.Duration) Handler {
 						_ = c.Chat().Ban(userID).Go()
 						_ = c.DB().Del(joinKey).Go()
 
-						c.Bot.Log().Warn("Self-bot detected! User %d posted within %v of joining. Banned.", userID, elapsed).Go()
+						// Log automated self-bot properties sequentially
+						c.Bot.Log().Warn("Self-bot detected! User posted within minInterval of joining. Banned.").
+							Int64("user_id", userID).
+							Any("elapsed", elapsed).
+							Go()
 						c.Abort()
 						return
 					}
