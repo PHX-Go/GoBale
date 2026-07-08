@@ -1900,3 +1900,67 @@ func (r *RouteChain) Locs(locs ...ChatLoc) *RouteChain {
 	})
 	return r
 }
+
+// ReplyGuard filters and deletes group replies when the reply lock is enabled in settings
+func ReplyGuard(warnDuration time.Duration, customMsg ...string) Handler {
+	// Set default shamsi fallback warning message
+	defaultWarn := "⚠️ کاربر عزیز {name}، ریپلای در این گروه قفل شده است."
+	if len(customMsg) > 0 && customMsg[0] != "" {
+		defaultWarn = customMsg[0]
+	}
+
+	return func(c *Ctx) {
+		// Skip messages that are not sent inside group chats
+		if !c.IsGroup() {
+			c.Next()
+			return
+		}
+
+		// Skip messages that are not replies
+		if c.Message == nil || c.Message.ReplyToMessage == nil {
+			c.Next()
+			return
+		}
+
+		// Bypass checks for group administrators
+		isAdmin, _ := c.Chat().IsAdmin().Go()
+		if isAdmin {
+			c.Next()
+			return
+		}
+
+		// Bypass checks for the global bot owner
+		if c.IsOwner() {
+			c.Next()
+			return
+		}
+
+		// Fetch current group chat ID
+		chatID, err := c.ChatID()
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		// Retrieve the reply lock toggle value from the GOB database
+		dbKey := fmt.Sprintf("group_config_%d_lock_reply", chatID)
+		val, ok := c.DB().Get(dbKey).Go()
+
+		// Delete the reply and send temporary alert if lock is active
+		if ok {
+			if active, okBool := val.(bool); okBool && active {
+				_ = c.Del().Go()
+
+				// Only send warning alerts if warnDuration is actively specified
+				if warnDuration > 0 {
+					warnText := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
+					_, _ = c.Send().Text(warnText).Temp(warnDuration).Go()
+				}
+				c.Abort()
+				return
+			}
+		}
+
+		c.Next()
+	}
+}
