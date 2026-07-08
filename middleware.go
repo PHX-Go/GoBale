@@ -17,6 +17,9 @@ import (
 // Dynamic thread-safe and lock-free cache to store banned words per group chat ID
 var profanityCache atomic.Value
 
+// Compile regex pattern to identify standard Telegram/Bale @username mentions
+var rxMentionPattern = regexp.MustCompile(`(?i)@([a-zA-Z0-9_]{5,32})`)
+
 // tokenBucket manages request limits for rate limiting thread-safely
 type tokenBucket struct {
 	mu         sync.Mutex
@@ -1958,6 +1961,88 @@ func ReplyGuard(warnDuration time.Duration, customMsg ...string) Handler {
 				}
 				c.Abort()
 				return
+			}
+		}
+
+		c.Next()
+	}
+}
+
+// UsernameGuard filters and deletes group messages containing physical @username mentions
+func UsernameGuard(warnDuration time.Duration, customMsg ...string) Handler {
+	// Set default shamsi fallback warning message
+	defaultWarn := "⚠️ کاربر عزیز {name}، منشن کردن دیگران در این گروه مجاز نیست!"
+	if len(customMsg) > 0 && customMsg[0] != "" {
+		defaultWarn = customMsg[0]
+	}
+
+	return func(c *Ctx) {
+		// Skip messages that are not sent inside group chats
+		if !c.IsGroup() {
+			c.Next()
+			return
+		}
+
+		// Skip updates that do not represent a valid message
+		if c.Message == nil {
+			c.Next()
+			return
+		}
+
+		// Bypass checks for group administrators
+		isAdmin, _ := c.Chat().IsAdmin().Go()
+		if isAdmin {
+			c.Next()
+			return
+		}
+
+		// Bypass checks for the global bot owner
+		if c.IsOwner() {
+			c.Next()
+			return
+		}
+
+		// Fetch current group chat ID
+		chatID, err := c.ChatID()
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		// Retrieve the username lock toggle value from the GOB database
+		dbKey := fmt.Sprintf("group_config_%d_lock_username", chatID)
+		val, ok := c.DB().Get(dbKey).Go()
+
+		// Apply restrictions if the username lock is active
+		if ok {
+			if active, okBool := val.(bool); okBool && active {
+				hasMention := false
+
+				// Check standard text and media captions for @ symbol triggers
+				textToScan := c.Message.Text
+				if textToScan == "" && c.Message.Caption != "" {
+					textToScan = c.Message.Caption
+				}
+
+				// Match patterns strictly against standard Telegram/Bale username mentions
+				if textToScan != "" {
+					if rxMentionPattern.MatchString(textToScan) {
+						hasMention = true
+					}
+				}
+
+				// Delete the message and alert the user if a mention is detected
+				if hasMention {
+					_ = c.Del().Go()
+
+					// Only send warning alerts if warnDuration is actively specified
+					if warnDuration > 0 {
+						warnText := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
+						_, _ = c.Send().Text(warnText).Temp(warnDuration).Go()
+					}
+					c.Abort()
+					return
+				}
 			}
 		}
 
