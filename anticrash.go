@@ -269,6 +269,7 @@ func (l *LengthRule) Detect(text string) DetectionResult {
 type HomoglyphRule struct {
 	protectedWords []string
 	confusablesMap map[rune]string
+	blockMixed     bool
 }
 
 func (h *HomoglyphRule) Name() string { return "HomoglyphPhishingShield" }
@@ -312,15 +313,17 @@ func (h *HomoglyphRule) Detect(text string) DetectionResult {
 		}
 
 		// B. Mixed-script detection (e.g., Latin mixed with Cyrillic inside one token)
-		mixedScripts := detectMixedScript(decoded)
-		if len(mixedScripts) > 1 {
-			reasons = append(reasons, fmt.Sprintf("Mixed-script token detected: '%s' (scripts: %s)", decoded, strings.Join(mixedScripts, ", ")))
-			if severity < 8 {
-				severity = 8
-			}
-			for _, r := range decoded {
-				if getScript(r) != "Latin" && getScript(r) != "Common" {
-					suspicious = append(suspicious, r)
+		if h.blockMixed {
+			mixedScripts := detectMixedScript(decoded)
+			if len(mixedScripts) > 1 {
+				reasons = append(reasons, fmt.Sprintf("Mixed-script token detected: '%s' (scripts: %s)", decoded, strings.Join(mixedScripts, ", ")))
+				if severity < 8 {
+					severity = 8
+				}
+				for _, r := range decoded {
+					if getScript(r) != "Latin" && getScript(r) != "Common" {
+						suspicious = append(suspicious, r)
+					}
 				}
 			}
 		}
@@ -376,6 +379,7 @@ type AntiCrashChain struct {
 	maxRepeat      int
 	maxLen         int
 	useHomo        bool
+	blockMixed     bool
 	protectedWords []string
 	warnEngine     *WarnEngine
 	onViolation    func(c *Ctx, results []DetectionResult)
@@ -384,12 +388,19 @@ type AntiCrashChain struct {
 // AntiCrash opens the fluent security configuration chain from Bot context
 func (b *Bot) AntiCrash() *AntiCrashChain {
 	return &AntiCrashChain{
-		bot:       b,
-		maxZalgo:  3,
-		maxRepeat: 5,
-		maxLen:    4096,
-		useHomo:   true,
+		bot:        b,
+		maxZalgo:   3,
+		maxRepeat:  5,
+		maxLen:     4096,
+		useHomo:    true,
+		blockMixed: false,
 	}
+}
+
+// BlockMixed configures whether to actively reject mixed-script tokens/words (disabled by default)
+func (a *AntiCrashChain) BlockMixed(v bool) *AntiCrashChain {
+	a.blockMixed = v
+	return a
 }
 
 // ZalgoLimit configures max allowed consecutive combining marks
@@ -467,6 +478,7 @@ func (a *AntiCrashChain) Go() Handler {
 	if a.useHomo {
 		engine.rules = append(engine.rules, &HomoglyphRule{
 			protectedWords: finalProtected,
+			blockMixed:     a.blockMixed,
 			confusablesMap: map[rune]string{
 				// Cyrillic look-alikes
 				'а': "a", 'А': "a", 'е': "e", 'Е': "e", 'о': "o", 'О': "o",
@@ -790,9 +802,18 @@ func isCombiningMark(r rune) bool {
 	return false
 }
 
+// func isZeroWidth(r rune) bool {
+// 	switch r {
+// 	case '\u200B', '\u200C', '\u200D', '\uFEFF', '\u061C', '\u200E', '\u200F', '\u202A', '\u202B', '\u202C', '\u202D', '\u202E':
+// 		return true
+// 	}
+// 	return false
+// }
+
+// isZeroWidth detects invisible Unicode control characters while excluding standard Persian ZWNJ and ZWJ
 func isZeroWidth(r rune) bool {
 	switch r {
-	case '\u200B', '\u200C', '\u200D', '\uFEFF', '\u061C', '\u200E', '\u200F', '\u202A', '\u202B', '\u202C', '\u202D', '\u202E':
+	case '\u200B', '\uFEFF', '\u061C', '\u200E', '\u200F', '\u202A', '\u202B', '\u202C', '\u202D', '\u202E':
 		return true
 	}
 	return false
