@@ -578,7 +578,17 @@ func (l *LoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	resp, err := l.proxied.RoundTrip(req)
 	elapsed := time.Since(start)
 
+	// Log HTTP transaction errors structurally inside the shamsi ladder
 	if err != nil {
+		if l.bot.loggerInstance != nil && !l.bot.loggerInstance.SuppressHTTP {
+			l.bot.Log().Error("خطا در تراکنش شبکه (HTTP Transport Error)").
+				Str("url", req.URL.String()).
+				Str("method", req.Method).
+				Str("request_body", string(reqBody)).
+				Err(err).
+				Any("latency", elapsed).
+				Go()
+		}
 		return nil, err
 	}
 
@@ -597,19 +607,8 @@ func (l *LoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		if l.bot.loggerInstance.SuppressHTTP {
 			return resp, nil
 		}
-		if isGetUpdates {
-			if l.bot.loggerInstance.SuppressGetUpdates {
-				return resp, nil
-			}
-			if l.bot.loggerInstance.SuppressEmptyUpdates {
-				// Parse response body to check if result slice is empty [1]
-				var apiResponse struct {
-					Result []any `json:"result"`
-				}
-				if json.Unmarshal(respBody, &apiResponse) == nil && len(apiResponse.Result) == 0 {
-					return resp, nil // Suppress empty polling updates silently [1]
-				}
-			}
+		if isGetUpdates && l.bot.loggerInstance.SuppressGetUpdates {
+			return resp, nil
 		}
 	}
 
