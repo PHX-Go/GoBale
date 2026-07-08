@@ -1,13 +1,21 @@
 package gobale
 
 import (
+	"context"
+	"encoding/gob"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// Dynamic thread-safe and lock-free cache to store banned words per group chat ID
+var profanityCache atomic.Value
 
 // tokenBucket manages request limits for rate limiting thread-safely
 type tokenBucket struct {
@@ -563,42 +571,689 @@ func AntiForward(engine *WarnEngine, warnDuration time.Duration, customMsg ...st
 	}
 }
 
-// AntiProfanity automatically deletes messages containing banned words, supporting optional WarnEngine
-func AntiProfanity(engine *WarnEngine, warnDuration time.Duration, bannedWords []string, customMsg ...string) Handler {
+// AntiProfanity deletes messages containing banned words dynamically loaded from the atomic cache
+func AntiProfanity(engine *WarnEngine, warnDuration time.Duration, customMsg ...string) Handler {
 	defaultWarn := "⚠️ کاربر عزیز {name}، ارسال کلمات نامناسب در این گروه مجاز نیست!"
 	if len(customMsg) > 0 && customMsg[0] != "" {
 		defaultWarn = customMsg[0]
 	}
 
 	return func(c *Ctx) {
-		if c.Message != nil && c.Message.Text != "" {
-			c.Bot.mu.RLock()
-			isOwner := c.Message.From.ID == c.Bot.MaintenanceAdminID
-			c.Bot.mu.RUnlock()
-			isAdmin, _ := c.Chat().IsAdmin().Go()
-			if isOwner || isAdmin {
-				c.Next()
-				return
-			}
-			text := strings.ToLower(c.Message.Text)
-			for _, word := range bannedWords {
-				if strings.Contains(text, strings.ToLower(word)) {
-					_ = c.Del().Go()
+		// Bypass and ignore all callback queries to prevent scanning bot's own menus
+		if c.Update != nil && c.Update.CallbackQuery != nil {
+			c.Next()
+			return
+		}
 
-					if engine != nil {
-						_ = engine.Warn(c, "استفاده از کلمات نامناسب و بی‌ادبی")
-					} else {
-						warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
-						_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
-					}
+		if c.Message == nil || c.Message.Text == "" {
+			c.Next()
+			return
+		}
 
-					c.Abort()
-					return
-				}
+		chatID, err := c.ChatID()
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		// Bypass global administrators and bot owner
+		c.Bot.mu.RLock()
+		isOwner := c.Message.From.ID == c.Bot.MaintenanceAdminID
+		c.Bot.mu.RUnlock()
+		isAdmin, _ := c.Chat().IsAdmin().Go()
+		if isOwner || isAdmin {
+			c.Next()
+			return
+		}
+
+		// Retrieve banned words lock-free from atomic cache
+		bannedWords := GetBannedWords(c, chatID)
+		if len(bannedWords) == 0 {
+			c.Next()
+			return
+		}
+
+		text := strings.ToLower(c.Message.Text)
+		matched := false
+		matchedWord := ""
+
+		for _, word := range bannedWords {
+			if strings.Contains(text, strings.ToLower(word)) {
+				matched = true
+				matchedWord = word
+				break
 			}
+		}
+
+		if matched {
+			_ = c.Del().Go()
+
+			if engine != nil {
+				_ = engine.Warn(c, fmt.Sprintf("استفاده از کلمه ممنوعه: %s", matchedWord))
+			} else {
+				warn := strings.ReplaceAll(defaultWarn, "{name}", c.Message.From.Mention())
+				_, _ = c.Send().Text(warn).Temp(warnDuration).Go()
+			}
+			c.Abort()
+			return
 		}
 		c.Next()
 	}
+}
+
+// localAsInt64 converts interface values to int64 safely inside middleware scope
+func localAsInt64(val any) (int64, bool) {
+	switch v := val.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	}
+	return 0, false
+}
+
+// GetBannedWords returns the isolated banned words list for a chat, loading from group GOB DB on demand
+func GetBannedWords(c *Ctx, chatID int64) []string {
+	rawMap := profanityCache.Load()
+	var m map[int64][]string
+	if rawMap == nil {
+		m = make(map[int64][]string)
+	} else {
+		m = rawMap.(map[int64][]string)
+	}
+
+	if words, ok := m[chatID]; ok {
+		return words
+	}
+
+	// Read directly from isolated group file: data/Bad Words/<id>.gob
+	words := readGroupBannedWords(chatID)
+
+	// Perform safe atomic Copy-on-Write swap to prevent concurrent map write races
+	newMap := make(map[int64][]string)
+	for k, v := range m {
+		newMap[k] = v
+	}
+	newMap[chatID] = words
+	profanityCache.Store(newMap)
+
+	return words
+}
+
+// UpdateBannedWords updates GOB database and performs atomic lock-free cache reload
+func UpdateBannedWords(c *Ctx, chatID int64, words []string) {
+	// Write directly and atomically to data/Bad Words/<id>.gob
+	_ = writeGroupBannedWords(chatID, words)
+
+	rawMap := profanityCache.Load()
+	var m map[int64][]string
+	if rawMap == nil {
+		m = make(map[int64][]string)
+	} else {
+		m = rawMap.(map[int64][]string)
+	}
+
+	// Swap atomic cache with freshly allocated map structure
+	newMap := make(map[int64][]string)
+	for k, v := range m {
+		newMap[k] = v
+	}
+	newMap[chatID] = words
+	profanityCache.Store(newMap)
+}
+
+const wordsPerPage = 10
+
+// RenderWordsPage formats the words list into a clean report with nav buttons
+func RenderWordsPage(c *Ctx, chatID int64, page int) (string, any) {
+	words := GetBannedWords(c, chatID)
+	totalPages := (len(words) + wordsPerPage - 1) / wordsPerPage
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * wordsPerPage
+	end := start + wordsPerPage
+	if end > len(words) {
+		end = len(words)
+	}
+
+	// Fetch target chat metadata dynamically using the native Chat Chain APIs
+	chatTitle := "ناشناخته"
+	chatInfo, err := c.Bot.Chat(chatID).Info().Go()
+	if err == nil && chatInfo != nil {
+		if chatInfo.Title != "" {
+			chatTitle = chatInfo.Title
+		} else if chatInfo.FirstName != "" {
+			chatTitle = chatInfo.FirstName
+		}
+	}
+
+	// Construct clean, formatted Persian header utilizing standard Text builder
+	report := Text().
+		Line("🛡️ *لیست کلمات ممنوعه* 📖 *صفحه:* *{page} از {total}*").
+		Line("📢 *گروه:* {title}").
+		Line("🆔 *شناسه:* `{chat_id}`").
+		Line().
+		Bind("title", chatTitle).
+		Bind("chat_id", chatID).
+		Bind("page", page+1).
+		Bind("total", totalPages)
+
+	// Display empty or filled list state formally
+	if len(words) == 0 {
+		report.Line("⚠️ لیست کلمات ممنوعه این گروه در حال حاضر خالی است.")
+	} else {
+		pageWords := words[start:end]
+		for i, w := range pageWords {
+			report.Line(fmt.Sprintf("  %d) `%s`", start+i+1, w))
+		}
+	}
+
+	markupBuilder := InlineMarkup()
+	var row []any
+
+	// Calculate looping prev and next pages
+	prevPage := (page - 1 + totalPages) % totalPages
+	nextPage := (page + 1) % totalPages
+
+	// Append right navigation arrow if total pages exceed one
+	if totalPages > 1 {
+		row = append(row, Btn("▶️").Callback(fmt.Sprintf("_profanity_page:%d", nextPage)))
+	}
+
+	// Symmetrical action buttons: Delete, Edit, Add
+	row = append(row, Btn("🗑").Callback(fmt.Sprintf("_profanity_act:delete:%d", page)))
+	row = append(row, Btn("✏️").Callback(fmt.Sprintf("_profanity_act:edit:%d", page)))
+	row = append(row, Btn("🆕").Callback(fmt.Sprintf("_profanity_act:add:%d", page)))
+
+	// Append left navigation arrow if total pages exceed one
+	if totalPages > 1 {
+		row = append(row, Btn("◀️").Callback(fmt.Sprintf("_profanity_page:%d", prevPage)))
+	}
+
+	markupBuilder.Row(row...)
+
+	// Append a standalone close button row at the bottom of the inline keyboard
+	markupBuilder.Row(Btn("❌ بستن منو").Callback("_profanity_act:close:0"))
+
+	return report.Go(), markupBuilder.Build()
+}
+
+// BadWordsCommand handles the unified /badwords remote and local command
+func BadWordsCommand() Handler {
+	return func(c *Ctx) {
+		args, ok := c.Arg().([]string)
+		var targetID int64
+		var err error
+
+		if ok && len(args) > 0 {
+			targetID, err = strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				_, _ = c.Send().Text("❌ شناسه گروه وارد شده نامعتبر است.").Go()
+				return
+			}
+		} else {
+			targetID, err = c.ChatID()
+			if err != nil {
+				return
+			}
+		}
+
+		// Delete the user command trigger in groups to prevent clutter
+		if !c.IsPrivate() {
+			_ = c.Del().Go()
+		}
+
+		sess := c.Session()
+
+		// Delete any previously left hanging menu to maintain a clean chat
+		oldIDVal, errOld := sess.Data("menu_msg_id").Go()
+		if errOld == nil && oldIDVal != nil {
+			if oldID, okInt := localAsInt64(oldIDVal); okInt && oldID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    targetID,
+					"message_id": oldID,
+				}, nil)
+			}
+		}
+
+		// Store target chat target inside the user session memory
+		_, _ = sess.Data("managed_chat_id", targetID).Go()
+
+		text, markup := RenderWordsPage(c, targetID, 0)
+		msg, errSend := c.Send().Text(text).Markup(markup).Markdown().Go()
+		if errSend == nil && msg != nil {
+			// Save the new menu message ID to the session
+			_, _ = sess.Data("menu_msg_id", msg.MessageID).Go()
+		}
+	}
+}
+
+// WordsCommand handles the /words command to display the textual pagination list
+func WordsCommand() Handler {
+	return func(c *Ctx) {
+		chatID, _ := c.ChatID()
+		text, markup := RenderWordsPage(c, chatID, 0)
+
+		send := c.Send().Text(text).Markdown()
+		if markup != nil {
+			send = send.Markup(markup)
+		}
+		_, _ = send.Go()
+	}
+}
+
+// WordsCallback handles interactive transition clicks for looping page arrows
+func WordsCallback() Handler {
+	return func(c *Ctx) {
+		var page int
+		_ = c.ScanCallbackArgs(&page)
+
+		sess := c.Session()
+		targetChatVal, _ := sess.Data("managed_chat_id").Go()
+		targetChatID, _ := localAsInt64(targetChatVal)
+		if targetChatID == 0 {
+			targetChatID, _ = c.ChatID()
+		}
+
+		text, markup := RenderWordsPage(c, targetChatID, page)
+		_, _ = c.Edit().Text(text).Markup(markup).Markdown().Go()
+		_ = c.Answer().Go()
+	}
+}
+
+// BadWordsActionCallback routes emoji button clicks to their corresponding FSM states with full resource cleanup
+func BadWordsActionCallback() Handler {
+	return func(c *Ctx) {
+		var action string
+		var page int
+		_ = c.ScanCallbackArgs(&action, &page)
+
+		sess := c.Session()
+		_, _ = sess.Data("profanity_page", page).Go()
+
+		// Capture the exact current interaction chat ID for safe GUI deletions
+		chatID, errChat := c.ChatID()
+		if errChat != nil {
+			return
+		}
+
+		_ = c.Answer().Go()
+
+		// Clean up any previously remaining prompt messages directly from the active chat
+		if promptVal, errPrompt := sess.Data("prompt_msg_id").Go(); errPrompt == nil && promptVal != nil {
+			if promptID, okInt := localAsInt64(promptVal); okInt && promptID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": promptID,
+				}, nil)
+			}
+			_, _ = sess.Data("prompt_msg_id", 0).Go()
+		}
+
+		switch action {
+		case "add":
+			_, _ = sess.State("wait_add_word").Go()
+			msg, _ := c.Send().Text("🆕 لطفاً کلمه‌ای که می‌خواهید به لیست ممنوعه‌ها اضافه کنید را ارسال کنید:").Go()
+			if msg != nil {
+				_, _ = sess.Data("prompt_msg_id", msg.MessageID).Go()
+			}
+		case "edit":
+			_, _ = sess.State("wait_edit_word").Go()
+			msg, _ := c.Send().Text("✏️ لطفاً برای ویرایش، اطلاعات را به این فرم ارسال کنید:\n`[شماره]: [کلمه_جدید]`\nمثال: `12: سلام`").Markdown().Go()
+			if msg != nil {
+				_, _ = sess.Data("prompt_msg_id", msg.MessageID).Go()
+			}
+		case "delete":
+			_, _ = sess.State("wait_delete_word").Go()
+			msg, _ := c.Send().Text("🗑 لطفاً شماره ردیف کلمه‌ای که می‌خواهید حذف شود را ارسال کنید:").Go()
+			if msg != nil {
+				_, _ = sess.Data("prompt_msg_id", msg.MessageID).Go()
+			}
+		case "close":
+			// Delete any remaining prompt instruction message from the active chat
+			if promptVal, errPrompt := sess.Data("prompt_msg_id").Go(); errPrompt == nil && promptVal != nil {
+				if promptID, okInt := localAsInt64(promptVal); okInt && promptID > 0 {
+					_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": promptID,
+					}, nil)
+				}
+			}
+
+			// Delete the active menu message from the group chat
+			_ = c.Del().Go()
+
+			// Fully reset all active FSM states and session metadata
+			_, _ = sess.State("").Go()
+			_, _ = sess.Data("menu_msg_id", 0).Go()
+			_, _ = sess.Data("prompt_msg_id", 0).Go()
+			_, _ = sess.Data("profanity_page", 0).Go()
+			_, _ = sess.Data("active_admin_id", 0).Go()
+
+			// Send a temporary self-destroying close notification to keep chat clean
+			_, _ = c.Send().Text("🔒 منو با موفقیت بسته شد.").Temp(5 * time.Second).Go()
+		}
+	}
+}
+
+// AddWordState handles wait_add_word and keeps user in state on validation failure
+func AddWordState() Handler {
+	return func(c *Ctx) {
+		sess := c.Session()
+
+		// Bypass and ignore messages sent by other standard group members silently
+		activeAdminVal, _ := sess.Data("active_admin_id").Go()
+		activeAdminID, _ := localAsInt64(activeAdminVal)
+		if activeAdminID > 0 && c.SenderID() != activeAdminID {
+			c.Next()
+			return
+		}
+
+		word := strings.TrimSpace(c.Text())
+
+		// Delete the user's input message immediately to prevent group chat clutter
+		_ = c.Del().Go()
+
+		// Capture the exact current interaction chat ID for safe GUI deletions
+		chatID, _ := c.ChatID()
+
+		targetChatVal, _ := sess.Data("managed_chat_id").Go()
+		targetChatID, _ := localAsInt64(targetChatVal)
+		if targetChatID == 0 {
+			targetChatID = chatID
+		}
+
+		// Keep active state if word is empty
+		if word == "" {
+			return
+		}
+
+		words := GetBannedWords(c, targetChatID)
+
+		// Prevent duplicate entries - keeps the active state on validation failure
+		for _, w := range words {
+			if strings.EqualFold(w, word) {
+				_, _ = c.Send().Text("⚠️ این کلمه قبلاً در لیست ممنوعه‌ها ثبت شده است. لطفاً کلمه دیگری ارسال کنید:").Temp(5 * time.Second).Go()
+				return
+			}
+		}
+
+		// Clear interactive state only after input validation succeeds
+		_, _ = sess.State("").Go()
+		_, _ = sess.Data("active_admin_id", 0).Go()
+
+		// Delete any remaining prompt instruction messages from the active chat
+		if promptVal, errPrompt := sess.Data("prompt_msg_id").Go(); errPrompt == nil && promptVal != nil {
+			if promptID, okInt := localAsInt64(promptVal); okInt && promptID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": promptID,
+				}, nil)
+			}
+			_, _ = sess.Data("prompt_msg_id", 0).Go()
+		}
+
+		words = append(words, word)
+		UpdateBannedWords(c, targetChatID, words)
+
+		// Delete the old menu message from the active chat
+		oldIDVal, errOld := sess.Data("menu_msg_id").Go()
+		if errOld == nil && oldIDVal != nil {
+			if oldID, okInt := localAsInt64(oldIDVal); okInt && oldID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": oldID,
+				}, nil)
+			}
+		}
+
+		pageVal, _ := sess.Data("profanity_page").Go()
+		page, _ := pageVal.(int)
+		text, markup := RenderWordsPage(c, targetChatID, page)
+
+		// Send success status which self-destructs after 5 seconds
+		_, _ = c.Send().Text(fmt.Sprintf("✅ کلمه `%s` با موفقیت به لیست اضافه شد.", word)).Markdown().Temp(5 * time.Second).Go()
+
+		// Send the new menu and save its ID to the session
+		msg, errSend := c.Send().Text(text).Markup(markup).Markdown().Go()
+		if errSend == nil && msg != nil {
+			_, _ = sess.Data("menu_msg_id", msg.MessageID).Go()
+		}
+	}
+}
+
+// EditWordState handles wait_edit_word and keeps user in state on validation failure
+func EditWordState() Handler {
+	return func(c *Ctx) {
+		sess := c.Session()
+
+		// Bypass and ignore messages sent by other standard group members silently
+		activeAdminVal, _ := sess.Data("active_admin_id").Go()
+		activeAdminID, _ := localAsInt64(activeAdminVal)
+		if activeAdminID > 0 && c.SenderID() != activeAdminID {
+			c.Next()
+			return
+		}
+
+		input := strings.TrimSpace(c.Text())
+
+		// Delete the user's input message immediately to prevent group chat clutter
+		_ = c.Del().Go()
+
+		// Capture the exact current interaction chat ID for safe GUI deletions
+		chatID, _ := c.ChatID()
+
+		targetChatVal, _ := sess.Data("managed_chat_id").Go()
+		targetChatID, _ := localAsInt64(targetChatVal)
+		if targetChatID == 0 {
+			targetChatID = chatID
+		}
+
+		parts := strings.SplitN(input, ":", 2)
+		if len(parts) < 2 {
+			_, _ = c.Send().Text("⚠️ فرمت ورودی نامعتبر است! باید به این صورت ارسال کنید:\n`[شماره]: [کلمه_جدید]`").Temp(5 * time.Second).Go()
+			return
+		}
+
+		numStr := strings.TrimSpace(parts[0])
+		newWord := strings.TrimSpace(parts[1])
+
+		num, err := strconv.Atoi(numStr)
+		if err != nil || num <= 0 || newWord == "" {
+			_, _ = c.Send().Text("❌ قالب ورودی یا شماره وارد شده معتبر نیست. لطفاً مجدداً تلاش کنید:").Temp(5 * time.Second).Go()
+			return
+		}
+
+		words := GetBannedWords(c, targetChatID)
+		idx := num - 1
+
+		if idx < 0 || idx >= len(words) {
+			_, _ = c.Send().Text("❌ شماره ردیف وارد شده در لیست وجود ندارد. لطفاً شماره معتبر وارد کنید:").Temp(5 * time.Second).Go()
+			return
+		}
+
+		// Clear interactive state only after input validation succeeds
+		_, _ = sess.State("").Go()
+		_, _ = sess.Data("active_admin_id", 0).Go()
+
+		// Delete any remaining prompt instruction messages from the active chat
+		if promptVal, errPrompt := sess.Data("prompt_msg_id").Go(); errPrompt == nil && promptVal != nil {
+			if promptID, okInt := localAsInt64(promptVal); okInt && promptID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": promptID,
+				}, nil)
+			}
+			_, _ = sess.Data("prompt_msg_id", 0).Go()
+		}
+
+		// Delete the old menu message from the active chat
+		oldIDVal, errOld := sess.Data("menu_msg_id").Go()
+		if errOld == nil && oldIDVal != nil {
+			if oldID, okInt := localAsInt64(oldIDVal); okInt && oldID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": oldID,
+				}, nil)
+			}
+		}
+
+		oldWord := words[idx]
+		words[idx] = newWord
+		UpdateBannedWords(c, targetChatID, words)
+
+		pageVal, _ := sess.Data("profanity_page").Go()
+		page, _ := pageVal.(int)
+		text, markup := RenderWordsPage(c, targetChatID, page)
+
+		// Send success status which self-destructs after 5 seconds
+		_, _ = c.Send().Text(fmt.Sprintf("📝 کلمه `%s` با کلمه جدید `%s` در ردیف %d با موفقیت ویرایش شد.", oldWord, newWord, num)).Markdown().Temp(5 * time.Second).Go()
+
+		// Send the new menu and save its ID to the session
+		msg, errSend := c.Send().Text(text).Markup(markup).Markdown().Go()
+		if errSend == nil && msg != nil {
+			_, _ = sess.Data("menu_msg_id", msg.MessageID).Go()
+		}
+	}
+}
+
+// DeleteWordState handles wait_delete_word and keeps user in state on validation failure
+func DeleteWordState() Handler {
+	return func(c *Ctx) {
+		sess := c.Session()
+
+		// Bypass and ignore messages sent by other standard group members silently
+		activeAdminVal, _ := sess.Data("active_admin_id").Go()
+		activeAdminID, _ := localAsInt64(activeAdminVal)
+		if activeAdminID > 0 && c.SenderID() != activeAdminID {
+			c.Next()
+			return
+		}
+
+		input := strings.TrimSpace(c.Text())
+
+		// Delete the user's input message immediately to prevent group chat clutter
+		_ = c.Del().Go()
+
+		// Capture the exact current interaction chat ID for safe GUI deletions
+		chatID, _ := c.ChatID()
+
+		targetChatVal, _ := sess.Data("managed_chat_id").Go()
+		targetChatID, _ := localAsInt64(targetChatVal)
+		if targetChatID == 0 {
+			targetChatID = chatID
+		}
+
+		num, err := strconv.Atoi(input)
+		if err != nil || num <= 0 {
+			_, _ = c.Send().Text("❌ شماره ردیف وارد شده معتبر نیست. لطفاً مجدداً شماره معتبر بفرستید:").Temp(5 * time.Second).Go()
+			return
+		}
+
+		words := GetBannedWords(c, targetChatID)
+		idx := num - 1
+
+		if idx < 0 || idx >= len(words) {
+			_, _ = c.Send().Text("❌ شماره ردیف در لیست وجود ندارد. لطفاً شماره ردیف معتبر وارد کنید:").Temp(5 * time.Second).Go()
+			return
+		}
+
+		// Clear interactive state only after input validation succeeds
+		_, _ = sess.State("").Go()
+		_, _ = sess.Data("active_admin_id", 0).Go()
+
+		// Delete any remaining prompt instruction messages from the active chat
+		if promptVal, errPrompt := sess.Data("prompt_msg_id").Go(); errPrompt == nil && promptVal != nil {
+			if promptID, okInt := localAsInt64(promptVal); okInt && promptID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": promptID,
+				}, nil)
+			}
+			_, _ = sess.Data("prompt_msg_id", 0).Go()
+		}
+
+		// Delete the old menu message from the active chat
+		oldIDVal, errOld := sess.Data("menu_msg_id").Go()
+		if errOld == nil && oldIDVal != nil {
+			if oldID, okInt := localAsInt64(oldIDVal); okInt && oldID > 0 {
+				_ = c.Bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": oldID,
+				}, nil)
+			}
+		}
+
+		removedWord := words[idx]
+		words = append(words[:idx], words[idx+1:]...)
+		UpdateBannedWords(c, targetChatID, words)
+
+		pageVal, _ := sess.Data("profanity_page").Go()
+		page, _ := pageVal.(int)
+		text, markup := RenderWordsPage(c, targetChatID, page)
+
+		// Send success status which self-destructs after 5 seconds
+		_, _ = c.Send().Text(fmt.Sprintf("✅ کلمه `%s` (ردیف %d) با موفقیت حذف شد.", removedWord, num)).Markdown().Temp(5 * time.Second).Go()
+
+		// Send the new menu and save its ID to the session
+		msg, errSend := c.Send().Text(text).Markup(markup).Markdown().Go()
+		if errSend == nil && msg != nil {
+			_, _ = sess.Data("menu_msg_id", msg.MessageID).Go()
+		}
+	}
+}
+
+// getGroupDBPath resolves and creates the isolated data/Bad Words/<chatID>.gob path recursively
+func getGroupDBPath(chatID int64) string {
+	_ = os.MkdirAll(DataPath("Bad Words"), 0755)
+	return DataPath(filepath.Join("Bad Words", fmt.Sprintf("%d.gob", chatID)))
+}
+
+// readGroupBannedWords reads []string directly from data/Bad Words/<id>.gob
+func readGroupBannedWords(chatID int64) []string {
+	path := getGroupDBPath(chatID)
+	file, err := os.Open(path)
+	if err != nil {
+		return []string{}
+	}
+	defer file.Close()
+
+	var words []string
+	_ = gob.NewDecoder(file).Decode(&words)
+	return words
+}
+
+// writeGroupBannedWords writes []string atomically to data/Bad Words/<id>.gob
+func writeGroupBannedWords(chatID int64, words []string) error {
+	path := getGroupDBPath(chatID)
+	tmp := path + ".tmp"
+
+	file, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+
+	err = gob.NewEncoder(file).Encode(words)
+	if err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+
+	_ = file.Sync()
+	_ = file.Close()
+
+	return os.Rename(tmp, path)
 }
 
 // MediaType defines specific media categories for filtering
@@ -742,9 +1397,9 @@ func AntiRepeat(engine *WarnEngine, warnDuration time.Duration, customMsg ...str
 			_ = c.Del().Go()
 
 			if engine != nil {
-				_ = engine.Warn(c, "ارسال پیام تکراری و کپی‌پست متوالی")
+				_ = engine.Warn(c, "ارسال پیام تکراری و کپی‌پیست متوالی")
 			} else {
-				warn := fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام تکراری و کپی‌پست در این گروه ممنوع است!", c.Message.From.Mention())
+				warn := fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام تکراری و کپی‌پیست در این گروه ممنوع است!", c.Message.From.Mention())
 				if len(customMsg) > 0 && customMsg[0] != "" {
 					warn = customMsg[0]
 					warn = strings.ReplaceAll(warn, "{name}", c.Message.From.Mention())
@@ -1024,10 +1679,10 @@ func AntiCaps(engine *WarnEngine, thresholdPercent float64, minLength int, warnD
 						_ = c.Del().Go()
 
 						if engine != nil {
-							_ = engine.Warn(c, "ارسال پیام با حروف بزرگ پی‌درپی (فریاد زدن)")
+							_ = engine.Warn(c, "ارسال پیام با حروف بزرگ پی‌درپی")
 						} else {
 							_, _ = c.Send().
-								Text(fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام با حروف بزرگ پی‌درپی (فریاد زدن) در این گروه ممنوع است!", c.Message.From.FirstName)).
+								Text(fmt.Sprintf("⚠️ کاربر عزیز %s، ارسال پیام با حروف بزرگ پی‌درپی در این گروه ممنوع است!", c.Message.From.FirstName)).
 								Temp(warnDuration).
 								Go()
 						}
@@ -1210,7 +1865,7 @@ func (r *RouteChain) Roles(roles ...MemberRole) *RouteChain {
 		}
 
 		// If unauthorized, send a temporary 5-second warning alert
-		_, _ = c.Send().Text("⚠️ شما دسترسی لازم برای اجرای این دستور را ندارید.").Temp(5 * time.Second).Go()
+		_, _ = c.Send().Text("⚠️ شما دسترسی لازم را ندارید.").Temp(5 * time.Second).Go()
 		return false
 	})
 	return r
