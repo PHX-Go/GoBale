@@ -1639,7 +1639,8 @@ func (a *APIChain) Go(result ...any) (any, error) {
 	if len(result) > 0 {
 		target = result[0]
 	} else {
-		var generic map[string]any
+		// Use any interface pointer to safely decode both JSON arrays and objects without mismatch errors
+		var generic any
 		target = &generic
 	}
 
