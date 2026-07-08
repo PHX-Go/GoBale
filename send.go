@@ -287,6 +287,9 @@ func (s *SendChain) Go() (*Message, error) {
 		return nil, errors.New("missing chat destination")
 	}
 
+	var msg *Message
+	var err error
+
 	// If useQueue is enabled, dispatch task to the concurrent upload pool
 	if s.useQueue {
 		initUploadPool()
@@ -298,11 +301,25 @@ func (s *SendChain) Go() (*Message, error) {
 		}
 		globalUploadPool.jobChan <- job
 		res := <-resultChan
-		return res.Msg, res.Err
+		msg, err = res.Msg, res.Err
+	} else {
+		// Run standard upload directly
+		msg, err = s.executeUpload(s.ctx)
 	}
 
-	// Run standard upload directly
-	return s.executeUpload(s.ctx)
+	// Execute scheduled background message deletion if temp duration is specified
+	if err == nil && msg != nil && s.temp > 0 {
+		msgID := msg.MessageID
+		resolved := s.bot.ResolveChatID(s.chat)
+		s.bot.Task().In(s.temp, func() {
+			_ = s.bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+				"chat_id":    resolved,
+				"message_id": msgID,
+			}, nil)
+		})
+	}
+
+	return msg, err
 }
 
 // cacheUploadedID stores received file identifier to avoid uploading duplicates
