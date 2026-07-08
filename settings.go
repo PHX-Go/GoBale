@@ -144,3 +144,17 @@ func (s *SettingsChain) Go() error {
 	}
 	return err
 }
+
+// RegisterLocalConfirm registers a chat-isolated switch with a built-in confirmation prompt
+func (s *SettingsChain) RegisterLocalConfirm(key, label string, defaultVal bool, confirmText string) *SettingsChain {
+	s.bot.mu.Lock()
+	s.bot.settings = append(s.bot.settings, SettingEntry{
+		Key:         key,
+		Label:       label,
+		Default:     defaultVal,
+		IsLocal:     true,
+		ConfirmText: confirmText,
+	})
+	s.bot.mu.Unlock()
+	return s
+}

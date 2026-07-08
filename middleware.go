@@ -2124,3 +2124,65 @@ func EnglishGuard(warnDuration time.Duration, customMsg ...string) Handler {
 		c.Next()
 	}
 }
+
+// LinkLockGuard prevents users from joining via links or non-admin invitations
+func LinkLockGuard() Handler {
+	return func(c *Ctx) {
+		// Skip messages that are not sent inside group chats
+		if !c.IsGroup() || c.Message == nil || len(c.Message.NewChatMembers) == 0 {
+			c.Next()
+			return
+		}
+
+		// Resolve current group ID safely
+		chatID, err := c.ChatID()
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		// Retrieve the link lock toggle value from the GOB database
+		dbKey := fmt.Sprintf("group_config_%d_lock_link", chatID)
+		val, ok := c.DB().Get(dbKey).Go()
+		if !ok || val != true {
+			c.Next()
+			return
+		}
+
+		// Verify if the inviter/adder has group administrator privileges
+		isInviterAdmin := false
+		if c.Message.From != nil {
+			isAdmin, _ := c.Chat().IsAdmin(c.Message.From.ID).Go()
+			isOwner := c.Message.From.ID == c.Bot.MaintenanceAdminID
+			isInviterAdmin = isAdmin || isOwner
+		}
+
+		// Process every joining user
+		for _, user := range c.Message.NewChatMembers {
+			isSelfJoin := c.Message.From != nil && c.Message.From.ID == user.ID
+
+			// Kick if the user joined via link (self-join) OR if invited by a non-admin
+			if isSelfJoin || !isInviterAdmin {
+				// Delete the entry service message
+				_ = c.Del().Go()
+
+				// Kick the user by banning them
+				_ = c.Bot.Chat(chatID).Ban(user.ID).Go()
+
+				// Instantly unban them to permit manual admin additions later
+				_ = c.Bot.Chat(chatID).Unban(user.ID).OnlyIfBanned(true).Go()
+
+				// Notify the group with a self-destroying warning
+				var warnText string
+				if isSelfJoin {
+					warnText = fmt.Sprintf("⚠️ کاربر %s به دلیل فعال بودن قفل لینک گروه، به طور خودکار اخراج شد.", user.Mention())
+				} else {
+					warnText = fmt.Sprintf("⚠️ کاربر %s به دلیل دعوت توسط غیر ادمین، به طور خودکار اخراج شد.", user.Mention())
+				}
+				_, _ = c.Send().Text(warnText).Temp(5 * time.Second).Go()
+			}
+		}
+
+		c.Next()
+	}
+}

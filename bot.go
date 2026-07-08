@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -247,28 +248,39 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 	bot.On().Use(Recovery())
 
-	// Unifies global, local, and remote settings processing with maximum security and owner bypass
+	// Unifies global, local, and remote settings processing with maximum security and confirmation dialogs
 	bot.On().Callback("_sys_cfg").Do(func(c *Ctx) {
 		if c.Update == nil || c.Update.CallbackQuery == nil {
 			return
 		}
 
-		var key string
-		var targetChat string // Fixed: Declare as string so ScanCallbackArgs can parse it successfully
-		_ = c.ScanCallbackArgs(&key, &targetChat)
+		// Verify if the clicking user is the specific admin who opened the panel
+		sess := c.Session()
+		if activeAdminVal, errAdmin := sess.Data("active_settings_admin_id").Go(); errAdmin == nil && activeAdminVal != nil {
+			if activeAdminID, okInt := localAsInt64(activeAdminVal); okInt && activeAdminID > 0 {
+				if c.SenderID() != activeAdminID {
+					_ = c.Answer().Text("❌ این پنل توسط شما باز نشده است!").Alert().Go()
+					c.Abort()
+					return
+				}
+			}
+		}
 
-		// 1. Identify setting scope (local vs global)
+		var key string
+		var targetChat string
+		_ = c.ScanCallbackArgs(&key, &targetChat)
 		isLocal := false
+		var confirmText string
 		c.Bot.mu.RLock()
 		for _, s := range c.Bot.settings {
 			if s.Key == key {
 				isLocal = s.IsLocal
+				confirmText = s.ConfirmText
 				break
 			}
 		}
 		c.Bot.mu.RUnlock()
 
-		// 2. Resolve target chat ID
 		var resolved any
 		if targetChat != "" {
 			resolved = c.Bot.ResolveChatID(targetChat)
@@ -277,17 +289,14 @@ func (b *BotBuilder) Go() (*Bot, error) {
 			resolved = c.Bot.ResolveChatID(id)
 		}
 
-		// 3. Security: Bypass immediately for Owner, verify group Admins for localized settings
 		isOwner := c.IsOwner()
 		if !isOwner {
 			if !isLocal {
-				// Non-owners cannot modify global settings (e.g. maintenance)
-				_ = c.Answer().Text("❌ تغییر تنظیمات سراسری فقط مخصوص مدیریت کل ربات است!").Alert().Go()
+				_ = c.Answer().Text("❌ تغییر تنظیمات سراسری فقط مخصوص سازنده ربات است!").Alert().Go()
 				c.Abort()
 				return
 			}
 
-			// Non-owners must be validated as group admins for local settings
 			isAdmin, err := c.Bot.Chat(resolved).IsAdmin(c.SenderID()).Go()
 			if err != nil || !isAdmin {
 				_ = c.Answer().Text("❌ تغییر تنظیمات گروه فقط مخصوص مدیران است!").Alert().Go()
@@ -296,15 +305,84 @@ func (b *BotBuilder) Go() (*Bot, error) {
 			}
 		}
 
-		// 4. Toggle state in memory and GOB database natively
+		if confirmText != "" {
+			dbKey := fmt.Sprintf("group_config_%v_%s", resolved, key)
+			active := false
+			if val, ok := c.Bot.dbInstance.Get(dbKey); ok {
+				active, _ = val.(bool)
+			}
+
+			commandText := "🔴 خاموش‌کردن (غیرفعال)"
+			if !active {
+				commandText = "🟢 روشن‌کردن (فعال)"
+			}
+
+			formatted := strings.ReplaceAll(confirmText, "{command}", commandText)
+
+			markup := InlineMarkup().
+				Row(
+					Btn("✅ بله، مطمئنم").Callback(fmt.Sprintf("_sys_cfg_confirm:%s:%v:yes", key, resolved)),
+					Btn("❌ خیر، لغو شود").Callback(fmt.Sprintf("_sys_cfg_confirm:%s:%v:no", key, resolved)),
+				).
+				Build()
+
+			_, _ = c.Edit().Text(formatted).Markup(markup).Markdown().Stretch(true).Go()
+			_ = c.Answer().Go()
+			return
+		}
+
 		errToggle := c.Settings(resolved).Toggle(key).Go()
 		if errToggle != nil {
 			return
 		}
 
-		// Edit the settings keyboard in-place dynamically
 		_, _ = c.Edit().Settings(resolved).Go()
 		_ = c.Answer().Go()
+	})
+
+	// Final system callback to process settings confirmation decisions
+	bot.On().Callback("_sys_cfg_confirm").Do(func(c *Ctx) {
+		if c.Update == nil || c.Update.CallbackQuery == nil {
+			return
+		}
+
+		// Verify if the clicking user is the specific admin who opened the panel
+		sess := c.Session()
+		if activeAdminVal, errAdmin := sess.Data("active_settings_admin_id").Go(); errAdmin == nil && activeAdminVal != nil {
+			if activeAdminID, okInt := localAsInt64(activeAdminVal); okInt && activeAdminID > 0 {
+				if c.SenderID() != activeAdminID {
+					_ = c.Answer().Text("❌ این پنل توسط شما باز نشده است!").Alert().Go()
+					c.Abort()
+					return
+				}
+			}
+		}
+
+		var key string
+		var resolved string
+		var decision string
+		_ = c.ScanCallbackArgs(&key, &resolved, &decision)
+
+		chatID, _ := strconv.ParseInt(resolved, 10, 64)
+
+		if decision == "yes" {
+			dbKey := fmt.Sprintf("group_config_%d_%s", chatID, key)
+			active := false
+			if val, ok := c.Bot.dbInstance.Get(dbKey); ok {
+				active, _ = val.(bool)
+			}
+			_ = c.Bot.dbInstance.Set(dbKey, !active)
+
+			_, _ = c.Send().Text("✅ تغییرات ثبت شد.").Temp(5 * time.Second).Go()
+		} else {
+			_, _ = c.Send().Text("❌ تغییرات لغو شد.").Temp(5 * time.Second).Go()
+		}
+
+		_ = c.Answer().Go()
+
+		mainText := "⚙️ *پنل مدیریت تنظیمات فعال گروه:*\n\nلطفاً برای تغییر وضعیت سوئیچ‌ها کلیک کنید:"
+		// Restore settings panel text in-place with shamsi stretch alignments
+		_, _ = c.Edit().Text(mainText).Settings(chatID).Markdown().Stretch(true).Go()
 	})
 
 	bot.optimizeForHardware()

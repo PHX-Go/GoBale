@@ -10,11 +10,12 @@ type Handler func(*Ctx)
 
 // SettingEntry stores system configuration toggle elements
 type SettingEntry struct {
-	Key     string
-	Label   string
-	Ptr     *bool
-	Default bool
-	IsLocal bool
+	Key         string
+	Label       string
+	Ptr         *bool
+	Default     bool
+	IsLocal     bool
+	ConfirmText string
 }
 
 // Update represents the incoming update envelope from Bale servers

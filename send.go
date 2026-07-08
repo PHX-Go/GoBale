@@ -17,6 +17,7 @@ type SendChain struct {
 	ctx        context.Context
 	chat       any
 	text       string
+	isSettings bool
 	photo      any
 	audio      any
 	doc        any
@@ -235,6 +236,8 @@ func (s *SendChain) Confirm(yesCallback, noCallback string) *SendChain {
 
 // Settings builds the dynamic configuration keyboard natively supporting dynamic back buttons
 func (s *SendChain) Settings(chatID ...any) *SendChain {
+	// Set internal settings flag to handle automated deletions
+	s.isSettings = true
 	resolved := s.bot.ResolveChatID(s.chat)
 	if len(chatID) > 0 {
 		resolved = s.bot.ResolveChatID(chatID[0])
@@ -267,7 +270,6 @@ func (s *SendChain) Settings(chatID ...any) *SendChain {
 		builder.Row(Btn(entry.Label + ": " + status).Callback(callbackKey))
 	}
 
-	// Automatically append back button to settings panel if opened from a dynamic menu
 	if cid, ok := resolved.(int64); ok {
 		if sess := s.bot.Sessions.Get(cid); sess != nil {
 			if menuID := sess.String("_current_menu"); menuID != "" {
@@ -287,10 +289,42 @@ func (s *SendChain) Go() (*Message, error) {
 		return nil, errors.New("missing chat destination")
 	}
 
+	// Clean up previously left hanging settings menu silently
+	if s.isSettings {
+		resolved := s.bot.ResolveChatID(s.chat)
+		var chatID int64
+		switch v := resolved.(type) {
+		case int64:
+			chatID = v
+		case int:
+			chatID = int64(v)
+		}
+
+		if chatID > 0 {
+			sess := s.bot.Sessions.Get(chatID)
+			oldIDVal, errOld := sess.Data("settings_msg_id").Go()
+			if errOld == nil && oldIDVal != nil {
+				var oldID int64
+				switch v := oldIDVal.(type) {
+				case int64:
+					oldID = v
+				case int:
+					oldID = int64(v)
+				}
+				if oldID > 0 {
+					_ = s.bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": oldID,
+					}, nil)
+				}
+			}
+		}
+	}
+
 	var msg *Message
 	var err error
 
-	// If useQueue is enabled, dispatch task to the concurrent upload pool
+	// Process queue based or standard message dispatch requests
 	if s.useQueue {
 		initUploadPool()
 		resultChan := make(chan *UploadResult, 1)
@@ -303,11 +337,27 @@ func (s *SendChain) Go() (*Message, error) {
 		res := <-resultChan
 		msg, err = res.Msg, res.Err
 	} else {
-		// Run standard upload directly
 		msg, err = s.executeUpload(s.ctx)
 	}
 
-	// Execute scheduled background message deletion if temp duration is specified
+	// Register current settings menu ID to enable next-run deletions
+	if err == nil && msg != nil && s.isSettings {
+		resolved := s.bot.ResolveChatID(s.chat)
+		var chatID int64
+		switch v := resolved.(type) {
+		case int64:
+			chatID = v
+		case int:
+			chatID = int64(v)
+		}
+
+		if chatID > 0 {
+			sess := s.bot.Sessions.Get(chatID)
+			_, _ = sess.Data("settings_msg_id", msg.MessageID).Go()
+		}
+	}
+
+	// Handle scheduled dynamic self-deletions on temporary messages
 	if err == nil && msg != nil && s.temp > 0 {
 		msgID := msg.MessageID
 		resolved := s.bot.ResolveChatID(s.chat)
@@ -577,10 +627,10 @@ func (s *SendChain) Context(ctx context.Context) *SendChain {
 	return s
 }
 
-// stretchText ensures every single line of a multi-line message is stretched using ONLY standard spaces to prevent any symbol corruption
+// stretchText ensures every single line is stretched using standard and non-breaking spaces to prevent trailing collapse
 func stretchText(text string) string {
 	lines := strings.Split(text, "\n")
-	targetMinLen := 40 // Set strictly to 40 as requested
+	targetMinLen := 45
 
 	var sb strings.Builder
 	for idx, line := range lines {
@@ -590,10 +640,12 @@ func stretchText(text string) string {
 		sb.WriteString(line)
 		if l < targetMinLen {
 			diff := targetMinLen - l
-			// Use ONLY standard ASCII spaces to guarantee 100% visual invisibility and safety on all clients
-			for i := 0; i < diff; i++ {
+			// Pad with standard spaces
+			for i := 0; i < diff-1; i++ {
 				sb.WriteString(" ")
 			}
+			// Append non-breaking space at the end to prevent client-side trailing space collapse
+			sb.WriteString("\u00A0")
 		}
 		if idx < len(lines)-1 {
 			sb.WriteString("\n")
