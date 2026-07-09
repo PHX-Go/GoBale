@@ -3,10 +3,14 @@ package gobale
 import (
 	"encoding/json"
 	"io"
+	"math"
 )
 
 // Handler represents the singular signature for all middlewares and closures
 type Handler func(*Ctx)
+
+// Photo represents a slice of PhotoSize objects (for different resolutions)
+type Photo []PhotoSize
 
 // SettingEntry stores system configuration toggle elements
 type SettingEntry struct {
@@ -37,6 +41,9 @@ type Message struct {
 	ForwardFrom          *User                 `json:"forward_from,omitempty"`
 	ForwardFromChat      *Chat                 `json:"forward_from_chat,omitempty"`
 	ForwardFromMessageID int64                 `json:"forward_from_message_id,omitempty"`
+	ForwardSignature     string                `json:"forward_signature,omitempty"`   // New
+	ForwardSenderName    string                `json:"forward_sender_name,omitempty"` // New
+	ForwardFromName      string                `json:"forward_from_name,omitempty"`   // New
 	ForwardDate          int64                 `json:"forward_date,omitempty"`
 	ReplyToMessage       *Message              `json:"reply_to_message,omitempty"`
 	EditDate             int64                 `json:"edit_date,omitempty"`
@@ -46,7 +53,7 @@ type Message struct {
 	Animation            *Animation            `json:"animation,omitempty"`
 	Audio                *Audio                `json:"audio,omitempty"`
 	Document             *Document             `json:"document,omitempty"`
-	Photo                []PhotoSize           `json:"photo,omitempty"`
+	Photo                Photo                 `json:"photo,omitempty"`
 	Sticker              *Sticker              `json:"sticker,omitempty"`
 	Video                *Video                `json:"video,omitempty"`
 	Voice                *Voice                `json:"voice,omitempty"`
@@ -60,6 +67,7 @@ type Message struct {
 	SuccessfulPayment    *SuccessfulPayment    `json:"successful_payment,omitempty"`
 	WebAppData           *WebAppData           `json:"web_app_data,omitempty"`
 	ReplyMarkup          *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	Poll                 *Poll                 `json:"poll,omitempty"`           // EXPERIMENTAL
 	ForwardOrigin        *MessageOrigin        `json:"forward_origin,omitempty"` // EXPERIMENTAL
 }
 
@@ -106,11 +114,14 @@ type CallbackQuery struct {
 	Data    string   `json:"data"`
 }
 
-// MessageEntity represents structural text decorations like bold or links
 type MessageEntity struct {
-	Type   string `json:"type"`
-	Offset int    `json:"offset"`
-	Length int    `json:"length"`
+	Type          string `json:"type"`
+	Offset        int    `json:"offset"`
+	Length        int    `json:"length"`
+	URL           string `json:"url,omitempty"`             // New: for text_link
+	User          *User  `json:"user,omitempty"`            // New: for text_mention
+	Language      string `json:"language,omitempty"`        // New: for pre
+	CustomEmojiID string `json:"custom_emoji_id,omitempty"` // New: for custom_emoji
 }
 
 // Animation represents silent loop video animation parameters
@@ -209,11 +220,11 @@ type Invoice struct {
 
 // SuccessfulPayment represents completed payment structures
 type SuccessfulPayment struct {
-	Currency         string `json:"currency"`
-	TotalAmount      int64  `json:"total_amount"`
-	InvoicePayload   string `json:"invoice_payload"`
-	ShippingOptionID string `json:"shipping_option_id,omitempty"`
-	// TelegramPaymentChargeID string `json:"telegram_payment_charge_id,omitempty"`
+	Currency                string `json:"currency"`
+	TotalAmount             int64  `json:"total_amount"`
+	InvoicePayload          string `json:"invoice_payload"`
+	ShippingOptionID        string `json:"shipping_option_id,omitempty"`
+	TelegramPaymentChargeID string `json:"telegram_payment_charge_id,omitempty"`
 	BalePaymentChargeID     string `json:"bale_payment_charge_id,omitempty"`
 	ProviderPaymentChargeID string `json:"provider_payment_charge_id,omitempty"`
 }
@@ -284,6 +295,9 @@ type WebAppInfo struct {
 type ChatMember struct {
 	Status              string `json:"status"`
 	User                User   `json:"user"`
+	IsAnonymous         bool   `json:"is_anonymous,omitempty"`      // New
+	CanManageChat       bool   `json:"can_manage_chat,omitempty"`   // New
+	CanManageTopics     bool   `json:"can_manage_topics,omitempty"` // New
 	CanDeleteMessages   bool   `json:"can_delete_messages,omitempty"`
 	CanManageVideoChats bool   `json:"can_manage_video_chats,omitempty"`
 	CanRestrictMembers  bool   `json:"can_restrict_members,omitempty"`
@@ -554,4 +568,55 @@ type MessageOrigin struct {
 	AuthorSignature string `json:"author_signature,omitempty"` // Present if Type is "chat" or "channel"
 	Chat            *Chat  `json:"chat,omitempty"`             // Present if Type is "channel"
 	MessageID       int64  `json:"message_id,omitempty"`       // Present if Type is "channel"
+}
+
+// Largest returns the PhotoSize with the highest resolution (usually the last element)
+func (p Photo) Largest() *PhotoSize {
+	if len(p) == 0 {
+		return nil
+	}
+	// Bale and Telegram put the largest photo at the end of the slice
+	return &p[len(p)-1]
+}
+
+// DistanceTo calculates the distance in kilometers between two locations
+func (l *Location) DistanceTo(other *Location) float64 {
+	const earthRadius = 6371.0 // Earth radius in kilometers
+
+	lat1 := l.Latitude * math.Pi / 180
+	lon1 := l.Longitude * math.Pi / 180
+	lat2 := other.Latitude * math.Pi / 180
+	lon2 := other.Longitude * math.Pi / 180
+
+	dlat := lat2 - lat1
+	dlon := lon2 - lon1
+
+	// Haversine formula implementation
+	a := math.Pow(math.Sin(dlat/2), 2) + math.Cos(lat1)*math.Cos(lat2)*math.Pow(math.Sin(dlon/2), 2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+
+	return earthRadius * c
+}
+
+// EXPERIMENTAL (Not Implemented)
+
+// PollOption represents a single choice in a poll
+type PollOption struct {
+	Text         string `json:"text"`
+	VoterCount   int    `json:"voter_count"`
+	PersistentID int    `json:"persistent_id"` // Detected: Bale specific
+}
+
+// Poll contains all information about a poll
+type Poll struct {
+	ID                    string       `json:"id"`
+	Question              string       `json:"question"`
+	Options               []PollOption `json:"options"`
+	TotalVoterCount       int          `json:"total_voter_count"`
+	IsClosed              bool         `json:"is_closed"`
+	IsAnonymous           bool         `json:"is_anonymous"`
+	Type                  string       `json:"type"`
+	AllowsMultipleAnswers bool         `json:"allows_multiple_answers"`
+	AllowsRevoting        bool         `json:"allows_revoting"` // Detected: Bale specific
+	MembersOnly           bool         `json:"members_only"`    // Detected: Bale specific
 }

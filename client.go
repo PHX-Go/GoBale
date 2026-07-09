@@ -326,47 +326,36 @@ func extractChatID(params any) int64 {
 	return fallback
 }
 
-// BaseRequest sends a JSON request to the Bale Bot API.
-// Flow per call: circuit-breaker gate -> token-bucket rate limit -> up to 3
-// transient connection retries (exponential backoff) -> on HTTP 429 it honors
-// retry_after and re-enters the loop, capped at maxRetries429 to guarantee
-// termination even when ctx has no deadline. 5xx and read/decode failures
-// report into the circuit breaker; 2xx success resets it.
+// BaseRequest sends a JSON request to the Bale Bot API with retry and circuit-breaker logic
 func (c *Client) BaseRequest(ctx context.Context, method string, params any, result any) error {
-	// Panic-Proof Shield: Ensure context is never nil and has timeout
+	// Ensure context is never nil
 	if ctx == nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), 35*time.Second)
-		defer cancel()
+		ctx = context.Background()
 	}
 
+	// Exit early if context is already canceled
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Check circuit breaker status
 	if !c.cb.CanExecute() {
 		return fmt.Errorf("circuit breaker is open, api is offline")
 	}
 
-	// Intercept and sandbox all outgoing messages and actions in Dry-Run mode
+	// Intercept outgoing requests in Dry-Run mode
 	if c.DryRun && method != "getUpdates" && method != "getMe" {
 		log.Printf("[Dry-Run Intercept] POST /%s | Params: %+v", method, params)
-
-		// Simulate a realistic local network latency so the dashboard's
 		mockLatency := time.Duration(2+rand.Intn(7)) * time.Millisecond
 		atomic.StoreInt64(&c.NetLatencyNs, int64(mockLatency))
 
 		if result != nil {
 			if boolPtr, ok := result.(*bool); ok {
-				*boolPtr = true // Return true dynamically for any API boolean actions
-			} else if strPtr, ok := result.(*string); ok {
-				*strPtr = "https://mock.bale.ai/invoice/link_123" // Return mock URL for invoice link actions
+				*boolPtr = true
 			} else if msgPtr, ok := result.(*Message); ok {
-				// Fill in real chat id from params instead of a hardcoded one,
-				// so mocked messages route correctly to sessions/handlers keyed by chat id.
 				msgPtr.MessageID = 999111
 				msgPtr.Date = time.Now().Unix()
 				msgPtr.Chat.ID = extractChatID(params)
-				msgPtr.Chat.Type = "private"
-			} else {
-				mockBytes := []byte(`{"message_id": 999111, "date": 1700000000, "chat": {"id": 111, "type": "private"}}`)
-				_ = json.Unmarshal(mockBytes, result)
 			}
 		}
 		return nil
@@ -381,10 +370,11 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 	}
 	body := buf.Bytes()
 
-	const maxRetries429 = 5 // hard cap so an unbounded ctx never spins forever on 429
+	const maxRetries429 = 5
 	retries429 := 0
 
 	for {
+		// Wait for rate limiter token
 		if err := c.rateLimit.Wait(ctx); err != nil {
 			return err
 		}
@@ -393,7 +383,13 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 		var reqErr error
 		start := time.Now()
 
+		// Inner loop for transient network retries
 		for attempt := 0; attempt < 3; attempt++ {
+			// Stop immediately if context is canceled
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 			if err != nil {
 				return err
@@ -405,19 +401,21 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 
 			resp, reqErr = c.httpClient.Do(req)
 			if reqErr != nil {
+				// Don't retry or record failure if shutdown is in progress
+				if ctx.Err() != nil {
+					return reqErr
+				}
 				if attempt < 2 {
 					time.Sleep(time.Duration(100*math.Pow(3, float64(attempt))) * time.Millisecond)
 					continue
 				}
-				if ctx.Err() == nil {
-					c.cb.RecordFailure()
-				}
+				c.cb.RecordFailure()
 				return reqErr
 			}
 			break
 		}
 
-		// Safe reading of the decompressed response body
+		// Read and decompress response body
 		respBytes, errRead := func() ([]byte, error) {
 			defer func() {
 				_, _ = io.Copy(io.Discard, resp.Body)
@@ -429,30 +427,38 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 				if err != nil {
 					return nil, err
 				}
-				defer gzipReader.Close() // Defer close to avoid memory/resource leak
+				defer gzipReader.Close()
 				reader = gzipReader
 			}
 			return io.ReadAll(reader)
 		}()
+
 		if errRead != nil {
-			c.cb.RecordFailure()
+			if ctx.Err() == nil {
+				c.cb.RecordFailure()
+			}
 			return errRead
 		}
 
+		// Update network latency metrics
 		if method != "getUpdates" {
 			atomic.StoreInt64(&c.NetLatencyNs, int64(time.Since(start)))
 		}
 
 		var apiResp Res
 		if err := json.Unmarshal(respBytes, &apiResp); err != nil {
-			c.cb.RecordFailure()
-			return fmt.Errorf("failed to parse JSON response (status %d): %w. Raw body: %s", resp.StatusCode, err, string(respBytes))
-		}
-
-		if !apiResp.OK {
-			if apiResp.Code >= 500 {
+			if ctx.Err() == nil {
 				c.cb.RecordFailure()
 			}
+			return fmt.Errorf("failed to parse JSON response: %w", err)
+		}
+
+		// Handle API level errors
+		if !apiResp.OK {
+			if apiResp.Code >= 500 && ctx.Err() == nil {
+				c.cb.RecordFailure()
+			}
+			// Handle rate limiting specifically
 			if apiResp.Code == 429 {
 				retries429++
 				if retries429 > maxRetries429 {
@@ -475,6 +481,7 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 			return fmt.Errorf("api error [%d]: %s", apiResp.Code, apiResp.Desc)
 		}
 
+		// Reset circuit breaker on success
 		c.cb.RecordSuccess()
 		if result != nil && apiResp.Result != nil {
 			return json.Unmarshal(apiResp.Result, result)
@@ -484,10 +491,6 @@ func (c *Client) BaseRequest(ctx context.Context, method string, params any, res
 }
 
 // BaseRequestMultipart sends a multipart/form-data request (file uploads) to
-// the Bale Bot API. Body bytes are fully serialized once before the retry
-// loop, so the same buffer is safely reused across attempts. Shares the exact
-// same rate-limit, retry, circuit-breaker, and 429-backoff behavior as
-// BaseRequest — kept in sync intentionally, do not let the two drift apart.
 func (c *Client) BaseRequestMultipart(ctx context.Context, method string, params any, files []InputFile, result any) error {
 	// Panic-Proof Shield: Ensure context is never nil
 	if ctx == nil {

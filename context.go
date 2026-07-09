@@ -711,3 +711,68 @@ func (d *DownloadChain) ChatID(id int64) *DownloadChain {
 	d.chatID = id
 	return d
 }
+
+// GetEntityText extracts the actual text of a specific message entity safely
+func (c *Ctx) GetEntityText(e MessageEntity) string {
+	if c.Message == nil || c.Message.Text == "" {
+		return ""
+	}
+
+	// Convert raw string to rune slice to align with Bale's offset calculation
+	runes := []rune(c.Message.Text)
+	start := e.Offset
+	end := e.Offset + e.Length
+
+	if start < 0 || end > len(runes) {
+		return ""
+	}
+
+	return string(runes[start:end])
+}
+
+// FindLinks manually scans the message text for URLs using Regex when Bale fails to provide entities
+func (c *Ctx) FindLinks() []string {
+	if c.Message == nil || c.Message.Text == "" {
+		return nil
+	}
+
+	// 1. First, try to get URLs from Bale's official entities (if any)
+	var links []string
+	for _, e := range c.Message.Entities {
+		if e.Type == "url" || e.Type == "text_link" {
+			if e.URL != "" {
+				links = append(links, e.URL)
+			} else {
+				links = append(links, c.GetEntityText(e))
+			}
+		}
+	}
+
+	// 2. If no official entities found, perform a deep regex scan on raw text
+	// This captures [text](url) and raw links that Bale missed
+	rawMatches := rxLinkPattern.FindAllString(c.Message.Text, -1)
+	links = append(links, rawMatches...)
+
+	return links
+}
+
+// Data returns the callback query data or a specific parameter if index is provided
+func (c *Ctx) Data(idx ...int) string {
+	if c.Update == nil || c.Update.CallbackQuery == nil {
+		return ""
+	}
+
+	raw := c.Update.CallbackQuery.Data
+	if len(idx) == 0 {
+		return raw
+	}
+
+	// Split by colon which is the framework's standard separator
+	parts := strings.Split(raw, ":")
+	i := idx[0]
+	if i >= 0 && i < len(parts) {
+		return parts[i]
+	}
+
+	return ""
+}

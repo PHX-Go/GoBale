@@ -237,6 +237,9 @@ type PromoteChain struct {
 	rest     bool // can_restrict_members
 	pin      bool // can_pin_messages
 	promote  bool // can_promote_members
+	vChat    bool // can_manage_video_chats (New)
+	topics   bool // can_manage_topics (New)
+	anon     bool // is_anonymous (New)
 	sendMsg  bool // can_send_messages
 	sendMed  bool // can_send_media_messages
 	replySty bool // can_reply_to_story
@@ -250,6 +253,12 @@ type PromoteChain struct {
 	call     bool // can_start_call
 	kick     bool // can_kick_user
 }
+
+// ManageTopics configures if the admin can create, edit or delete forum topics
+func (p *PromoteChain) ManageTopics(v bool) *PromoteChain { p.topics = v; return p }
+
+// Anonymous configures if the admin's messages are sent as the chat title
+func (p *PromoteChain) Anonymous(v bool) *PromoteChain { p.anon = v; return p }
 
 // Edited configures if the bot is allowed to edit administrator privileges of that user
 func (p *PromoteChain) Edited(v bool) *PromoteChain { p.edited = v; return p }
@@ -341,6 +350,8 @@ func (p *PromoteChain) Go() error {
 		"can_send_gift_packet":       p.gift,
 		"can_start_call":             p.call,
 		"can_kick_user":              p.kick,
+		"can_manage_topics":          p.topics,
+		"is_anonymous":               p.anon,
 	}, nil)
 	if err != nil {
 		logErr(p.cc.bot, "[Chat Promote Error] ", err)

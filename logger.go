@@ -578,13 +578,14 @@ func (l *LoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	resp, err := l.proxied.RoundTrip(req)
 	elapsed := time.Since(start)
 
-	// Log HTTP transaction errors structurally inside the shamsi ladder
 	if err != nil {
+		if req.Context().Err() != nil {
+			return nil, err
+		}
+
 		if l.bot.loggerInstance != nil && !l.bot.loggerInstance.SuppressHTTP {
 			l.bot.Log().Error("خطا در تراکنش شبکه (HTTP Transport Error)").
 				Str("url", req.URL.String()).
-				Str("method", req.Method).
-				Str("request_body", string(reqBody)).
 				Err(err).
 				Any("latency", elapsed).
 				Go()
@@ -635,4 +636,13 @@ func (b *Bot) EnableNetworkInterceptor() {
 			bot:     b,
 		}
 	}
+}
+
+// Float64 appends a structured float64 attribute (renamed from Float)
+func (l *LogChain) Float64(key string, val float64) *LogChain {
+	if l.logger == nil {
+		return l
+	}
+	l.attrs = append(l.attrs, slog.Float64(key, val))
+	return l
 }
