@@ -604,9 +604,15 @@ func (c *Ctx) Go(task func()) {
 	}()
 }
 
-// IsSuperGroup checks if the current chat is a supergroup
+// IsSuperGroup checks if the chat has supergroup capabilities
 func (c *Ctx) IsSuperGroup() bool {
-	return c.Message != nil && c.Message.Chat.Type == "supergroup"
+	if c.Message == nil {
+		return false
+	}
+	// Bale quirk: check for explicit type OR existence of a username/thread
+	return c.Message.Chat.Type == "supergroup" ||
+		c.Message.Chat.Username != "" ||
+		c.Message.MessageThreadID != 0
 }
 
 // IsOwner checks if the current message sender is the registered global bot administrator thread-safely
@@ -775,4 +781,48 @@ func (c *Ctx) Data(idx ...int) string {
 	}
 
 	return ""
+}
+
+// IsAnonymous checks if the message was sent by a hidden admin
+func (c *Ctx) IsAnonymous() bool {
+	if c.Message == nil {
+		return false
+	}
+	// In Bale, anonymous messages have a SenderChat matching the Chat ID
+	return c.Message.SenderChat != nil && c.Message.SenderChat.ID == c.Message.Chat.ID
+}
+
+// ThreadID returns the ID of the forum topic/thread if applicable
+func (c *Ctx) ThreadID() int64 {
+	if c.Message != nil {
+		return c.Message.MessageThreadID
+	}
+	return 0
+}
+
+// IsTopicMessage checks if the message belongs to a specific forum topic
+func (c *Ctx) IsTopicMessage() bool {
+	return c.ThreadID() != 0
+}
+
+// BotCanPromote checks if the bot itself has permission to add new admins
+func (c *Ctx) BotCanPromote() bool {
+	if c.Message == nil {
+		return false
+	}
+
+	// 1. Execute Me() to get bot's identity safely
+	me, errMe := c.Bot.Me().Go()
+	if errMe != nil {
+		return false
+	}
+
+	// 2. Execute Member() to get bot's status in the current group
+	member, errMem := c.Bot.Chat(c.Message.Chat.ID).Member(me.ID).Go()
+	if errMem != nil {
+		return false
+	}
+
+	// 3. Return the specific permission flag
+	return member.CanPromoteMembers
 }

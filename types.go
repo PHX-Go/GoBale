@@ -33,42 +33,74 @@ type Update struct {
 
 // Message represents a single chat message containing text or media
 type Message struct {
-	MessageID            int64                 `json:"message_id"`
-	Date                 int64                 `json:"date"`
-	Chat                 Chat                  `json:"chat"`
-	From                 *User                 `json:"from,omitempty"`
-	SenderChat           *Chat                 `json:"sender_chat,omitempty"`
-	ForwardFrom          *User                 `json:"forward_from,omitempty"`
-	ForwardFromChat      *Chat                 `json:"forward_from_chat,omitempty"`
-	ForwardFromMessageID int64                 `json:"forward_from_message_id,omitempty"`
-	ForwardSignature     string                `json:"forward_signature,omitempty"`   // New
-	ForwardSenderName    string                `json:"forward_sender_name,omitempty"` // New
-	ForwardFromName      string                `json:"forward_from_name,omitempty"`   // New
-	ForwardDate          int64                 `json:"forward_date,omitempty"`
-	ReplyToMessage       *Message              `json:"reply_to_message,omitempty"`
-	EditDate             int64                 `json:"edit_date,omitempty"`
-	MediaGroupID         string                `json:"media_group_id,omitempty"`
-	Text                 string                `json:"text,omitempty"`
-	Entities             []MessageEntity       `json:"entities,omitempty"`
-	Animation            *Animation            `json:"animation,omitempty"`
-	Audio                *Audio                `json:"audio,omitempty"`
-	Document             *Document             `json:"document,omitempty"`
-	Photo                Photo                 `json:"photo,omitempty"`
-	Sticker              *Sticker              `json:"sticker,omitempty"`
-	Video                *Video                `json:"video,omitempty"`
-	Voice                *Voice                `json:"voice,omitempty"`
-	Caption              string                `json:"caption,omitempty"`
-	CaptionEntities      []MessageEntity       `json:"caption_entities,omitempty"`
-	Contact              *Contact              `json:"contact,omitempty"`
-	Location             *Location             `json:"location,omitempty"`
-	NewChatMembers       []User                `json:"new_chat_members,omitempty"`
-	LeftChatMember       *User                 `json:"left_chat_member,omitempty"`
-	Invoice              *Invoice              `json:"invoice,omitempty"`
-	SuccessfulPayment    *SuccessfulPayment    `json:"successful_payment,omitempty"`
-	WebAppData           *WebAppData           `json:"web_app_data,omitempty"`
-	ReplyMarkup          *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
-	Poll                 *Poll                 `json:"poll,omitempty"`           // EXPERIMENTAL
-	ForwardOrigin        *MessageOrigin        `json:"forward_origin,omitempty"` // EXPERIMENTAL
+	// Unique message identifier inside this chat
+	MessageID int64 `json:"message_id"`
+	// Unique identifier of a forum topic/thread
+	MessageThreadID int64 `json:"message_thread_id,omitempty"`
+	// Date the message was sent in Unix time
+	Date int64 `json:"date"`
+	// Conversation the message belongs to
+	Chat Chat `json:"chat"`
+	// Sender, empty for messages sent to channels
+	From *User `json:"from,omitempty"`
+	// Sender of the message, sent on behalf of a chat
+	SenderChat *Chat `json:"sender_chat,omitempty"`
+	// For forwarded messages, sender of the original message
+	ForwardFrom *User `json:"forward_from,omitempty"`
+	// For forwarded messages, the chat from which the message was forwarded
+	ForwardFromChat *Chat `json:"forward_from_chat,omitempty"`
+	// For forwarded messages, the name of a hidden sender
+	ForwardSenderName string `json:"forward_sender_name,omitempty"`
+	// For forwarded messages, date the original message was sent
+	ForwardDate int64 `json:"forward_date,omitempty"`
+	// Information about the original message (Experimental)
+	ForwardOrigin *MessageOrigin `json:"forward_origin,omitempty"`
+	// For replies, the original message
+	ReplyToMessage *Message `json:"reply_to_message,omitempty"`
+	// Date the message was last edited in Unix time
+	EditDate int64 `json:"edit_date,omitempty"`
+	// The unique identifier of a media message group
+	MediaGroupID string `json:"media_group_id,omitempty"`
+	// For text messages, the actual UTF-8 text
+	Text string `json:"text,omitempty"`
+	// Special entities like usernames, URLs, bot commands, etc.
+	Entities []MessageEntity `json:"entities,omitempty"`
+	// Message is an animation, for example GIF
+	Animation *Animation `json:"animation,omitempty"`
+	// Message is an audio file
+	Audio *Audio `json:"audio,omitempty"`
+	// Message is a general file
+	Document *Document `json:"document,omitempty"`
+	// Message is a photo, available in different sizes
+	Photo Photo `json:"photo,omitempty"`
+	// Message is a sticker
+	Sticker *Sticker `json:"sticker,omitempty"`
+	// Message is a video
+	Video *Video `json:"video,omitempty"`
+	// Message is a voice message
+	Voice *Voice `json:"voice,omitempty"`
+	// Caption for the animation, audio, document, photo, video or voice
+	Caption string `json:"caption,omitempty"`
+	// Special entities that appear in the caption
+	CaptionEntities []MessageEntity `json:"caption_entities,omitempty"`
+	// Message is a shared contact
+	Contact *Contact `json:"contact,omitempty"`
+	// Message is a shared location
+	Location *Location `json:"location,omitempty"`
+	// Message is a native poll
+	Poll *Poll `json:"poll,omitempty"`
+	// New members that were added to the group
+	NewChatMembers []User `json:"new_chat_members,omitempty"`
+	// A member was removed from the group
+	LeftChatMember *User `json:"left_chat_member,omitempty"`
+	// Message is an invoice for a payment
+	Invoice *Invoice `json:"invoice,omitempty"`
+	// Message is a service message about a successful payment
+	SuccessfulPayment *SuccessfulPayment `json:"successful_payment,omitempty"`
+	// Service message: data sent by a Web App
+	WebAppData *WebAppData `json:"web_app_data,omitempty"`
+	// Inline keyboard attached to the message
+	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
 
 // User represents a Bale user account structure
@@ -291,29 +323,42 @@ type WebAppInfo struct {
 	URL string `json:"url"`
 }
 
-// ChatMember represents a user membership context inside chats
+// ChatMember represents a user membership context inside chats with verified Bale fields
 type ChatMember struct {
-	Status              string `json:"status"`
-	User                User   `json:"user"`
-	IsAnonymous         bool   `json:"is_anonymous,omitempty"`      // New
-	CanManageChat       bool   `json:"can_manage_chat,omitempty"`   // New
-	CanManageTopics     bool   `json:"can_manage_topics,omitempty"` // New
-	CanDeleteMessages   bool   `json:"can_delete_messages,omitempty"`
-	CanManageVideoChats bool   `json:"can_manage_video_chats,omitempty"`
-	CanRestrictMembers  bool   `json:"can_restrict_members,omitempty"`
-	CanPromoteMembers   bool   `json:"can_promote_members,omitempty"`
-	CanChangeInfo       bool   `json:"can_change_info,omitempty"`
-	CanInviteUsers      bool   `json:"can_invite_users,omitempty"`
-	CanPostStories      bool   `json:"can_post_stories,omitempty"`
-	CanPostMessages     bool   `json:"can_post_messages,omitempty"`
-	CanEditMessages     bool   `json:"can_edit_messages,omitempty"`
-	CanPinMessages      bool   `json:"can_pin_messages,omitempty"`
-	IsMember            bool   `json:"is_member,omitempty"`
-	CanSendMessages     bool   `json:"can_send_messages,omitempty"`
-	CanSendAudios       bool   `json:"can_send_audios,omitempty"`
-	CanSendDocuments    bool   `json:"can_send_documents,omitempty"`
-	CanSendPhotos       bool   `json:"can_send_photos,omitempty"`
-	CanSendVideos       bool   `json:"can_send_videos,omitempty"`
+	// The member's status in the chat: creator, administrator, member, restricted, left or kicked
+	Status string `json:"status"`
+	// Information about the user
+	User User `json:"user"`
+	// True, if the user's presence in the chat is hidden (Detected via probe)
+	IsAnonymous bool `json:"is_anonymous,omitempty"`
+	// True, if the administrator can access the chat event log, chat statistics, etc.
+	CanManageChat bool `json:"can_manage_chat,omitempty"`
+	// True, if the administrator can create, edit, or delete forum topics (Detected via probe)
+	CanManageTopics bool `json:"can_manage_topics,omitempty"`
+	// True, if the administrator can delete messages of other users
+	CanDeleteMessages bool `json:"can_delete_messages,omitempty"`
+	// True, if the administrator can manage video chats
+	CanManageVideoChats bool `json:"can_manage_video_chats,omitempty"`
+	// True, if the administrator can restrict, ban or unban chat members
+	CanRestrictMembers bool `json:"can_restrict_members,omitempty"`
+	// True, if the administrator can add new administrators with a subset of their own privileges
+	CanPromoteMembers bool `json:"can_promote_members,omitempty"`
+	// True, if the user is allowed to change the chat title, photo and other settings
+	CanChangeInfo bool `json:"can_change_info,omitempty"`
+	// True, if the user is allowed to invite new users to the chat
+	CanInviteUsers bool `json:"can_invite_users,omitempty"`
+	// True, if the user is allowed to pin messages
+	CanPinMessages bool `json:"can_pin_messages,omitempty"`
+	// True, if the user is currently a member of the chat
+	IsMember bool `json:"is_member,omitempty"`
+	// True, if the user is allowed to send text messages, contacts, locations and venues
+	CanSendMessages bool `json:"can_send_messages,omitempty"`
+	// True, if the user is allowed to send audios, documents, photos, videos, video notes and voice notes
+	CanSendMediaMessages bool `json:"can_send_media_messages,omitempty"`
+	// True, if the user is allowed to send animations, games, stickers and use inline bots
+	CanSendOtherMessages bool `json:"can_send_other_messages,omitempty"`
+	// True, if the user is allowed to add web page previews to their messages
+	CanAddWebPagePreviews bool `json:"can_add_web_page_previews,omitempty"`
 }
 
 // ChatPhoto represents chat avatar file references

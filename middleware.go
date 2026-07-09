@@ -1838,10 +1838,9 @@ const (
 type ChatLoc string
 
 const (
-	LocPrivate    ChatLoc = "private"    // Bot direct message PV
-	LocGroup      ChatLoc = "group"      // Regular chat group
-	LocSuperGroup ChatLoc = "supergroup" // Supergroup chat
-	LocChannel    ChatLoc = "channel"    // Channel chat
+	LocTypePrivate ChatLoc = "private"
+	LocTypeGroup   ChatLoc = "group" // Covers both group and supergroup for Bale
+	LocTypeChannel ChatLoc = "channel"
 )
 
 // Roles restricts the command execution to specific member roles (e.g., owner, admin, regular)
@@ -1877,34 +1876,32 @@ func (r *RouteChain) Roles(roles ...MemberRole) *RouteChain {
 	return r
 }
 
-// Locs restricts the command execution to specific chat locations (e.g., private, group, supergroup, channel)
+// Locs restricts the command execution to specific chat locations
 func (r *RouteChain) Locs(locs ...ChatLoc) *RouteChain {
-	r.Guard(func(c *Ctx) bool {
+	return r.Guard(func(c *Ctx) bool {
 		var currentLoc ChatLoc
+		chatType := c.Message.Chat.Type
 
-		// Resolve current chat location type safely
-		if c.IsPrivate() {
-			currentLoc = LocPrivate
-		} else if c.IsSuperGroup() {
-			currentLoc = LocSuperGroup
-		} else if c.IsGroup() {
-			currentLoc = LocGroup
-		} else if c.IsChannel() {
-			currentLoc = LocChannel
+		// Bale often returns "group" for both standard and supergroups
+		// We treat them as the same to ensure admin commands work everywhere
+		switch chatType {
+		case "private":
+			currentLoc = LocTypePrivate
+		case "group", "supergroup":
+			currentLoc = LocTypeGroup
+		case "channel":
+			currentLoc = LocTypeChannel
 		}
 
-		// Validate if current location is allowed
 		for _, loc := range locs {
 			if currentLoc == loc {
 				return true
 			}
 		}
 
-		// If location is unauthorized, send a temporary 5-second warning alert
 		_, _ = c.Send().Text("⚠️ این دستور در این نوع محیط گفتگو قابل اجرا نیست.").Temp(5 * time.Second).Go()
 		return false
 	})
-	return r
 }
 
 // ReplyGuard filters and deletes group replies when the reply lock is enabled in settings
@@ -2181,6 +2178,31 @@ func LinkLockGuard() Handler {
 				}
 				_, _ = c.Send().Text(warnText).Temp(5 * time.Second).Go()
 			}
+		}
+
+		c.Next()
+	}
+}
+
+// InternalRestrictGuard enforces mutes in normal groups using the internal database
+func InternalRestrictGuard() Handler {
+	return func(c *Ctx) {
+		if c.Message == nil || c.Message.From == nil || c.IsPrivate() {
+			c.Next()
+			return
+		}
+
+		chatID, _ := c.ChatID()
+		userID := c.SenderID()
+
+		// Internal Key for check situation
+		muteKey := fmt.Sprintf("internal_mute:%d:%d", chatID, userID)
+
+		if val, ok := c.DB().Get(muteKey).Go(); ok && val == true {
+			// If restricted, delete message
+			_ = c.Del().Go()
+			c.Abort()
+			return
 		}
 
 		c.Next()

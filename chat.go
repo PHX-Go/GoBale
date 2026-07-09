@@ -224,135 +224,97 @@ func (c *ChatChain) Promote(userID int64) *PromoteChain {
 	return &PromoteChain{cc: c, user: userID}
 }
 
-// PromoteChain holds admin privileges flags for chat promotion with full 21 permissions support
+// PromoteChain holds admin privileges flags for chat promotion
 type PromoteChain struct {
-	cc       *ChatChain
-	user     int64
-	edited   bool // can_be_edited
-	info     bool // can_change_info
-	post     bool // can_post_messages
-	edit     bool // can_edit_messages
-	del      bool // can_delete_messages
-	inv      bool // can_invite_users
-	rest     bool // can_restrict_members
-	pin      bool // can_pin_messages
-	promote  bool // can_promote_members
-	vChat    bool // can_manage_video_chats (New)
-	topics   bool // can_manage_topics (New)
-	anon     bool // is_anonymous (New)
-	sendMsg  bool // can_send_messages
-	sendMed  bool // can_send_media_messages
-	replySty bool // can_reply_to_story
-	sendLnk  bool // can_send_link_message
-	sendFwd  bool // can_send_forwarded_message
-	seeMem   bool // can_see_members
-	addSty   bool // can_add_story
-	sendGif  bool // can_send_gif_stickers
-	fwdFrom  bool // can_forward_message_from
-	gift     bool // can_send_gift_packet
-	call     bool // can_start_call
-	kick     bool // can_kick_user
+	cc      *ChatChain
+	user    int64
+	info    bool // can_change_info
+	post    bool // can_post_messages
+	edit    bool // can_edit_messages
+	del     bool // can_delete_messages
+	inv     bool // can_invite_users
+	rest    bool // can_restrict_members
+	pin     bool // can_pin_messages
+	promote bool // can_promote_members
+	vChat   bool // can_manage_video_chats
+	topics  bool // can_manage_topics
+	anon    bool // is_anonymous
+	seeMem  bool // can_see_members
+	addSty  bool // can_add_story
+	gift    bool // can_send_gift_packet
 }
 
-// ManageTopics configures if the admin can create, edit or delete forum topics
-func (p *PromoteChain) ManageTopics(v bool) *PromoteChain { p.topics = v; return p }
-
-// Anonymous configures if the admin's messages are sent as the chat title
-func (p *PromoteChain) Anonymous(v bool) *PromoteChain { p.anon = v; return p }
-
-// Edited configures if the bot is allowed to edit administrator privileges of that user
-func (p *PromoteChain) Edited(v bool) *PromoteChain { p.edited = v; return p }
-
-// ChangeInfo configures if the user can change the chat title, photo and other settings
+// ChangeInfo sets can_change_info permission
 func (p *PromoteChain) ChangeInfo(v bool) *PromoteChain { p.info = v; return p }
 
-// PostMessages configures if the administrator can post messages in the channel
+// PostMessages sets can_post_messages permission
 func (p *PromoteChain) PostMessages(v bool) *PromoteChain { p.post = v; return p }
 
-// EditMessages configures if the administrator can edit messages of other users
+// EditMessages sets can_edit_messages permission
 func (p *PromoteChain) EditMessages(v bool) *PromoteChain { p.edit = v; return p }
 
-// DeleteMessages configures if the administrator can delete messages of other users
+// DeleteMessages sets can_delete_messages permission
 func (p *PromoteChain) DeleteMessages(v bool) *PromoteChain { p.del = v; return p }
 
-// InviteUsers configures if the user can invite new users to the chat
+// InviteUsers sets can_invite_users permission
 func (p *PromoteChain) InviteUsers(v bool) *PromoteChain { p.inv = v; return p }
 
-// RestrictMembers configures if the administrator can restrict, ban or unban chat members
+// RestrictMembers sets can_restrict_members permission
 func (p *PromoteChain) RestrictMembers(v bool) *PromoteChain { p.rest = v; return p }
 
-// PinMessages configures if the user is allowed to pin messages
+// PinMessages sets can_pin_messages permission
 func (p *PromoteChain) PinMessages(v bool) *PromoteChain { p.pin = v; return p }
 
-// PromoteMembers configures if the administrator can add new administrators
+// PromoteMembers sets can_promote_members permission
 func (p *PromoteChain) PromoteMembers(v bool) *PromoteChain { p.promote = v; return p }
 
-// SendMessages configures if the user is allowed to send messages
-func (p *PromoteChain) SendMessages(v bool) *PromoteChain { p.sendMsg = v; return p }
+// ManageTopics sets can_manage_topics permission
+func (p *PromoteChain) ManageTopics(v bool) *PromoteChain { p.topics = v; return p }
 
-// SendMedia configures if the user is allowed to send a media message
-func (p *PromoteChain) SendMedia(v bool) *PromoteChain { p.sendMed = v; return p }
+// Anonymous sets is_anonymous permission
+func (p *PromoteChain) Anonymous(v bool) *PromoteChain { p.anon = v; return p }
 
-// ReplyToStory configures if the user is allowed to reply to a story
-func (p *PromoteChain) ReplyToStory(v bool) *PromoteChain { p.replySty = v; return p }
-
-// SendLink configures if the user is allowed to send a link message
-func (p *PromoteChain) SendLink(v bool) *PromoteChain { p.sendLnk = v; return p }
-
-// SendForwarded configures if the user is allowed to forward a message to chat
-func (p *PromoteChain) SendForwarded(v bool) *PromoteChain { p.sendFwd = v; return p }
-
-// SeeMembers configures if the user is allowed to see the list of chat members
-func (p *PromoteChain) SeeMembers(v bool) *PromoteChain { p.seeMem = v; return p }
-
-// AddStory configures if the user is allowed to post a story from chat
-func (p *PromoteChain) AddStory(v bool) *PromoteChain { p.addSty = v; return p }
-
-// SendGif configures if the user is allowed to send gif stickers
-func (p *PromoteChain) SendGif(v bool) *PromoteChain { p.sendGif = v; return p }
-
-// ForwardFrom configures if the user is allowed to forward messages from other chats
-func (p *PromoteChain) ForwardFrom(v bool) *PromoteChain { p.fwdFrom = v; return p }
-
-// SendGift configures if the user is allowed to send gift packets
-func (p *PromoteChain) SendGift(v bool) *PromoteChain { p.gift = v; return p }
-
-// StartCall configures if the user is allowed to start voice/video calls inside chat
-func (p *PromoteChain) StartCall(v bool) *PromoteChain { p.call = v; return p }
-
-// KickUser configures if the user is allowed to kick other members from chat
-func (p *PromoteChain) KickUser(v bool) *PromoteChain { p.kick = v; return p }
-
-// Go executes the promote request with auto error logging
+// Go executes the promotion request with dynamic payload builder
 func (p *PromoteChain) Go() error {
 	resolved := p.cc.bot.ResolveChatID(p.cc.chat)
-	err := p.cc.bot.BaseRequest(p.cc.ctx, "promoteChatMember", map[string]any{
-		"chat_id":                    resolved,
-		"user_id":                    p.user,
-		"can_be_edited":              p.edited,
-		"can_change_info":            p.info,
-		"can_post_messages":          p.post,
-		"can_edit_messages":          p.edit,
-		"can_delete_messages":        p.del,
-		"can_invite_users":           p.inv,
-		"can_restrict_members":       p.rest,
-		"can_pin_messages":           p.pin,
-		"can_promote_members":        p.promote,
-		"can_send_messages":          p.sendMsg,
-		"can_send_media_messages":    p.sendMed,
-		"can_reply_to_story":         p.replySty,
-		"can_send_link_message":      p.sendLnk,
-		"can_send_forwarded_message": p.sendFwd,
-		"can_see_members":            p.seeMem,
-		"can_add_story":              p.addSty,
-		"can_send_gif_stickers":      p.sendGif,
-		"can_forward_message_from":   p.fwdFrom,
-		"can_send_gift_packet":       p.gift,
-		"can_start_call":             p.call,
-		"can_kick_user":              p.kick,
-		"can_manage_topics":          p.topics,
-		"is_anonymous":               p.anon,
-	}, nil)
+	payload := map[string]any{
+		"chat_id": resolved,
+		"user_id": p.user,
+	}
+
+	// Map flags to Bale API expected keys
+	if p.info {
+		payload["can_change_info"] = true
+	}
+	if p.post {
+		payload["can_post_messages"] = true
+	}
+	if p.edit {
+		payload["can_edit_messages"] = true
+	}
+	if p.del {
+		payload["can_delete_messages"] = true
+	}
+	if p.inv {
+		payload["can_invite_users"] = true
+	}
+	if p.rest {
+		payload["can_restrict_members"] = true
+	}
+	if p.pin {
+		payload["can_pin_messages"] = true
+	}
+	if p.promote {
+		payload["can_promote_members"] = true
+	}
+	if p.topics {
+		payload["can_manage_topics"] = true
+	}
+	if p.anon {
+		payload["is_anonymous"] = true
+	}
+
+	err := p.cc.bot.BaseRequest(p.cc.ctx, "promoteChatMember", payload, nil)
 	if err != nil {
 		logErr(p.cc.bot, "[Chat Promote Error] ", err)
 	}
@@ -372,12 +334,21 @@ type LeaveChain struct {
 // Go executes the chat leaving action with auto error logging
 func (l *LeaveChain) Go() error {
 	resolved := l.cc.bot.ResolveChatID(l.cc.chat)
+
+	// Execute the API request to Bale servers
 	err := l.cc.bot.BaseRequest(l.cc.ctx, "leaveChat", map[string]any{
 		"chat_id": resolved,
 	}, nil)
+
 	if err != nil {
 		logErr(l.cc.bot, "[Chat Leave Error] ", err)
+	} else {
+		// Optional: Log successful departure in the ladder
+		l.cc.bot.Log().Warn("🚪 ربات با موفقیت از چت خارج شد").
+			Any("chat_target", resolved).
+			Go()
 	}
+
 	return err
 }
 
@@ -1260,4 +1231,104 @@ func (e *ExitChain) Go() {
 
 	o := &OnChain{bot: e.bot}
 	o.Callback("_sys_exit").Do(finalHandlers...)
+}
+
+// Permissions handles global group-wide rights for all members
+func (c *ChatChain) Permissions() *PermissionsChain {
+	return &PermissionsChain{cc: c}
+}
+
+// PermissionsChain holds flags for global chat permissions
+type PermissionsChain struct {
+	cc      *ChatChain
+	sendMsg bool
+	sendMed bool
+	sendStk bool
+	inv     bool
+	pin     bool
+	info    bool
+	call    bool
+}
+
+// SendMessages toggles text message permission for all members
+func (p *PermissionsChain) SendMessages(v bool) *PermissionsChain { p.sendMsg = v; return p }
+
+// SendMedia toggles photo/video/audio permissions
+func (p *PermissionsChain) SendMedia(v bool) *PermissionsChain { p.sendMed = v; return p }
+
+// SendOther toggles stickers and animations
+func (p *PermissionsChain) SendOther(v bool) *PermissionsChain { p.sendStk = v; return p }
+
+// InviteUsers toggles member addition permission
+func (p *PermissionsChain) InviteUsers(v bool) *PermissionsChain { p.inv = v; return p }
+
+// PinMessages toggles pinning (Only works in Private Groups)
+func (p *PermissionsChain) PinMessages(v bool) *PermissionsChain { p.pin = v; return p }
+
+// ChangeInfo toggles group info editing (Only works in Private Groups)
+func (p *PermissionsChain) ChangeInfo(v bool) *PermissionsChain { p.info = v; return p }
+
+// Go executes the permission update on Bale servers
+func (p *PermissionsChain) Go() error {
+	resolved := p.cc.bot.ResolveChatID(p.cc.chat)
+
+	// Check if group is Public (has username) to respect Bale constraints
+	isPublic := false
+	if info, err := p.cc.bot.Chat(resolved).Info().Go(); err == nil && info.Username != "" {
+		isPublic = true
+	}
+
+	perms := map[string]any{
+		"can_send_messages":       p.sendMsg,
+		"can_send_media_messages": p.sendMed,
+		"can_send_other_messages": p.sendStk,
+		"can_invite_users":        p.inv,
+	}
+
+	// Bale constraint: Pin and Info can only be toggled in Private groups
+	if !isPublic {
+		perms["can_pin_messages"] = p.pin
+		perms["can_change_info"] = p.info
+	}
+
+	err := p.cc.bot.BaseRequest(p.cc.ctx, "setChatPermissions", map[string]any{
+		"chat_id":     resolved,
+		"permissions": perms,
+	}, nil)
+
+	if err != nil {
+		logErr(p.cc.bot, "[Chat Permissions Error] ", err)
+	}
+	return err
+}
+
+// RefreshRights triggers a getChatMember call on the bot itself
+// to force Bale to update its internal permission cache for this bot.
+func (c *ChatChain) RefreshRights() *ChatChain {
+	me, err := c.bot.Me().Go()
+	if err == nil {
+		// Just calling getChatMember is often enough to wake up Bale's permission sync
+		_, _ = c.bot.Chat(c.chat).Member(me.ID).Go()
+	}
+	return c
+}
+
+// ForceSync performs a harmless metadata update to force Bale to refresh its access cache.
+// This is a workaround for the persistent 403 Forbidden error in some groups.
+func (c *ChatChain) ForceSync() *ChatChain {
+	// 1. Get current info
+	info, err := c.bot.Chat(c.chat).Info().Go()
+	if err != nil || info == nil {
+		return c
+	}
+
+	currentDesc := info.Description
+	tempDesc := currentDesc + " ." // Harmless change
+
+	// 2. Flip the description to trigger a server-side cache invalidation
+	_ = c.bot.Chat(c.chat).Desc(tempDesc).Go()
+	time.Sleep(150 * time.Millisecond)
+	_ = c.bot.Chat(c.chat).Desc(currentDesc).Go()
+
+	return c
 }
