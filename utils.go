@@ -20,6 +20,14 @@ import (
 	"time"
 )
 
+// digitReplacer is a global instance for efficient string replacement
+var digitReplacer = strings.NewReplacer(
+	"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
+	"۵", "5", "۶", "6", "۷", "7", "۸", "8", "۹", "9",
+	"٠", "0", "١", "1", "٢", "2", "٣", "3", "٤", "4",
+	"٥", "5", "٦", "6", "٧", "7", "٨", "8", "٩", "9",
+)
+
 // rxPhone compiles a fast regex to validate Iranian mobile phone number structures
 var rxPhone = regexp.MustCompile(`^(0|98|\+98|0098)?(9\d{9})$`)
 
@@ -69,15 +77,9 @@ func Money(n int64) string {
 	return out
 }
 
-// ToEnDigits replaces Persian and Arabic numerals with English equivalents safely
+// ToEnDigits replaces Persian and Arabic numerals with English equivalents efficiently
 func ToEnDigits(s string) string {
-	repl := strings.NewReplacer(
-		"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
-		"۵", "5", "۶", "6", "۷", "7", "۸", "8", "۹", "9",
-		"٠", "0", "١", "1", "٢", "2", "٣", "3", "٤", "4",
-		"٥", "5", "٦", "6", "٧", "7", "٨", "8", "٩", "9",
-	)
-	return repl.Replace(s)
+	return digitReplacer.Replace(s)
 }
 
 // OTP generates secure crypto random numerical OTP codes
