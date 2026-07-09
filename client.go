@@ -333,9 +333,11 @@ func extractChatID(params any) int64 {
 // termination even when ctx has no deadline. 5xx and read/decode failures
 // report into the circuit breaker; 2xx success resets it.
 func (c *Client) BaseRequest(ctx context.Context, method string, params any, result any) error {
-	// Panic-Proof Shield: Ensure context is never nil
+	// Panic-Proof Shield: Ensure context is never nil and has timeout
 	if ctx == nil {
-		ctx = context.Background()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
 	}
 
 	if !c.cb.CanExecute() {
