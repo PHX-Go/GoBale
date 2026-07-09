@@ -27,6 +27,28 @@ type Ctx struct {
 	prevText string
 }
 
+// TargetUser resolves the target user ID from a reply message or explicit command arguments
+func (c *Ctx) TargetUser() (int64, error) {
+	if c.Message == nil {
+		return 0, errors.New("no message in context")
+	}
+
+	// 1. Resolve target from reply-to message
+	if c.Message.ReplyToMessage != nil && c.Message.ReplyToMessage.From != nil {
+		return c.Message.ReplyToMessage.From.ID, nil
+	}
+
+	// 2. Resolve target from explicit command arguments
+	args, ok := c.Arg().([]string)
+	if ok && len(args) > 0 {
+		if id, err := strconv.ParseInt(args[0], 10, 64); err == nil {
+			return id, nil
+		}
+	}
+
+	return 0, errors.New("target user not specified (must reply to a user or provide an ID)")
+}
+
 // Next executes the next handler in the execution chain
 func (c *Ctx) Next() {
 	c.index++

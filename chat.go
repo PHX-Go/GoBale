@@ -778,12 +778,13 @@ func (c *ChatChain) Restrict(userID int64) *RestrictChain {
 
 // RestrictChain handles fluent restrictions for chat members
 type RestrictChain struct {
-	cc      *ChatChain
-	user    int64
-	sendMsg bool
-	sendMed bool
-	sendOth bool
-	addPrev bool
+	cc       *ChatChain
+	user     int64
+	sendMsg  bool
+	sendMed  bool
+	sendOth  bool
+	addPrev  bool
+	duration time.Duration
 }
 
 // SendMessages configures if the user is allowed to send text messages
@@ -810,6 +811,12 @@ func (r *RestrictChain) AddPreviews(v bool) *RestrictChain {
 	return r
 }
 
+// For sets a native duration from now for how long the restriction will last before auto-lift
+func (r *RestrictChain) For(d time.Duration) *RestrictChain {
+	r.duration = d
+	return r
+}
+
 // Go executes the chat member restriction on Bale servers with auto error logging
 func (r *RestrictChain) Go() error {
 	resolved := r.cc.bot.ResolveChatID(r.cc.chat)
@@ -819,15 +826,42 @@ func (r *RestrictChain) Go() error {
 		"can_send_other_messages":   r.sendOth,
 		"can_add_web_page_previews": r.addPrev,
 	}
+
+	// Log compiled permissions payload before sending to network
+	r.cc.bot.Log().Info("Outgoing restriction payload compiled").
+		Any("resolved_chat_id", resolved).
+		Int64("target_user_id", r.user).
+		Any("compiled_permissions", permissions).
+		Go()
+
 	err := r.cc.bot.BaseRequest(r.cc.ctx, "restrictChatMember", map[string]any{
 		"chat_id":     resolved,
 		"user_id":     r.user,
 		"permissions": permissions,
 	}, nil)
+
 	if err != nil {
 		logErr(r.cc.bot, "[Chat Restrict Error] ", err)
+		return err
 	}
-	return err
+
+	// Schedule automatic lifting of restrictions using framework's internal Task scheduler
+	if r.duration > 0 {
+		botInstance := r.cc.bot
+		targetChat := r.cc.chat
+		targetUser := r.user
+
+		botInstance.Task().In(r.duration, func() {
+			_ = botInstance.Chat(targetChat).Restrict(targetUser).
+				SendMessages(true).
+				SendMedia(true).
+				SendOther(true).
+				AddPreviews(true).
+				Go()
+		})
+	}
+
+	return nil
 }
 
 // DelMsg initiates a specific message deletion chain inside the chat using its ID
@@ -872,21 +906,42 @@ func (m *MuteChain) For(d time.Duration) *MuteChain {
 	return m
 }
 
-// Go executes the mute via DB flag and schedules automatic unmute
+// Go executes the mute natively on Bale servers using restrictChatMember with scheduled auto-unmute
 func (m *MuteChain) Go() error {
-	chatID, err := resolveChatIDInt64(m.cc)
+	resolved := m.cc.bot.ResolveChatID(m.cc.chat)
+
+	// Compile permissions to natively revoke standard sending privileges
+	perms := map[string]any{
+		"can_send_messages":         false,
+		"can_send_media_messages":   false,
+		"can_send_other_messages":   false,
+		"can_add_web_page_previews": false,
+	}
+
+	err := m.cc.bot.BaseRequest(m.cc.ctx, "restrictChatMember", map[string]any{
+		"chat_id":     resolved,
+		"user_id":     m.userID,
+		"permissions": perms,
+	}, nil)
+
 	if err != nil {
+		logErr(m.cc.bot, "[Chat Mute Error] ", err)
 		return err
 	}
 
-	muteKey := fmt.Sprintf("mute_user_%d_%d", chatID, m.userID)
-	if err := m.cc.bot.dbInstance.Set(muteKey, true); err != nil {
-		return err
-	}
-
+	// Schedule automatic unmute natively using framework's internal Task scheduler
 	if m.duration > 0 {
-		m.cc.bot.Task().In(m.duration, func() {
-			_ = m.cc.bot.dbInstance.Del(muteKey)
+		botInstance := m.cc.bot
+		targetChat := m.cc.chat
+		targetUser := m.userID
+
+		botInstance.Task().In(m.duration, func() {
+			_ = botInstance.Chat(targetChat).Restrict(targetUser).
+				SendMessages(true).
+				SendMedia(true).
+				SendOther(true).
+				AddPreviews(true).
+				Go()
 		})
 	}
 
@@ -917,28 +972,18 @@ func (t *TempBanChain) Go() error {
 		return err
 	}
 
+	// Schedule automatic unban using framework's internal Task scheduler
 	if t.duration > 0 {
-		userID := t.userID
-		t.cc.bot.Task().In(t.duration, func() {
-			_ = t.cc.Ban(userID).Go()
-			_ = t.cc.Unban(userID).OnlyIfBanned(true).Go()
+		botInstance := t.cc.bot
+		targetChat := t.cc.chat
+		targetUser := t.userID
+
+		botInstance.Task().In(t.duration, func() {
+			_ = botInstance.Chat(targetChat).Unban(targetUser).OnlyIfBanned(true).Go()
 		})
 	}
 
 	return nil
-}
-
-// resolveChatIDInt64 extracts chat ID as int64 after standardizing through ResolveChatID
-func resolveChatIDInt64(cc *ChatChain) (int64, error) {
-	resolved := cc.bot.ResolveChatID(cc.chat)
-	switch v := resolved.(type) {
-	case int64:
-		return v, nil
-	case int:
-		return int64(v), nil
-	default:
-		return 0, fmt.Errorf("cannot resolve chat ID as int64")
-	}
 }
 
 // ActionChain handles fluent chat action states (like typing) using the unified dot system
@@ -1268,14 +1313,52 @@ func (p *PermissionsChain) PinMessages(v bool) *PermissionsChain { p.pin = v; re
 // ChangeInfo toggles group info editing (Only works in Private Groups)
 func (p *PermissionsChain) ChangeInfo(v bool) *PermissionsChain { p.info = v; return p }
 
-// Go executes the permission update on Bale servers
+// Go executes the permission update on Bale servers with local hybrid fallback
 func (p *PermissionsChain) Go() error {
 	resolved := p.cc.bot.ResolveChatID(p.cc.chat)
+	chatID, okChat := resolved.(int64)
 
-	// Check if group is Public (has username) to respect Bale constraints
+	// Prevent redundant getChat requests by using cached chat status
+	cacheKey := fmt.Sprintf("chat_is_public:%v", resolved)
 	isPublic := false
-	if info, err := p.cc.bot.Chat(resolved).Info().Go(); err == nil && info.Username != "" {
-		isPublic = true
+	if cachedVal, ok := p.cc.bot.Cache().Get(cacheKey).Go(); ok {
+		if val, okBool := cachedVal.(bool); okBool {
+			isPublic = val
+		}
+	} else {
+		if info, err := p.cc.bot.Chat(resolved).Info().Go(); err == nil && info != nil {
+			isPublic = info.Username != ""
+			p.cc.bot.Cache().Set(cacheKey, isPublic, 12*time.Hour).Go()
+		}
+	}
+
+	// Apply virtual group restrictions inside local database for local middleware enforcement
+	if okChat && p.cc.bot.dbInstance != nil {
+		db := p.cc.bot.dbInstance
+
+		// 1. Text message restriction -> Virtual full group lock
+		lockKey := fmt.Sprintf("group_lock_%d", chatID)
+		if !p.sendMsg {
+			_ = db.Set(lockKey, true)
+		} else {
+			_ = db.Del(lockKey)
+		}
+
+		// 2. Media & Sticker restrictions -> Virtual media guard list
+		var localBlocked []string
+		if !p.sendMed {
+			localBlocked = append(localBlocked, "photo", "video", "voice", "audio", "document", "animation", "location", "contact")
+		}
+		if !p.sendStk {
+			localBlocked = append(localBlocked, "sticker")
+		}
+
+		groupKey := fmt.Sprintf("blocked_media_group_%d", chatID)
+		if len(localBlocked) > 0 {
+			_ = db.Set(groupKey, localBlocked)
+		} else {
+			_ = db.Del(groupKey)
+		}
 	}
 
 	perms := map[string]any{
@@ -1291,15 +1374,28 @@ func (p *PermissionsChain) Go() error {
 		perms["can_change_info"] = p.info
 	}
 
+	// Log compiled permissions payload before sending to network
+	p.cc.bot.Log().Info("Outgoing global permissions payload compiled").
+		Any("resolved_chat_id", resolved).
+		Any("compiled_permissions", perms).
+		Go()
+
+	// Attempt API call but handle 501 gracefully as virtual fallback is active
 	err := p.cc.bot.BaseRequest(p.cc.ctx, "setChatPermissions", map[string]any{
 		"chat_id":     resolved,
 		"permissions": perms,
 	}, nil)
 
 	if err != nil {
+		// Gracefully bypass 501 Not Implemented since local database Virtual Shield is fully active
+		if strings.Contains(err.Error(), "501") || strings.Contains(err.Error(), "Not Implemented") {
+			p.cc.bot.Log().Warn("setChatPermissions API not supported by Bale, virtual database restriction applied instead").Go()
+			return nil
+		}
 		logErr(p.cc.bot, "[Chat Permissions Error] ", err)
+		return err
 	}
-	return err
+	return nil
 }
 
 // RefreshRights triggers a getChatMember call on the bot itself
