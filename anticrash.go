@@ -50,19 +50,19 @@ func (e *AntiCrashEngine) ScanText(text string) []DetectionResult {
 
 // BUILT-IN SECURITY RULES (Multi-Dimensional Unicode Threat Shield)
 
-// ZalgoRule detects consecutive/dense combining marks, enclosing symbols, and invisible control bombs
+// ZalgoRule: Detects combining marks, zero-width chars, RTL overrides, and foreign crash scripts
 type ZalgoRule struct {
 	MaxCombiningPerChar int
 }
 
 func (z *ZalgoRule) Name() string { return "ZalgoShield" }
 
-// Detect evaluates combining marks, zero-width characters, RTL overrides, and foreign scripts
+// Detect: Pure Zalgo threat detection (combining density, enclosing symbols, invisible bombs, foreign scripts)
 func (z *ZalgoRule) Detect(text string) DetectionResult {
 	runes := []rune(text)
 	totalRunes := len(runes)
 	if totalRunes == 0 {
-		return DetectionResult{Detected: false}
+		return DetectionResult{Detected: false, RuleName: z.Name(), Severity: 1, Reason: "Empty text (no Zalgo threat)"}
 	}
 
 	consecutiveCombining := 0
@@ -75,7 +75,6 @@ func (z *ZalgoRule) Detect(text string) DetectionResult {
 	for _, r := range runes {
 		if isZeroWidth(r) || isRTLOverride(r) {
 			invisibleControlCount++
-			// Strict bidi limit to prevent client lags
 			if invisibleControlCount > 4 {
 				suspiciousChars = append(suspiciousChars, r)
 			}
@@ -106,23 +105,31 @@ func (z *ZalgoRule) Detect(text string) DetectionResult {
 	}
 
 	densityRatio := float64(totalCombining) / float64(totalRunes)
-	highDensity := totalCombining > 3 && densityRatio > 0.10 // High sensitivity
-
+	highDensity := totalCombining > 3 && densityRatio > 0.10
 	foreignCrashAttempt := foreignComplexCount > 2
 
 	detected := len(suspiciousChars) > 0 || highDensity || enclosingOrSymbolCombining > 2 || invisibleControlCount > 4 || foreignCrashAttempt
 
 	var reason string
+	severity := 1
 	if highDensity {
-		reason = fmt.Sprintf("High combining mark density detected (%.2f%%)", densityRatio*100)
+		reason = fmt.Sprintf("High combining mark density detected (%.2f%% exceeds 10%% threshold)", densityRatio*100)
+		severity = 9
 	} else if enclosingOrSymbolCombining > 2 {
-		reason = "Excessive symbolic enclosing combining marks detected (potential client-crash payload)"
+		reason = fmt.Sprintf("Excessive symbolic enclosing marks (%d detected, max 2 allowed) - client crash payload", enclosingOrSymbolCombining)
+		severity = 10
 	} else if invisibleControlCount > 4 {
-		reason = "Excessive invisible bidi/control characters detected (potential invisible text bomb)"
+		reason = fmt.Sprintf("Invisible bidi/control bomb detected (%d zero-width chars, max 4 allowed)", invisibleControlCount)
+		severity = 10
 	} else if foreignCrashAttempt {
-		reason = "Foreign complex script commonly used in crash payloads detected (quarantine block)"
+		reason = fmt.Sprintf("Foreign complex script crash payload detected (%d chars from dangerous scripts)", foreignComplexCount)
+		severity = 9
+	} else if detected {
+		reason = fmt.Sprintf("Excessive consecutive combining marks (max %d allowed)", z.MaxCombiningPerChar)
+		severity = 8
 	} else {
-		reason = "Excessive consecutive combining marks or zero-width obfuscation detected"
+		reason = "Text passes Zalgo detection (combining marks, controls within safe limits)"
+		severity = 1
 	}
 
 	cleanedRunes := make([]rune, 0, totalRunes)
@@ -133,7 +140,7 @@ func (z *ZalgoRule) Detect(text string) DetectionResult {
 			continue
 		}
 		if isForeignComplexScript(r) {
-			continue // Strip foreign crash scripts entirely
+			continue
 		}
 		if isCombiningMark(r) {
 			comb++
@@ -141,7 +148,6 @@ func (z *ZalgoRule) Detect(text string) DetectionResult {
 			if isSymbol {
 				encCount++
 			}
-
 			if comb <= z.MaxCombiningPerChar && (!isSymbol || encCount <= 2) {
 				cleanedRunes = append(cleanedRunes, r)
 			}
@@ -154,14 +160,14 @@ func (z *ZalgoRule) Detect(text string) DetectionResult {
 	return DetectionResult{
 		Detected: detected,
 		RuleName: z.Name(),
-		Severity: 10,
+		Severity: severity,
 		Cleaned:  string(cleanedRunes),
 		Reason:   reason,
 		Evidence: suspiciousChars,
 	}
 }
 
-// AlternatingPatternRule detects highly repetitive, low-entropy sequences (e.g. ABABAB... or Mongolian+Circle)
+// AlternatingPatternRule: Detects low-entropy repetitive sequences (ABABAB... or Mongolian+Circle patterns)
 type AlternatingPatternRule struct {
 	MinLength int
 	MinRatio  float64
@@ -169,12 +175,18 @@ type AlternatingPatternRule struct {
 
 func (ap *AlternatingPatternRule) Name() string { return "AlternatingPatternSpam" }
 
+// Detect: Pure low-entropy pattern detection (character diversity analysis)
 func (ap *AlternatingPatternRule) Detect(text string) DetectionResult {
 	runes := []rune(text)
 	totalRunes := len(runes)
 
 	if totalRunes < ap.MinLength {
-		return DetectionResult{Detected: false}
+		return DetectionResult{
+			Detected: false,
+			RuleName: ap.Name(),
+			Severity: 1,
+			Reason:   fmt.Sprintf("Text length %d is below minimum %d (no pattern analysis needed)", totalRunes, ap.MinLength),
+		}
 	}
 
 	uniqueRunes := make(map[rune]bool)
@@ -189,38 +201,60 @@ func (ap *AlternatingPatternRule) Detect(text string) DetectionResult {
 	}
 
 	if countedRunes < ap.MinLength {
-		return DetectionResult{Detected: false}
+		return DetectionResult{
+			Detected: false,
+			RuleName: ap.Name(),
+			Severity: 1,
+			Reason:   fmt.Sprintf("Counted characters %d below threshold %d (insufficient for diversity check)", countedRunes, ap.MinLength),
+		}
 	}
 
 	ratio := float64(len(uniqueRunes)) / float64(countedRunes)
 	detected := ratio < ap.MinRatio
 
+	var reason string
+	var severity int
+	if detected {
+		reason = fmt.Sprintf("Abnormally low character diversity (%.2f%% unique) - below %.2f%% threshold (spam pattern detected)", ratio*100, ap.MinRatio*100)
+		severity = 8
+	} else {
+		reason = fmt.Sprintf("Text character diversity is healthy (%.2f%% unique, above %.2f%% threshold)", ratio*100, ap.MinRatio*100)
+		severity = 1
+	}
+
 	return DetectionResult{
 		Detected: detected,
 		RuleName: ap.Name(),
-		Severity: 8,
+		Severity: severity,
 		Cleaned:  "",
-		Reason:   fmt.Sprintf("Abnormally low character diversity detected (%.2f%% unique characters)", ratio*100),
+		Reason:   reason,
 		Evidence: []rune{},
 	}
 }
 
-// RepeatRule detects excessive single-character repetitions
+// RepeatRule: Detects excessive single-character runs (aaaaaaa, llllll, etc.)
 type RepeatRule struct {
 	MaxRuns int
 }
 
 func (rr *RepeatRule) Name() string { return "ExcessiveRepeat" }
 
+// Detect: Pure character repetition detection (run-length encoding analysis)
 func (rr *RepeatRule) Detect(text string) DetectionResult {
 	runes := []rune(text)
 	out := make([]rune, 0, len(runes))
 	var last rune
 	runs := 0
+	var maxRunChar rune
+	maxRunCount := 0
 
 	for _, r := range runes {
 		if r == last {
 			runs++
+			if runs > maxRunCount {
+				maxRunCount = runs
+				maxRunChar = r
+			}
 			if runs <= rr.MaxRuns {
 				out = append(out, r)
 			}
@@ -232,23 +266,35 @@ func (rr *RepeatRule) Detect(text string) DetectionResult {
 	}
 
 	detected := runs > rr.MaxRuns
+
+	var reason string
+	var severity int
+	if detected {
+		reason = fmt.Sprintf("Excessive character repetition detected (max run: %d consecutive '%c', limit: %d)", maxRunCount, maxRunChar, rr.MaxRuns)
+		severity = 4
+	} else {
+		reason = fmt.Sprintf("Character repetition within safe limits (max consecutive run: %d, limit: %d)", maxRunCount, rr.MaxRuns)
+		severity = 1
+	}
+
 	return DetectionResult{
 		Detected: detected,
 		RuleName: rr.Name(),
-		Severity: 4,
+		Severity: severity,
 		Cleaned:  string(out),
-		Reason:   "Abnormal character repetition detected",
+		Reason:   reason,
 		Evidence: []rune{last},
 	}
 }
 
-// LengthRule prevents client memory exhaustion from long messages
+// LengthRule: Prevents client memory exhaustion from oversized messages
 type LengthRule struct {
 	MaxLen int
 }
 
 func (l *LengthRule) Name() string { return "LengthLimit" }
 
+// Detect: Pure message length validation (memory exhaustion prevention)
 func (l *LengthRule) Detect(text string) DetectionResult {
 	runes := []rune(text)
 	detected := len(runes) > l.MaxLen
@@ -256,16 +302,27 @@ func (l *LengthRule) Detect(text string) DetectionResult {
 	if detected {
 		cleaned = string(runes[:l.MaxLen])
 	}
+
+	var reason string
+	var severity int
+	if detected {
+		reason = fmt.Sprintf("Message exceeds length limit (%d chars, max allowed: %d) - truncated for client stability", len(runes), l.MaxLen)
+		severity = 5
+	} else {
+		reason = fmt.Sprintf("Message length is safe (%d chars, limit: %d)", len(runes), l.MaxLen)
+		severity = 1
+	}
+
 	return DetectionResult{
 		Detected: detected,
 		RuleName: l.Name(),
-		Severity: 5,
+		Severity: severity,
 		Cleaned:  cleaned,
-		Reason:   "Message text size exceeds system limit",
+		Reason:   reason,
 	}
 }
 
-// HomoglyphRule detects phishing, typosquatting, and obfuscated keywords using skeletons
+// HomoglyphRule: Detects phishing via visual character substitution, IDN Punycode, mixed-script tokens
 type HomoglyphRule struct {
 	protectedWords []string
 	confusablesMap map[rune]string
@@ -274,6 +331,7 @@ type HomoglyphRule struct {
 
 func (h *HomoglyphRule) Name() string { return "HomoglyphPhishingShield" }
 
+// skeletonize: Maps lookalike characters to canonical forms (Cyrillic 'a' → Latin 'a')
 func (h *HomoglyphRule) skeletonize(s string) string {
 	var sb strings.Builder
 	for _, r := range s {
@@ -286,12 +344,12 @@ func (h *HomoglyphRule) skeletonize(s string) string {
 	return sb.String()
 }
 
-// Detect inspects words to flag mixed-scripts, Punycode, or close mimics of protected keywords
+// Detect: Pure phishing/homoglyph detection (Punycode decode, mixed-script flagging, skeleton edit-distance)
 func (h *HomoglyphRule) Detect(text string) DetectionResult {
 	words := strings.Fields(strings.ToLower(text))
 	var suspicious []rune
 	var reasons []string
-	severity := 0
+	severity := 1
 
 	for _, word := range words {
 		word = strings.Trim(word, "!?,.:;\"'()[]{}<>*#@")
@@ -299,24 +357,24 @@ func (h *HomoglyphRule) Detect(text string) DetectionResult {
 			continue
 		}
 
-		// A. Parse Punycode if applicable
+		// A. Decode IDN/Punycode if present
 		decoded := word
 		if strings.HasPrefix(word, "xn--") {
 			dec, err := decodePunycode(word)
 			if err == nil {
 				decoded = dec
-				reasons = append(reasons, fmt.Sprintf("IDN/Punycode obfuscation detected: '%s' decodes to '%s'", word, dec))
+				reasons = append(reasons, fmt.Sprintf("IDN/Punycode obfuscation detected: '%s' → '%s' (phishing risk)", word, dec))
 				if severity < 7 {
 					severity = 7
 				}
 			}
 		}
 
-		// B. Mixed-script detection (e.g., Latin mixed with Cyrillic inside one token)
+		// B. Detect mixed-script tokens (Latin + Cyrillic in one word = phishing red flag)
 		if h.blockMixed {
 			mixedScripts := detectMixedScript(decoded)
 			if len(mixedScripts) > 1 {
-				reasons = append(reasons, fmt.Sprintf("Mixed-script token detected: '%s' (scripts: %s)", decoded, strings.Join(mixedScripts, ", ")))
+				reasons = append(reasons, fmt.Sprintf("Mixed-script token detected: '%s' (scripts: %s) - typosquatting risk", decoded, strings.Join(mixedScripts, ", ")))
 				if severity < 8 {
 					severity = 8
 				}
@@ -328,27 +386,24 @@ func (h *HomoglyphRule) Detect(text string) DetectionResult {
 			}
 		}
 
-		// C. Create uniform skeleton using confusables mapping
+		// C. Skeleton normalization: map all lookalikes to canonical forms
 		skel := h.skeletonize(decoded)
 
-		// D. Edit Distance against protected sensitive keywords/brands (Blocks visual mimics like 'adm1n' safely)
+		// D. Levenshtein distance against protected keywords
 		for _, protected := range h.protectedWords {
 			protectedLower := strings.ToLower(protected)
 			protectedSkel := h.skeletonize(protectedLower)
 
-			// Generate visual multi-character replacement variants
 			variants := applyMultiCharLookalikes(skel)
 
 			for v := range variants {
 				dist := levenshtein(v, protectedSkel)
 
-				// Flag only if highly similar to a protected brand but not exactly the brand
 				if decoded != protectedLower && dist <= 2 {
-					reasons = append(reasons, fmt.Sprintf("Brand spoofing threat: '%s' is highly similar to protected keyword '%s'", decoded, protected))
+					reasons = append(reasons, fmt.Sprintf("Brand spoofing threat: '%s' ≈ '%s' (edit distance: %d) - critical phishing attempt", decoded, protected, dist))
 					if severity < 9 {
-						severity = 9 // Critical phishing threat
+						severity = 9
 					}
-					// Collect actual confusable characters used in the spoofed word
 					for _, r := range decoded {
 						if _, exists := h.confusablesMap[r]; exists {
 							suspicious = append(suspicious, r)
@@ -360,19 +415,27 @@ func (h *HomoglyphRule) Detect(text string) DetectionResult {
 	}
 
 	detected := len(reasons) > 0
+
+	var reason string
+	if detected {
+		reason = strings.Join(reasons, " | ")
+	} else {
+		reason = "Text passes homoglyph/phishing detection (no Punycode, mixed-script, or brand spoofing detected)"
+	}
+
 	return DetectionResult{
 		Detected: detected,
 		RuleName: h.Name(),
 		Severity: severity,
 		Cleaned:  text,
-		Reason:   strings.Join(reasons, " | "),
+		Reason:   reason,
 		Evidence: suspicious,
 	}
 }
 
 // FLUENT BUILDER PIPELINE
 
-// AntiCrashChain manages fluent configuration of the dynamic shield middleware
+// AntiCrashChain: Fluent builder for configuring security rules independently
 type AntiCrashChain struct {
 	bot            *Bot
 	maxZalgo       int
@@ -385,7 +448,7 @@ type AntiCrashChain struct {
 	onViolation    func(c *Ctx, results []DetectionResult)
 }
 
-// AntiCrash opens the fluent security configuration chain from Bot context
+// AntiCrash: Opens fluent security configuration from Bot context
 func (b *Bot) AntiCrash() *AntiCrashChain {
 	return &AntiCrashChain{
 		bot:        b,
@@ -397,58 +460,59 @@ func (b *Bot) AntiCrash() *AntiCrashChain {
 	}
 }
 
-// BlockMixed configures whether to actively reject mixed-script tokens/words (disabled by default)
+// BlockMixed: Toggle active rejection of mixed-script tokens (disabled by default for tolerance)
 func (a *AntiCrashChain) BlockMixed(v bool) *AntiCrashChain {
 	a.blockMixed = v
 	return a
 }
 
-// ZalgoLimit configures max allowed consecutive combining marks
+// ZalgoLimit: Set max consecutive combining marks per base character (0 to disable)
 func (a *AntiCrashChain) ZalgoLimit(limit int) *AntiCrashChain {
 	a.maxZalgo = limit
 	return a
 }
 
-// MaxRepeat configures max allowed runs of identical characters
+// MaxRepeat: Set max allowed runs of identical characters (0 to disable)
 func (a *AntiCrashChain) MaxRepeat(limit int) *AntiCrashChain {
 	a.maxRepeat = limit
 	return a
 }
 
-// MaxLength configures maximum allowed message characters
+// MaxLength: Set maximum allowed message length in runes (0 to disable)
 func (a *AntiCrashChain) MaxLength(limit int) *AntiCrashChain {
 	a.maxLen = limit
 	return a
 }
 
-// Homoglyph enables or disables visual character substitution detection
+// Homoglyph: Enable/disable homoglyph & phishing detection (enabled by default)
 func (a *AntiCrashChain) Homoglyph(v bool) *AntiCrashChain {
 	a.useHomo = v
 	return a
 }
 
-// Protect registers sensitive keywords/brands or "all" keyword to safeguard against typosquatting
+// Protect: Register protected keywords/brands ("all" expands to default sensitive word list)
 func (a *AntiCrashChain) Protect(words ...string) *AntiCrashChain {
 	a.protectedWords = append(a.protectedWords, words...)
 	return a
 }
 
-// WarnEngine injects a dynamic warning/punishment engine to handle security violations
+// WarnEngine: Inject dynamic warning/punishment engine for violations
 func (a *AntiCrashChain) WarnEngine(engine *WarnEngine) *AntiCrashChain {
 	a.warnEngine = engine
 	return a
 }
 
-// OnViolation registers a custom callback to handle flagged security threats
+// OnViolation: Register custom callback to handle flagged threats (overrides WarnEngine)
 func (a *AntiCrashChain) OnViolation(fn func(c *Ctx, results []DetectionResult)) *AntiCrashChain {
 	a.onViolation = fn
 	return a
 }
 
-// Go compiles the active security rules and returns a high-performance middleware Handler
+// Go: Compile active security rules into unified high-performance middleware Handler
 func (a *AntiCrashChain) Go() Handler {
 	engine := &AntiCrashEngine{}
 
+	// Register each rule independently (rules only added if enabled)
 	if a.maxZalgo > 0 {
 		engine.rules = append(engine.rules, &ZalgoRule{MaxCombiningPerChar: a.maxZalgo})
 	}
@@ -458,10 +522,11 @@ func (a *AntiCrashChain) Go() Handler {
 	if a.maxLen > 0 {
 		engine.rules = append(engine.rules, &LengthRule{MaxLen: a.maxLen})
 	}
-	// Always append the dynamic low-entropy pattern rule for structural threat shield
+
+	// Always append low-entropy pattern detection (structural threat defense)
 	engine.rules = append(engine.rules, &AlternatingPatternRule{MinLength: 12, MinRatio: 0.20})
 
-	// Resolve "all" keyword to expand into default sensitive keywords list
+	// Expand "all" keyword to default sensitive word list for protected brands
 	var finalProtected []string
 	hasAll := false
 	for _, w := range a.protectedWords {
@@ -475,12 +540,13 @@ func (a *AntiCrashChain) Go() Handler {
 		finalProtected = append(finalProtected, defaultSensitiveWords...)
 	}
 
+	// Homoglyph rule: independently configured with resolved protected words
 	if a.useHomo {
 		engine.rules = append(engine.rules, &HomoglyphRule{
 			protectedWords: finalProtected,
 			blockMixed:     a.blockMixed,
 			confusablesMap: map[rune]string{
-				// Cyrillic look-alikes
+				// Cyrillic homoglyphs
 				'а': "a", 'А': "a", 'е': "e", 'Е': "e", 'о': "o", 'О': "o",
 				'р': "p", 'Р': "p", 'с': "c", 'С': "c", 'у': "y", 'У': "y",
 				'х': "x", 'Х': "x", 'і': "i", 'І': "i", 'ѕ': "s", 'Ѕ': "s",
@@ -491,25 +557,26 @@ func (a *AntiCrashChain) Go() Handler {
 				'ю': "io", 'я': "r", 'ж': "x", 'з': "3", 'п': "n", 'ш': "w",
 				'щ': "w", 'э': "e", 'ч': "4", 'ф': "o", 'л': "n", 'б': "6",
 				'д': "d",
-				// Greek look-alikes
+				// Greek homoglyphs
 				'α': "a", 'Α': "a", 'β': "b", 'ο': "o", 'Ο': "o", 'ρ': "p",
 				'Ρ': "p", 'ν': "v", 'Ν': "n", 'κ': "k", 'Κ': "k", 'τ': "t",
 				'Τ': "t", 'χ': "x", 'Χ': "x", 'υ': "u", 'Υ': "y", 'ι': "i",
 				'Ι': "i", 'η': "n", 'Η': "h", 'ε': "e", 'Ε': "e", 'γ': "y",
-				// Armenian
+				// Armenian homoglyphs
 				'օ': "o", 'ց': "g", 'ա': "w", 'ո': "n", 'ս': "u", 'լ': "l",
-				// Latin extended
+				// Latin extended homoglyphs
 				'ⅼ': "l", 'ı': "i", 'ł': "l", 'ɡ': "g", 'ɑ': "a", 'ѡ': "w",
 				'ⓞ': "o", 'ⓐ': "a",
-				// Obfuscated Digits/Symbols
+				// Numeric homoglyphs
 				'0': "o", '1': "l", '3': "e", '4': "a", '5': "s", '7': "t",
 				'@': "a", '$': "s",
 			},
 		})
 	}
 
+	// Middleware handler: Scan text against all rules, report violations, optionally delete/warn
 	return func(c *Ctx) {
-		// Capture either Message or EditedMessage safely to protect against edit bypasses
+		// Extract message safely (handles both new messages and edited messages)
 		var msg *Message
 		if c.Message != nil {
 			msg = c.Message
@@ -522,13 +589,13 @@ func (a *AntiCrashChain) Go() Handler {
 			return
 		}
 
-		// SECURITY BYPASS: Never scan or block messages sent by bots (prevent self-blocking & infinite loops)
+		// BYPASS: Never scan/block messages from bots (prevent self-loops)
 		if msg.From != nil && msg.From.IsBot {
 			c.Next()
 			return
 		}
 
-		// Scan both message text and media captions to prevent bypass attempts
+		// Extract scannable text (prioritize message text, fallback to caption)
 		textToScan := msg.Text
 		if textToScan == "" && msg.Caption != "" {
 			textToScan = msg.Caption
@@ -539,10 +606,10 @@ func (a *AntiCrashChain) Go() Handler {
 			return
 		}
 
-		// Trim standard spaces, non-breaking spaces (\u00a0), and braille blanks (\u2800) for exact match
+		// Trim whitespace (including ZWNJ, braille blanks, NBSP) for exact button match
 		trimmedText := strings.Trim(textToScan, " \t\n\r\u2800\u00a0")
 
-		// SECURITY BYPASS: Perform a lightning-fast O(1) map lookup (Zero Lag!)
+		// FAST PATH: O(1) map lookup to skip reply button clicks (reply buttons bypass scanning)
 		c.Bot.mu.RLock()
 		isReplyButton := c.Bot.replyButtons[trimmedText]
 		c.Bot.mu.RUnlock()
@@ -552,22 +619,25 @@ func (a *AntiCrashChain) Go() Handler {
 			return
 		}
 
+		// Scan text against all enabled rules
 		results := engine.ScanText(textToScan)
+
+		// If threats detected, handle via callback or WarnEngine
 		if len(results) > 0 {
 			if a.onViolation != nil {
 				a.onViolation(c, results)
 			} else if a.warnEngine != nil {
-				// Delete the malicious message/edit immediately
+				// Delete malicious message immediately
 				_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
 					"chat_id":    msg.Chat.ID,
 					"message_id": msg.MessageID,
 				}, nil)
 
-				// Trigger WarnEngine with the exact violation reason
+				// Trigger WarnEngine with primary threat reason
 				_ = a.warnEngine.Warn(c, results[0].Reason)
 				c.Abort()
 			} else {
-				// Use the correct message ID to delete (works for both new and edited messages)
+				// Fallback: Delete message + send Persian warning
 				_ = c.Bot.BaseRequest(c.ctx, "deleteMessage", map[string]any{
 					"chat_id":    msg.Chat.ID,
 					"message_id": msg.MessageID,
@@ -579,6 +649,7 @@ func (a *AntiCrashChain) Go() Handler {
 			}
 			return
 		}
+
 		c.Next()
 	}
 }
@@ -801,14 +872,6 @@ func isCombiningMark(r rune) bool {
 	}
 	return false
 }
-
-// func isZeroWidth(r rune) bool {
-// 	switch r {
-// 	case '\u200B', '\u200C', '\u200D', '\uFEFF', '\u061C', '\u200E', '\u200F', '\u202A', '\u202B', '\u202C', '\u202D', '\u202E':
-// 		return true
-// 	}
-// 	return false
-// }
 
 // isZeroWidth detects invisible Unicode control characters while excluding standard Persian ZWNJ and ZWJ
 func isZeroWidth(r rune) bool {
