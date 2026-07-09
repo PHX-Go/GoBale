@@ -683,13 +683,14 @@ func (p *PollChain) Go() {
 	for {
 		select {
 		case <-ctx.Done():
+			// 1. Stop receiving new updates and wait for workers to finish processing
 			close(p.run.bot.workerChan)
 			p.run.bot.workersWg.Wait()
 
-			// Clean up defense monitoring goroutine on exit
+			// 2. Terminate background auto-defense monitoring
 			p.run.bot.stopDefense()
 
-			// Fire all registered OnStop lifecycle hooks sequentially with safe panic recovery
+			// 3. Fire all registered OnStop lifecycle hooks sequentially
 			p.run.bot.mu.RLock()
 			for _, fn := range p.run.bot.stopHooks {
 				func(f func()) {
@@ -703,14 +704,14 @@ func (p *PollChain) Go() {
 			}
 			p.run.bot.mu.RUnlock()
 
-			// Clean and release the dashboard HTTP server port immediately with a timeout context
+			// 4. Shutdown the dashboard monitoring server
 			if p.run.bot.dashServer != nil {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = p.run.bot.dashServer.Shutdown(shutdownCtx)
 				cancel()
 			}
 
-			// Forcefully stop and release all background cron tasks
+			// 5. Forcefully stop all scheduled background cron tasks
 			p.run.bot.muTasks.Lock()
 			for _, task := range p.run.bot.tasks {
 				task.Stop()
@@ -718,28 +719,29 @@ func (p *PollChain) Go() {
 			p.run.bot.tasks = nil
 			p.run.bot.muTasks.Unlock()
 
-			// Safely close and flush the main GOB database on shutdown
+			// 6. Safely flush and close all persistent storage engines
 			if p.run.bot.dbInstance != nil {
 				_ = p.run.bot.dbInstance.Close()
 			}
-
-			// Safely close and flush the analytics database on shutdown
 			if p.run.bot.analyticsDB != nil {
 				_ = p.run.bot.analyticsDB.Close()
 			}
+			if p.run.bot.settingsDB != nil {
+				_ = p.run.bot.settingsDB.Close()
+			}
 
-			// Safely close GOB store cleanup goroutine using io.Closer
+			// 7. Save and close active sessions
 			_ = p.run.bot.Sessions.Close()
 
-			// Forcefully close and release all idle TCP socket connections to prevent socket leaks
+			// 8. Release all idle network connections
 			p.run.bot.Client.httpClient.CloseIdleConnections()
 			return
+
 		default:
-			// Omit allowed_updates to receive all supported updates without any filter restrictions
 			params := map[string]any{
 				"offset":  offset,
 				"limit":   100,
-				"timeout": 1,
+				"timeout": 20, // Increased timeout for efficient long-polling
 			}
 
 			var updates []Update
@@ -754,12 +756,11 @@ func (p *PollChain) Go() {
 				}
 			}
 
-			// Push updates to queue and advance offset, with raw pre-scan interceptor
 			if len(updates) > 0 {
 				for i := range updates {
 					u := &updates[i]
 
-					// Raw Pre-Scan Interceptor: Detects and deletes critical threats before even pushing to worker queue!
+					// Raw Pre-Scan Interceptor: Intercepts threats before worker queue
 					if p.run.bot.PreScanUpdate(u) {
 						var chatID, msgID int64
 						if u.Message != nil {
@@ -771,10 +772,7 @@ func (p *PollChain) Go() {
 						}
 
 						if chatID != 0 && msgID > 0 {
-							// Capture local parameters to prevent nil-pointer dereferences on background execution
 							botInstance := p.run.bot
-
-							// Run deletion immediately in a native goroutine with panic recovery
 							go func() {
 								defer func() {
 									if r := recover(); r != nil {
@@ -787,7 +785,7 @@ func (p *PollChain) Go() {
 								}, nil)
 							}()
 						}
-						continue // Skip pushing this malicious update to workers completely
+						continue
 					}
 
 					p.run.bot.workerChan <- u
@@ -849,28 +847,25 @@ func (w *WebChain) Go() error {
 	defer stop()
 
 	w.run.bot.CompileMenus()
-
 	w.run.bot.StartWorkers(ctx)
 
-	// Automatically resolve dynamic public URL from local ngrok agent if configured
+	// Resolve dynamic ngrok URL if configured
 	if w.useNgrok && w.url == "" {
 		fetchedURL, err := fetchNgrokURL(w.ngrokAPI)
-		if err != nil {
-			if w.run.bot.loggerInstance != nil {
-				w.run.bot.Log().Error("failed to auto-resolve ngrok URL").Err(err).Go()
-			}
-		} else {
+		if err == nil {
 			w.url = fetchedURL
 			if w.run.bot.loggerInstance != nil {
-				w.run.bot.Log().Info("successfully auto-resolved ngrok URL").Str("url", w.url).Go()
+				w.run.bot.Log().Info("auto-resolved ngrok URL").Str("url", w.url).Go()
 			}
 		}
 	}
 
+	// Register webhook URL on Bale servers
 	if w.url != "" {
 		webhookURL := strings.TrimSuffix(w.url, "/") + w.path
 		_ = w.run.bot.BaseRequest(ctx, "setWebhook", map[string]any{"url": webhookURL}, nil)
 	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(w.path, func(rw http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -883,7 +878,7 @@ func (w *WebChain) Go() error {
 			return
 		}
 
-		// Raw Pre-Scan Interceptor inside Webhook gateway level with native goroutine
+		// Webhook-level Pre-Scan Interceptor
 		if w.run.bot.PreScanUpdate(&update) {
 			var chatID, msgID int64
 			if update.Message != nil {
@@ -896,8 +891,6 @@ func (w *WebChain) Go() error {
 
 			if chatID != 0 && msgID > 0 {
 				botInstance := w.run.bot
-
-				// Run deletion immediately in a native goroutine with panic recovery
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
@@ -910,67 +903,73 @@ func (w *WebChain) Go() error {
 					}, nil)
 				}()
 			}
-			rw.WriteHeader(http.StatusOK) // Acknowledge webhook success but drop the update
+			rw.WriteHeader(http.StatusOK)
 			return
 		}
 
 		w.run.bot.workerChan <- &update
 		rw.WriteHeader(http.StatusOK)
 	})
+
 	server := &http.Server{
 		Addr:    w.addr,
 		Handler: mux,
 	}
 
-	// Create an error channel to catch startup server errors
 	errChan := make(chan error, 1)
-
-	// Run the HTTP/HTTPS server in the background
 	go func() {
 		var err error
 		if w.insecure || (w.cert == "" && w.key == "") {
-			if w.run.bot.loggerInstance != nil {
-				w.run.bot.Log().Warn("Webhook is running in INSECURE (HTTP-only) mode. Recommended for development only!").Go()
-			}
 			err = server.ListenAndServe()
 		} else {
 			err = server.ListenAndServeTLS(w.cert, w.key)
 		}
-
 		if err != nil && err != http.ErrServerClosed {
 			errChan <- err
 		}
-		close(errChan)
 	}()
 
-	// Block until system interrupt signal is caught or the server crashes
 	select {
 	case <-ctx.Done():
-		// System interrupt caught, proceeding with graceful cleanup
+	// Graceful exit triggered
 	case err := <-errChan:
-		// Server failed to start
 		return err
 	}
 
-	// 1. Shutdown the HTTP Webhook server with a safety timeout
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 1. Shutdown HTTP server first to stop receiving new requests
+	shutdownCtx, sCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = server.Shutdown(shutdownCtx)
-	cancel()
+	sCancel()
 
-	// 2. Safely drain workers to process remaining messages
+	// 2. Drain worker queue and wait for completion
 	close(w.run.bot.workerChan)
 	w.run.bot.workersWg.Wait()
 
+	// 3. Cleanup background systems
 	w.run.bot.stopDefense()
 
-	// 3. Clean and release the dashboard HTTP server port immediately with a timeout context
+	// 4. Fire OnStop hooks
+	w.run.bot.mu.RLock()
+	for _, fn := range w.run.bot.stopHooks {
+		func(f func()) {
+			defer func() {
+				if r := recover(); r != nil {
+					handlePanic(w.run.bot, r, nil)
+				}
+			}()
+			f()
+		}(fn)
+	}
+	w.run.bot.mu.RUnlock()
+
+	// 5. Cleanup Dash server
 	if w.run.bot.dashServer != nil {
-		dashShutdownCtx, dashCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = w.run.bot.dashServer.Shutdown(dashShutdownCtx)
-		dashCancel()
+		dCtx, dCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = w.run.bot.dashServer.Shutdown(dCtx)
+		dCancel()
 	}
 
-	// 4. Forcefully stop and release all background cron tasks on Webhook shutdown
+	// 6. Stop Cron tasks
 	w.run.bot.muTasks.Lock()
 	for _, task := range w.run.bot.tasks {
 		task.Stop()
@@ -978,25 +977,21 @@ func (w *WebChain) Go() error {
 	w.run.bot.tasks = nil
 	w.run.bot.muTasks.Unlock()
 
-	// 5. Safely close and flush the main GOB database on Webhook shutdown
+	// 7. Flush and close all GOB databases
 	if w.run.bot.dbInstance != nil {
 		_ = w.run.bot.dbInstance.Close()
 	}
-
-	// 6. Safely close and flush the settings GOB database on Webhook shutdown
 	if w.run.bot.settingsDB != nil {
 		_ = w.run.bot.settingsDB.Close()
 	}
-
-	// 7. Safely close and flush the analytics database on shutdown
 	if w.run.bot.analyticsDB != nil {
 		_ = w.run.bot.analyticsDB.Close()
 	}
 
-	// 8. Safely close GOB store cleanup goroutine using io.Closer on Webhook shutdown
+	// 8. Close sessions storage
 	_ = w.run.bot.Sessions.Close()
 
-	// 9. Forcefully close and release all idle TCP socket connections to prevent socket leaks on Webhook shutdown
+	// 9. Close network idle connections
 	w.run.bot.Client.httpClient.CloseIdleConnections()
 
 	return nil
