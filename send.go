@@ -66,19 +66,33 @@ func (s *SendChain) Buttons(buttons ...any) *SendChain {
 			if i+1 < len(buttons) {
 				cbData, okCb := buttons[i+1].(string)
 				if okCb {
+					// Auto-detect settings callback to activate automated lifecycle natively
+					if strings.HasPrefix(cbData, "_sys_cfg:") {
+						s.isSettings = true
+					}
 					row = append(row, NewInlineKeyboardButtonData(str, cbData))
 					i += 2
 					continue
 				}
 			}
 			// Fallback: treat unmatched odd string as single callback button
+			if strings.HasPrefix(str, "_sys_cfg:") {
+				s.isSettings = true
+			}
 			row = append(row, NewInlineKeyboardButtonData(str, str))
 			i++
 		} else if builder, ok := item.(*InlineButtonBuilder); ok && builder != nil {
 			// Process advanced custom buttons (Copy, URL, WebApp) fluidly
-			row = append(row, builder.btn)
+			btn := builder.btn
+			if strings.HasPrefix(btn.CallbackData, "_sys_cfg:") {
+				s.isSettings = true
+			}
+			row = append(row, btn)
 			i++
 		} else if btn, ok := item.(InlineKeyboardButton); ok {
+			if strings.HasPrefix(btn.CallbackData, "_sys_cfg:") {
+				s.isSettings = true
+			}
 			row = append(row, btn)
 			i++
 		} else {

@@ -1422,3 +1422,65 @@ func (c *Ctx) ChatTitle(targetChat ...any) string {
 	}
 	return title
 }
+
+// ToggleChain handles fluent configurations for dynamic settings toggling natively
+type ToggleChain struct {
+	c          *Ctx
+	successMsg string
+	errorMsg   string
+	invalidMsg string
+	statusOn   string
+	statusOff  string
+}
+
+// Toggle opens the fluent settings toggling chain natively with smart defaults
+func (c *Ctx) Toggle() *ToggleChain {
+	return &ToggleChain{
+		c:          c,
+		successMsg: "✅ تنظیم `%s` با موفقیت به حالت [%s] تغییر یافت.",
+		errorMsg:   "❌ خطایی رخ داد: %v",
+		invalidMsg: "⚠️ دستور نامعتبر! مثال:\n`/toggle lock_sticker on`\n`/toggle lock_gif off 4542691229` (ریموت)",
+		statusOn:   "🟢 روشن",
+		statusOff:  "🔴 خاموش",
+	}
+}
+
+// Success overrides the default success message template
+func (t *ToggleChain) Success(msg string) *ToggleChain { t.successMsg = msg; return t }
+
+// Error overrides the default error message template
+func (t *ToggleChain) Error(msg string) *ToggleChain { t.errorMsg = msg; return t }
+
+// Invalid overrides the default invalid command warning template
+func (t *ToggleChain) Invalid(msg string) *ToggleChain { t.invalidMsg = msg; return t }
+
+// StatusOn overrides the active status label natively (defaults to 🟢 روشن)
+func (t *ToggleChain) StatusOn(s string) *ToggleChain { t.statusOn = s; return t }
+
+// StatusOff overrides the inactive status label natively (defaults to 🔴 خاموش)
+func (t *ToggleChain) StatusOff(s string) *ToggleChain { t.statusOff = s; return t }
+
+// Go executes the dynamic toggle process natively with customized or default templates
+func (t *ToggleChain) Go() (*Message, error) {
+	key := t.c.ArgString(0)
+	state := t.c.ArgString(1)
+	chat := t.c.ArgString(2)
+
+	if key == "" {
+		return t.c.ReplyText(t.invalidMsg)
+	}
+
+	active, err := t.c.ToggleSetting(key, state, chat)
+	if err != nil {
+		return t.c.ReplyText(fmt.Sprintf(t.errorMsg, err.Error()))
+	}
+
+	status := t.statusOff
+	if activeBool, ok := active.(bool); ok && activeBool {
+		status = t.statusOn
+	} else if activeStr, ok := active.(string); ok && activeStr != "" {
+		status = fmt.Sprintf("%s (%s)", t.statusOn, activeStr)
+	}
+
+	return t.c.ReplyText(fmt.Sprintf(t.successMsg, key, status))
+}
