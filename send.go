@@ -49,6 +49,65 @@ type SendChain struct {
 	useQueue   bool
 }
 
+// Buttons dynamically appends a single row of inline buttons (supports string callback pairs, custom builders, URL/Copy/WebApp buttons)
+func (s *SendChain) Buttons(buttons ...any) *SendChain {
+	if len(buttons) == 0 {
+		return s
+	}
+
+	var row []InlineKeyboardButton
+
+	for i := 0; i < len(buttons); {
+		item := buttons[i]
+
+		// Process raw string callback pairs
+		if str, ok := item.(string); ok {
+			if i+1 < len(buttons) {
+				cbData, okCb := buttons[i+1].(string)
+				if okCb {
+					row = append(row, NewInlineKeyboardButtonData(str, cbData))
+					i += 2
+					continue
+				}
+			}
+			// Fallback: treat unmatched odd string as single callback button
+			row = append(row, NewInlineKeyboardButtonData(str, str))
+			i++
+		} else if builder, ok := item.(*InlineButtonBuilder); ok && builder != nil {
+			// Process advanced custom buttons (Copy, URL, WebApp) fluidly
+			row = append(row, builder.btn)
+			i++
+		} else if btn, ok := item.(InlineKeyboardButton); ok {
+			row = append(row, btn)
+			i++
+		} else {
+			i++ // skip unsupported parameters safely
+		}
+	}
+
+	if len(row) == 0 {
+		return s
+	}
+
+	// Fetch or initialize active inline keyboard to append rows dynamically
+	var currentMarkup *InlineKeyboardMarkup
+	if s.markup != nil {
+		if m, ok := s.markup.(*InlineKeyboardMarkup); ok && m != nil {
+			currentMarkup = m
+		}
+	}
+
+	if currentMarkup == nil {
+		currentMarkup = &InlineKeyboardMarkup{
+			InlineKeyboard: make([][]InlineKeyboardButton, 0),
+		}
+		s.markup = currentMarkup
+	}
+
+	currentMarkup.InlineKeyboard = append(currentMarkup.InlineKeyboard, row)
+	return s
+}
+
 // OnProgress registers a callback triggered during upload progress updates (1% to 100%)
 func (s *SendChain) OnProgress(fn func(percent float64)) *SendChain {
 	s.onProgress = fn

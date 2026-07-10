@@ -27,6 +27,43 @@ type Ctx struct {
 	prevText string
 }
 
+// Reply opens the fluent sending chain pre-configured to reply to the active message (or original replied-to message if present)
+func (c *Ctx) Reply() *SendChain {
+	id, _ := c.ChatID()
+	s := &SendChain{
+		bot:  c.Bot,
+		ctx:  c.ctx,
+		chat: id,
+	}
+	if c.Message != nil {
+		// If this message is replying to another message, reply to the original target message natively
+		if c.Message.ReplyToMessage != nil {
+			s.replyTo = c.Message.ReplyToMessage.MessageID
+		} else {
+			s.replyTo = c.Message.MessageID
+		}
+	}
+	return s
+}
+
+// SendText is a shortcut helper to send a simple text message to the current chat
+func (c *Ctx) SendText(text string) (*Message, error) {
+	return c.Send().Text(text).Go()
+}
+
+// ReplyText is a shortcut helper to reply to the active message (or original replied-to message) with a simple text
+func (c *Ctx) ReplyText(text string) (*Message, error) {
+	if c.Message == nil {
+		return nil, errors.New("no message in context to reply to")
+	}
+	return c.Reply().Text(text).Go()
+}
+
+// TempText is a shortcut helper to send a self-destroying text message
+func (c *Ctx) TempText(text string, d time.Duration) (*Message, error) {
+	return c.Send().Text(text).Temp(d).Go()
+}
+
 // TargetUser resolves the target user ID from a reply message or explicit command arguments
 func (c *Ctx) TargetUser() (int64, error) {
 	if c.Message == nil {
@@ -47,6 +84,36 @@ func (c *Ctx) TargetUser() (int64, error) {
 	}
 
 	return 0, errors.New("target user not specified (must reply to a user or provide an ID)")
+}
+
+// ArgString retrieves a command argument as string with an optional fallback default
+func (c *Ctx) ArgString(idx int, fallback ...string) string {
+	args, ok := c.Arg().([]string)
+	if !ok || idx < 0 || idx >= len(args) {
+		if len(fallback) > 0 {
+			return fallback[0]
+		}
+		return ""
+	}
+	return args[idx]
+}
+
+// ArgInt retrieves a command argument as integer with an optional fallback default
+func (c *Ctx) ArgInt(idx int, fallback ...int) int {
+	args, ok := c.Arg().([]string)
+	if !ok || idx < 0 || idx >= len(args) {
+		if len(fallback) > 0 {
+			return fallback[0]
+		}
+		return 0
+	}
+	if val, err := strconv.Atoi(args[idx]); err == nil {
+		return val
+	}
+	if len(fallback) > 0 {
+		return fallback[0]
+	}
+	return 0
 }
 
 // Next executes the next handler in the execution chain
