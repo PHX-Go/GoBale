@@ -248,9 +248,9 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 	bot.On().Use(Recovery())
 
-	// Unifies global, local, and remote settings processing with maximum security and confirmation dialogs
+	// Register system config callbacks in bot.go with dynamic ReplyMarkup capture
 	bot.On().Callback("_sys_cfg").Do(func(c *Ctx) {
-		if c.Update == nil || c.Update.CallbackQuery == nil {
+		if c.Update == nil || c.Update.CallbackQuery == nil || c.Update.CallbackQuery.Message == nil {
 			return
 		}
 
@@ -269,78 +269,41 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		var key string
 		var targetChat string
 		_ = c.ScanCallbackArgs(&key, &targetChat)
-		isLocal := false
-		var confirmText string
+
+		// Retrieve setting metadata
 		c.Bot.mu.RLock()
-		for _, s := range c.Bot.settings {
-			if s.Key == key {
-				isLocal = s.IsLocal
-				confirmText = s.ConfirmText
+		var entry *SettingEntry
+		for i := range c.Bot.settings {
+			if c.Bot.settings[i].Key == key {
+				entry = &c.Bot.settings[i]
 				break
 			}
 		}
 		c.Bot.mu.RUnlock()
 
-		var resolved any
-		if targetChat != "" {
-			resolved = c.Bot.ResolveChatID(targetChat)
-		} else {
-			id, _ := c.ChatID()
-			resolved = c.Bot.ResolveChatID(id)
-		}
-
-		isOwner := c.IsOwner()
-		if !isOwner {
-			if !isLocal {
-				_ = c.Answer().Text("❌ تغییر تنظیمات سراسری فقط مخصوص سازنده ربات است!").Alert().Go()
-				c.Abort()
-				return
-			}
-
-			isAdmin, err := c.Bot.Chat(resolved).IsAdmin(c.SenderID()).Go()
-			if err != nil || !isAdmin {
-				_ = c.Answer().Text("❌ تغییر تنظیمات گروه فقط مخصوص مدیران است!").Alert().Go()
-				c.Abort()
-				return
-			}
-		}
-
-		if confirmText != "" {
-			dbKey := fmt.Sprintf("group_config_%v_%s", resolved, key)
-			active := false
-			if val, ok := c.Bot.dbInstance.Get(dbKey); ok {
-				active, _ = val.(bool)
-			}
-
-			commandText := "🔴 خاموش‌کردن (غیرفعال)"
-			if !active {
-				commandText = "🟢 روشن‌کردن (فعال)"
-			}
-
-			formatted := strings.ReplaceAll(confirmText, "{command}", commandText)
-
-			markup := InlineMarkup().
-				Row(
-					Btn("✅ بله، مطمئنم").Callback(fmt.Sprintf("_sys_cfg_confirm:%s:%v:yes", key, resolved)),
-					Btn("❌ خیر، لغو شود").Callback(fmt.Sprintf("_sys_cfg_confirm:%s:%v:no", key, resolved)),
-				).
-				Build()
-
-			_, _ = c.Edit().Text(formatted).Markup(markup).Markdown().Stretch(true).Go()
-			_ = c.Answer().Go()
+		if entry == nil {
 			return
 		}
 
-		errToggle := c.Settings(resolved).Toggle(key).Go()
-		if errToggle != nil {
-			return
-		}
+		// Capture the entire active keyboard layout and main text dynamically from the live message markup [1]
+		_, _ = sess.Data("custom_settings_markup", c.Update.CallbackQuery.Message.ReplyMarkup).Go()
+		_, _ = sess.Data("custom_settings_text", c.Update.CallbackQuery.Message.Text).Go()
 
-		_, _ = c.Edit().Settings(resolved).Go()
+		// Format dynamic confirmation message
+		confirmText := fmt.Sprintf("⚠️ *تاییدیه تغییر وضعیت:*\n\nآیا از تغییر وضعیت گزینه *«%s»* مطمئن هستید؟", entry.Label)
+
+		markup := InlineMarkup().
+			Row(
+				Btn("✅ بله، مطمئنم").Callback(fmt.Sprintf("_sys_cfg_confirm:%s:%v:yes", key, targetChat)),
+				Btn("❌ خیر، لغو شود").Callback(fmt.Sprintf("_sys_cfg_confirm:%s:%v:no", key, targetChat)),
+			).
+			Row(Btn("🔙 بازگشت").Callback(fmt.Sprintf("_sys_cfg_confirm:%s:%v:back", key, targetChat))).
+			Build()
+
+		_, _ = c.Edit().Text(confirmText).Markup(markup).Markdown().Go()
 		_ = c.Answer().Go()
 	})
 
-	// Final system callback to process settings confirmation decisions
 	bot.On().Callback("_sys_cfg_confirm").Do(func(c *Ctx) {
 		if c.Update == nil || c.Update.CallbackQuery == nil {
 			return
@@ -359,30 +322,70 @@ func (b *BotBuilder) Go() (*Bot, error) {
 		}
 
 		var key string
-		var resolved string
+		var targetChat string
 		var decision string
-		_ = c.ScanCallbackArgs(&key, &resolved, &decision)
+		_ = c.ScanCallbackArgs(&key, &targetChat, &decision)
 
-		chatID, _ := strconv.ParseInt(resolved, 10, 64)
+		chatID, _ := strconv.ParseInt(targetChat, 10, 64)
 
+		// Retrieve the captured custom markup and text from session
+		customTextVal, _ := sess.Data("custom_settings_text").Go()
+		customMarkupVal, _ := sess.Data("custom_settings_markup").Go()
+
+		customText, okText := customTextVal.(string)
+		customMarkup, okMarkup := customMarkupVal.(*InlineKeyboardMarkup)
+
+		// If confirmed, toggle the DB value natively
 		if decision == "yes" {
 			dbKey := fmt.Sprintf("group_config_%d_%s", chatID, key)
-			active := false
-			if val, ok := c.Bot.dbInstance.Get(dbKey); ok {
-				active, _ = val.(bool)
-			}
-			_ = c.Bot.dbInstance.Set(dbKey, !active)
 
-			_, _ = c.Send().Text("✅ تغییرات ثبت شد.").Temp(5 * time.Second).Go()
-		} else {
-			_, _ = c.Send().Text("❌ تغییرات لغو شد.").Temp(5 * time.Second).Go()
+			c.Bot.mu.RLock()
+			var entry *SettingEntry
+			for i := range c.Bot.settings {
+				if c.Bot.settings[i].Key == key {
+					entry = &c.Bot.settings[i]
+					break
+				}
+			}
+			c.Bot.mu.RUnlock()
+
+			active := false
+			if entry != nil {
+				active = entry.Default
+			}
+			if val, ok := c.Bot.dbInstance.Get(dbKey); ok {
+				if bVal, okBool := val.(bool); okBool {
+					active = bVal
+				}
+			}
+			nextState := !active
+			_ = c.Bot.dbInstance.Set(dbKey, nextState)
+
+			// Dynamically update the specific button's text (emoji) inside the captured custom layout [1]
+			if okMarkup && customMarkup != nil {
+				for rIdx, row := range customMarkup.InlineKeyboard {
+					for cIdx, btn := range row {
+						if strings.HasPrefix(btn.CallbackData, "_sys_cfg:"+key+":") {
+							text := btn.Text
+							if nextState {
+								text = strings.Replace(text, "🔴", "🟢", 1)
+							} else {
+								text = strings.Replace(text, "🟢", "🔴", 1)
+							}
+							customMarkup.InlineKeyboard[rIdx][cIdx].Text = text
+							break
+						}
+					}
+				}
+			}
 		}
 
 		_ = c.Answer().Go()
 
-		mainText := "⚙️ *پنل مدیریت تنظیمات فعال گروه:*\n\nلطفاً برای تغییر وضعیت سوئیچ‌ها کلیک کنید:"
-		// Restore settings panel text in-place with shamsi stretch alignments
-		_, _ = c.Edit().Text(mainText).Settings(chatID).Markdown().Stretch(true).Go()
+		// Restore the exact same custom settings panel dynamically in-place
+		if okText && okMarkup && customMarkup != nil {
+			_, _ = c.Edit().Text(customText).Markup(customMarkup).Markdown().Go()
+		}
 	})
 
 	bot.optimizeForHardware()

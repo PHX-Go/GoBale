@@ -484,3 +484,14 @@ func SessionSet[T any](s *Session, key string, val T) {
 	s.DataMap[key] = val
 	s.LastAccessed = time.Now()
 }
+
+// Set saves a value inside the session data map directly (without chaining Go)
+func (s *Session) Set(key string, val any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.DataMap == nil {
+		s.DataMap = make(map[string]any)
+	}
+	s.DataMap[key] = val
+	s.LastAccessed = time.Now()
+}

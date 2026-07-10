@@ -15,6 +15,7 @@ import (
 type SendChain struct {
 	bot        *Bot
 	ctx        context.Context
+	c          *Ctx
 	chat       any
 	text       string
 	isSettings bool
@@ -373,48 +374,48 @@ func (s *SendChain) Settings(chatID ...any) *SendChain {
 	return s
 }
 
-// Go executes the sending chain process with full support for media, locations, contacts, and auto-delete
+// Go executes the sending chain process with full support for media, locations, contacts, and automated settings lifecycle
 func (s *SendChain) Go() (*Message, error) {
 	if s.chat == nil {
 		return nil, errors.New("missing chat destination")
 	}
 
-	// Clean up previously left hanging settings menu silently
-	if s.isSettings {
-		resolved := s.bot.ResolveChatID(s.chat)
-		var chatID int64
-		switch v := resolved.(type) {
-		case int64:
-			chatID = v
-		case int:
-			chatID = int64(v)
+	resolved := s.bot.ResolveChatID(s.chat)
+	var chatID int64
+	if id, ok := resolved.(int64); ok {
+		chatID = id
+	}
+
+	// Automated Settings Panel Lifecycle (deletes previous panel, locks admin click, and saves new ID silently)
+	if s.isSettings && chatID > 0 {
+		sess := s.bot.Sessions.Get(chatID)
+
+		// 1. Delete previously active settings panel concurrently in background using unchained Int64
+		oldID := sess.Int64("active_settings_msg_id")
+		if oldID > 0 {
+			botInstance := s.bot
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						handlePanic(botInstance, r, nil)
+					}
+				}()
+				_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+					"chat_id":    chatID,
+					"message_id": oldID,
+				}, nil)
+			}()
 		}
 
-		if chatID > 0 {
-			sess := s.bot.Sessions.Get(chatID)
-			oldIDVal, errOld := sess.Data("settings_msg_id").Go()
-			if errOld == nil && oldIDVal != nil {
-				var oldID int64
-				switch v := oldIDVal.(type) {
-				case int64:
-					oldID = v
-				case int:
-					oldID = int64(v)
-				}
-				if oldID > 0 {
-					_ = s.bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
-						"chat_id":    chatID,
-						"message_id": oldID,
-					}, nil)
-				}
-			}
+		// 2. Lock settings panel interaction natively to the current command executor via unchained Set
+		if s.c != nil {
+			sess.Set("active_settings_admin_id", s.c.SenderID())
 		}
 	}
 
 	var msg *Message
 	var err error
 
-	// Process queue based or standard message dispatch requests
 	if s.useQueue {
 		initUploadPool()
 		resultChan := make(chan *UploadResult, 1)
@@ -430,27 +431,15 @@ func (s *SendChain) Go() (*Message, error) {
 		msg, err = s.executeUpload(s.ctx)
 	}
 
-	// Register current settings menu ID to enable next-run deletions
-	if err == nil && msg != nil && s.isSettings {
-		resolved := s.bot.ResolveChatID(s.chat)
-		var chatID int64
-		switch v := resolved.(type) {
-		case int64:
-			chatID = v
-		case int:
-			chatID = int64(v)
-		}
-
-		if chatID > 0 {
-			sess := s.bot.Sessions.Get(chatID)
-			_, _ = sess.Data("settings_msg_id", msg.MessageID).Go()
-		}
+	// 3. Save the newly created settings panel's ID to session for subsequent cleanups via unchained Set
+	if err == nil && msg != nil && s.isSettings && chatID > 0 {
+		sess := s.bot.Sessions.Get(chatID)
+		sess.Set("active_settings_msg_id", msg.MessageID)
 	}
 
 	// Handle scheduled dynamic self-deletions on temporary messages
 	if err == nil && msg != nil && s.temp > 0 {
 		msgID := msg.MessageID
-		resolved := s.bot.ResolveChatID(s.chat)
 		s.bot.Task().In(s.temp, func() {
 			_ = s.bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
 				"chat_id":    resolved,

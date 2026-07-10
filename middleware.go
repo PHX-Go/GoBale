@@ -2214,3 +2214,134 @@ func InternalRestrictGuard() Handler {
 		c.Next()
 	}
 }
+
+// GroupGuard blocks or silently self-destroys stickers, gifs, or standard media based on GOB database settings automatically
+func GroupGuard() Handler {
+	return func(c *Ctx) {
+		if c.Message == nil || c.IsPrivate() {
+			c.Next()
+			return
+		}
+
+		// Bypass group administrators and owner
+		isAdmin, err := c.Chat().IsAdmin().Go()
+		if err == nil && isAdmin {
+			c.Next()
+			return
+		}
+		if c.IsOwner() {
+			c.Next()
+			return
+		}
+
+		chatID, _ := c.ChatID()
+		db := c.Bot.dbInstance
+		if db == nil {
+			c.Next()
+			return
+		}
+
+		// Detect if the message contains any media natively
+		isMedia := false
+		if c.Message.Sticker != nil || c.Message.Animation != nil || len(c.Message.Photo) > 0 ||
+			c.Message.Video != nil || c.Message.Document != nil || c.Message.Voice != nil || c.Message.Audio != nil ||
+			c.Message.Location != nil || c.Message.Contact != nil {
+			isMedia = true
+		}
+
+		// 1. Automatic Self-Destroying Media check supporting polymorphic duration types
+		destroyVal, okDestroy := db.Get(fmt.Sprintf("group_config_%d_media_destroy", chatID))
+		if okDestroy {
+			var destroyDuration time.Duration
+			active := false
+
+			switch v := destroyVal.(type) {
+			case bool:
+				if v {
+					active = true
+					destroyDuration = 5 * time.Minute // Default fallback
+				}
+			case int:
+				if v > 0 {
+					active = true
+					destroyDuration = time.Duration(v) * time.Second
+				}
+			case int64:
+				if v > 0 {
+					active = true
+					destroyDuration = time.Duration(v) * time.Second
+				}
+			case string:
+				// Parse custom duration strings natively (e.g. "10m", "30s", "1h")
+				if parsed, err := ParseDuration(v); err == nil && parsed > 0 {
+					active = true
+					destroyDuration = parsed
+				}
+			}
+
+			if active && isMedia {
+				msgID := c.Message.MessageID
+				bot := c.Bot
+				// Schedule automatic self-destruction silently after calculated duration
+				bot.Task().In(destroyDuration, func() {
+					_ = bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": msgID,
+					}, nil)
+				})
+				c.Next() // Allow message to pass and remain visible temporarily
+				return
+			}
+		}
+
+		// 2. Automatic, dynamic lock enforcement by scanning all registered local settings based on suffixes
+		c.Bot.mu.RLock()
+		for _, entry := range c.Bot.settings {
+			if !entry.IsLocal {
+				continue
+			}
+
+			dbKey := fmt.Sprintf("group_config_%d_%s", chatID, entry.Key)
+			val, ok := db.Get(dbKey)
+			if !ok {
+				continue
+			}
+			active, okBool := val.(bool)
+			if !okBool || !active {
+				continue
+			}
+
+			// Match setting keys dynamically based on suffixes mapping exactly to analytics types
+			matched := false
+			if strings.HasSuffix(entry.Key, "_sticker") && c.Message.Sticker != nil {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_gif") && c.Message.Animation != nil {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_photo") && len(c.Message.Photo) > 0 {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_video") && c.Message.Video != nil {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_doc") && c.Message.Document != nil {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_voice") && c.Message.Voice != nil {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_audio") && c.Message.Audio != nil {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_location") && c.Message.Location != nil {
+				matched = true
+			} else if strings.HasSuffix(entry.Key, "_contact") && c.Message.Contact != nil {
+				matched = true
+			}
+
+			if matched {
+				c.Bot.mu.RUnlock()
+				_ = c.Del().Go() // Delete silently
+				c.Abort()
+				return
+			}
+		}
+		c.Bot.mu.RUnlock()
+
+		c.Next()
+	}
+}

@@ -141,17 +141,14 @@ func (c *Ctx) Purge(count int) error {
 	return nil
 }
 
-// SendMarkdown is a shortcut helper to send a simple Markdown formatted text message to the current chat
-func (c *Ctx) SendMarkdown(text string) (*Message, error) {
-	return c.Send().Text(text).Markdown().Go()
+// SendMarkdown is a fluent shortcut to start a sending chain pre-configured with Markdown parse mode
+func (c *Ctx) SendMarkdown(text string) *SendChain {
+	return c.Send().Text(text).Markdown()
 }
 
-// ReplyMarkdown is a shortcut helper to reply to the active message with a simple Markdown formatted text
-func (c *Ctx) ReplyMarkdown(text string) (*Message, error) {
-	if c.Message == nil {
-		return nil, errors.New("no message in context to reply to")
-	}
-	return c.Reply().Text(text).Markdown().Go()
+// ReplyMarkdown is a fluent shortcut to start a replying chain pre-configured with Markdown parse mode
+func (c *Ctx) ReplyMarkdown(text string) *SendChain {
+	return c.Reply().Text(text).Markdown()
 }
 
 // Delete is a shortcut helper to instantly delete the current message in context
@@ -314,14 +311,19 @@ func (c *Ctx) GetState() (string, error) {
 	return c.Session().State().Go()
 }
 
-// SetData is a shortcut helper to save a value inside the active session data map
-func (c *Ctx) SetData(key string, val any) (any, error) {
-	return c.Session().Data(key, val).Go()
+// SetData is a shortcut helper to save a value inside the active session data map directly
+func (c *Ctx) SetData(key string, val any) {
+	c.Session().Set(key, val)
 }
 
-// GetData is a shortcut helper to read a value from the active session data map
-func (c *Ctx) GetData(key string) (any, error) {
-	return c.Session().Data(key).Go()
+// GetData is a shortcut helper to read a value from the active session data map directly
+func (c *Ctx) GetData(key string) any {
+	c.Session().mu.RLock()
+	defer c.Session().mu.RUnlock()
+	if c.Session().DataMap == nil {
+		return nil
+	}
+	return c.Session().DataMap[key]
 }
 
 // JalaliString is a shortcut helper to format any Gregorian time (or time.Now() if omitted) into a Shamsi string
@@ -333,12 +335,13 @@ func (c *Ctx) JalaliString(t ...time.Time) string {
 	return Jalali(target).Go()
 }
 
-// Reply opens the fluent sending chain pre-configured to reply to the active message (or original replied-to message if present)
+// Reply opens the fluent sending chain pre-configured to reply to the active message with clean Ctx reference
 func (c *Ctx) Reply() *SendChain {
 	id, _ := c.ChatID()
 	s := &SendChain{
 		bot:  c.Bot,
 		ctx:  c.ctx,
+		c:    c,
 		chat: id,
 	}
 	if c.Message != nil {
@@ -846,12 +849,13 @@ func (d *DownloadChain) Go() (string, error) {
 	return destPath, err
 }
 
-// Send opens the fluent sending dot system inside the handler context
+// Send opens the fluent sending dot system inside the handler context with clean Ctx reference
 func (c *Ctx) Send() *SendChain {
 	id, _ := c.ChatID()
 	return &SendChain{
 		bot:  c.Bot,
 		ctx:  c.ctx,
+		c:    c,
 		chat: id,
 	}
 }
@@ -1219,4 +1223,202 @@ func (c *Ctx) BotCanPromote() bool {
 
 	// 3. Return the specific permission flag
 	return member.CanPromoteMembers
+}
+
+// SendSettings is a shortcut helper to send the settings panel natively with an auto-locked owner check and dynamic recovery
+func (c *Ctx) SendSettings(text string, layout [][]string, closeCallback string) (*Message, error) {
+	// Lock the settings interaction to the command executor dynamically (Fixed: no value assignment)
+	c.SetData("active_settings_admin_id", c.SenderID())
+
+	// Cache the custom panel data inside session to allow dynamic restorations on cancel/confirm (Fixed: no value assignment)
+	c.SetData("custom_settings_text", text)
+	c.SetData("custom_settings_layout", layout)
+	c.SetData("custom_settings_close", closeCallback)
+
+	// Fetch dynamic group title natively using getChat
+	title := "گروه بدون نام"
+	if info, errInfo := c.Chat().Info().Go(); errInfo == nil && info != nil {
+		if info.Title != "" {
+			title = info.Title
+		} else if info.FirstName != "" {
+			title = info.FirstName
+		}
+	}
+
+	// Format the text by replacing {title} placeholder dynamically
+	formattedText := strings.ReplaceAll(text, "{title}", title)
+
+	// Compile the matrix keyboard natively
+	builder := InlineMarkup()
+	for _, rowKeys := range layout {
+		var row []any
+		for _, k := range rowKeys {
+			row = append(row, c.SettingBtn(k))
+		}
+		builder.Row(row...)
+	}
+	builder.Row(Btn("❌ بستن پنل").Callback(closeCallback))
+
+	return c.Send().Text(formattedText).Markup(builder.Build()).Markdown().Go()
+}
+
+// SettingBtn creates a fully configured InlineButtonBuilder for a setting, dynamically mapped to current status (with automatic remote target detection)
+func (c *Ctx) SettingBtn(key string, targetChat ...any) *InlineButtonBuilder {
+	var resolved any
+	if len(targetChat) > 0 && targetChat[0] != nil {
+		resolved = c.Bot.ResolveChatID(targetChat[0])
+	} else {
+		// Automatically check if a target chat ID was passed as first command argument (for remote PV settings!)
+		if arg := c.ArgString(0); arg != "" {
+			resolved = c.Bot.ResolveChatID(arg)
+		} else {
+			chatID, _ := c.ChatID()
+			resolved = c.Bot.ResolveChatID(chatID)
+		}
+	}
+
+	// Retrieve setting metadata
+	c.Bot.mu.RLock()
+	var entry *SettingEntry
+	for i := range c.Bot.settings {
+		if c.Bot.settings[i].Key == key {
+			entry = &c.Bot.settings[i]
+			break
+		}
+	}
+	c.Bot.mu.RUnlock()
+
+	if entry == nil {
+		return Btn(key).Callback(fmt.Sprintf("_sys_cfg:%s:%v", key, resolved))
+	}
+
+	// Read active state from database
+	dbKey := fmt.Sprintf("group_config_%v_%s", resolved, key)
+	active := entry.Default
+	if val, ok := c.Bot.dbInstance.Get(dbKey); ok {
+		if bVal, okBool := val.(bool); okBool {
+			active = bVal
+		}
+	}
+
+	emoji := "🔴"
+	if active {
+		emoji = "🟢"
+	}
+
+	btnText := fmt.Sprintf("%s %s", emoji, entry.Label)
+	return Btn(btnText).Callback(fmt.Sprintf("_sys_cfg:%s:%v", key, resolved))
+}
+
+// ToggleSetting toggles or sets a registered setting natively, supporting optional target chats for remote management
+func (c *Ctx) ToggleSetting(key string, state string, targetChat ...any) (any, error) {
+	c.Bot.mu.Lock()
+	defer c.Bot.mu.Unlock()
+
+	// Resolve target chat ID (fallback to current chat)
+	var resolved any
+	if len(targetChat) > 0 && targetChat[0] != nil {
+		resolved = c.Bot.ResolveChatID(targetChat[0])
+	} else {
+		id, _ := c.ChatID()
+		resolved = c.Bot.ResolveChatID(id)
+	}
+
+	db := c.Bot.dbInstance
+	dbKey := fmt.Sprintf("group_config_%v_%s", resolved, key)
+
+	// Find setting entry
+	var entry *SettingEntry
+	for i := range c.Bot.settings {
+		if c.Bot.settings[i].Key == key {
+			entry = &c.Bot.settings[i]
+			break
+		}
+	}
+	if entry == nil {
+		return false, fmt.Errorf("setting key %q not found", key)
+	}
+
+	// Determine active state
+	current := entry.Default
+	if val, ok := db.Get(dbKey); ok {
+		if bVal, okBool := val.(bool); okBool {
+			current = bVal
+		}
+	}
+
+	var nextState any = !current
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state == "on" || state == "1" || state == "true" || state == "active" {
+		nextState = true
+	} else if state == "off" || state == "0" || state == "false" || state == "inactive" {
+		nextState = false
+	} else if state != "" {
+		// Store custom duration strings directly inside GOB DB (e.g. "10m", "30s", "1h")
+		nextState = state
+	}
+
+	err := db.Set(dbKey, nextState)
+	return nextState, err
+}
+
+// GetBool retrieves a boolean setting value natively from GOB DB, falling back to registered default
+func (c *Ctx) GetBool(key string) bool {
+	chatID, err := c.ChatID()
+	if err != nil {
+		return false
+	}
+	dbKey := fmt.Sprintf("group_config_%d_%s", chatID, key)
+
+	// Fallback to registered default natively
+	c.Bot.mu.RLock()
+	defaultVal := false
+	for _, entry := range c.Bot.settings {
+		if entry.Key == key {
+			defaultVal = entry.Default
+			break
+		}
+	}
+	c.Bot.mu.RUnlock()
+
+	if val, ok := c.Bot.dbInstance.Get(dbKey); ok {
+		if bVal, okBool := val.(bool); okBool {
+			return bVal
+		}
+	}
+	return defaultVal
+}
+
+// ChatTitle natively retrieves and caches the dynamic title of the target group (supporting optional remote overrides)
+func (c *Ctx) ChatTitle(targetChat ...any) string {
+	var resolved any
+	if len(targetChat) > 0 && targetChat[0] != nil {
+		resolved = c.Bot.ResolveChatID(targetChat[0])
+	} else {
+		// Check if a target chat ID was passed as first command argument (for remote PV settings!)
+		if arg := c.ArgString(0); arg != "" {
+			resolved = c.Bot.ResolveChatID(arg)
+		} else {
+			id, _ := c.ChatID()
+			resolved = c.Bot.ResolveChatID(id)
+		}
+	}
+
+	cacheKey := fmt.Sprintf("chat_title:%v", resolved)
+	if cachedVal, ok := c.Bot.Cache().Get(cacheKey).Go(); ok {
+		if str, okStr := cachedVal.(string); okStr {
+			return str
+		}
+	}
+
+	title := "گروه بدون نام"
+	if info, err := c.Bot.Chat(resolved).Info().Go(); err == nil && info != nil {
+		if info.Title != "" {
+			title = info.Title
+		} else if info.FirstName != "" {
+			title = info.FirstName
+		}
+		c.Bot.Cache().Set(cacheKey, title, 12*time.Hour).Go()
+	}
+	return title
 }
