@@ -130,7 +130,7 @@ func main() {
 		log.Fatalf("Failed to initialize bot: %v", err)
 	}
 
-	// Register setting keys, labels, and defaults natively
+	// Register local group settings
 	bot.Settings().
 		RegisterLocal("lock_sticker", "قفل استیکر", false).
 		RegisterLocal("lock_gif", "قفل گیف (انیمیشن)", false).
@@ -142,7 +142,6 @@ func main() {
 
 	// Welcome Flow: Custom setting "auto_welcome" processed natively with 1-line GetBool helper
 	bot.On().Join().Do(func(c *gobale.Ctx) {
-		// Verify custom switch status natively in 1 line
 		if c.GetBool("auto_welcome") {
 			for _, user := range c.Message.NewChatMembers {
 				if user.IsBot {
@@ -174,28 +173,9 @@ func main() {
 		_ = c.Delete()
 	})
 
-	// Toggle Command: Unified local & remote setting switcher (works in group and privately via bot PV!)
+	// Toggle Command: Unified local & remote setting switcher natively in 1 line!
 	bot.On().Cmd("toggle").Roles(gobale.RoleOwner).Do(func(c *gobale.Ctx) {
-		key := c.ArgString(0)   // e.g. "lock_sticker"
-		state := c.ArgString(1) // e.g. "on", "10m" (optional)
-		chat := c.ArgString(2)  // e.g. "4542691229" (optional for remote PV management)
-
-		if key == "" {
-			_, _ = c.ReplyText("⚠️ دستور نامعتبر! مثال:\n`/toggle lock_sticker on`\n`/toggle media_destroy 30s` (تایمر دلخواه)")
-			return
-		}
-
-		active, errToggle := c.ToggleSetting(key, state, chat)
-		if errToggle != nil {
-			_, _ = c.ReplyText(fmt.Sprintf("❌ خطایی رخ داد: %v", errToggle.Error()))
-			return
-		}
-
-		status := "🔴 خاموش"
-		if active {
-			status = "🟢 روشن"
-		}
-		_, _ = c.ReplyText(fmt.Sprintf("✅ تنظیم `%s` با موفقیت به حالت [%s] تغییر یافت.", key, status))
+		_, _ = c.Toggle().Go() // <--- Automates argument parsing, validation, toggling, formatting and replies natively!
 	})
 
 	log.Println("Bot is running...")
