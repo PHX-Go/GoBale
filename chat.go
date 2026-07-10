@@ -1440,3 +1440,56 @@ func (c *ChatChain) ForceSync() *ChatChain {
 
 	return c
 }
+
+// IsOwnerChain handles fluent verification of native group creator/ownership
+type IsOwnerChain struct {
+	cc   *ChatChain
+	user []int64
+}
+
+// IsOwner initiates a fluent check if current member is the native creator/owner of the group chat
+func (c *ChatChain) IsOwner(userID ...int64) *IsOwnerChain {
+	return &IsOwnerChain{cc: c, user: userID}
+}
+
+// Go executes the creator/ownership check on Bale servers and returns true/false with auto error logging
+func (io *IsOwnerChain) Go() (bool, error) {
+	// Bypasses the API request if the chat is a private direct message
+	if io.cc.c != nil && io.cc.c.IsPrivate() {
+		return true, nil
+	}
+
+	resolved := io.cc.bot.ResolveChatID(io.cc.chat)
+	var targetUserID int64
+	if len(io.user) > 0 {
+		targetUserID = io.user[0]
+	} else if io.cc.c != nil {
+		targetUserID = io.cc.c.SenderID()
+	} else {
+		return false, fmt.Errorf("cannot determine target user ID")
+	}
+
+	// Try loading creator status from cache
+	cacheKey := fmt.Sprintf("is_owner:%v:%d", resolved, targetUserID)
+	if cachedVal, ok := io.cc.bot.Cache().Get(cacheKey).Go(); ok {
+		if isOwner, okBool := cachedVal.(bool); okBool {
+			return isOwner, nil
+		}
+	}
+
+	var member ChatMember
+	err := io.cc.bot.BaseRequest(io.cc.ctx, "getChatMember", map[string]any{
+		"chat_id": resolved,
+		"user_id": targetUserID,
+	}, &member)
+	if err != nil {
+		logErr(io.cc.bot, "[Chat IsOwner Check Error] ", err)
+		return false, err
+	}
+	isOwner := member.Status == "creator"
+
+	// Cache creator status for 5 minutes
+	io.cc.bot.Cache().Set(cacheKey, isOwner, 5*time.Minute).Go()
+
+	return isOwner, nil
+}

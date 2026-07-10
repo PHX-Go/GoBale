@@ -1848,13 +1848,19 @@ func (r *RouteChain) Roles(roles ...MemberRole) *RouteChain {
 	r.Guard(func(c *Ctx) bool {
 		var senderRole MemberRole = RoleRegular
 
-		// Resolve sender role hierarchically
+		// Resolve sender role dynamically and hierarchically
 		if c.IsOwner() {
 			senderRole = RoleOwner
 		} else {
-			isAdmin, err := c.Chat().IsAdmin().Go()
-			if err == nil && isAdmin {
-				senderRole = RoleAdmin
+			// Query native group creator (IsOwner) dynamically from chat.go
+			isChatOwner, err := c.Chat().IsOwner().Go()
+			if err == nil && isChatOwner {
+				senderRole = RoleOwner
+			} else {
+				isAdmin, err := c.Chat().IsAdmin().Go()
+				if err == nil && isAdmin {
+					senderRole = RoleAdmin
+				}
 			}
 		}
 
