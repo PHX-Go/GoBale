@@ -27,6 +27,119 @@ type Ctx struct {
 	prevText string
 }
 
+// SendMarkdown is a shortcut helper to send a simple Markdown formatted text message to the current chat
+func (c *Ctx) SendMarkdown(text string) (*Message, error) {
+	return c.Send().Text(text).Markdown().Go()
+}
+
+// ReplyMarkdown is a shortcut helper to reply to the active message with a simple Markdown formatted text
+func (c *Ctx) ReplyMarkdown(text string) (*Message, error) {
+	if c.Message == nil {
+		return nil, errors.New("no message in context to reply to")
+	}
+	return c.Reply().Text(text).Markdown().Go()
+}
+
+// Delete is a shortcut helper to instantly delete the current message in context
+func (c *Ctx) Delete() error {
+	return c.Del().Go()
+}
+
+// RemoveMenu sends a simple text message while collapsing and removing the active reply keyboard
+func (c *Ctx) RemoveMenu(text string) (*Message, error) {
+	return c.Send().Text(text).MarkupRemove().Go()
+}
+
+// AnalyticsReport compiles and returns a beautifully formatted Persian report of the group's current stats dynamically
+func (c *Ctx) AnalyticsReport(p ...PeriodType) (string, error) {
+	period := PeriodDaily
+	if len(p) > 0 {
+		period = p[0]
+	}
+
+	// Query analytics natively using the fluent chain
+	res, err := c.Analytics().Period(period).Go()
+	if err != nil {
+		return "", err
+	}
+
+	// Fetch dynamic group title using getChat natively to replace static name
+	title := "گروه بدون نام"
+	if info, errInfo := c.Chat().Info().Go(); errInfo == nil && info != nil {
+		if info.Title != "" {
+			title = info.Title
+		} else if info.FirstName != "" {
+			title = info.FirstName
+		}
+	}
+
+	periodName := "امروز (روزانه)"
+	if period == PeriodLifetime {
+		periodName = "کل دوره (تا به امروز)"
+	}
+
+	report := Text().
+		Line("📊 **گزارش آماری گروه {group_name}** 📈").
+		Line("🆔 **شناسه گروه:** `{chat_id}`").
+		Line().
+		Line("📅 **دوره آمارگیر:** *{period_name}*").
+		Line("🕒 **زمان گزارش:** `{time}`").
+		Line().
+		Line("📝 **آمار متون و واژگان:**").
+		Line("  💬 تعداد پیام‌های متنی: *{text_cnt}*").
+		Line("  🔤 تعداد کلمات: *{word_cnt}*").
+		Line("  🔢 تعداد کاراکترها: *{char_cnt}*").
+		Line("  🤖 تعداد دستورات: *{command_cnt}*").
+		Line().
+		Line("🖼️ **آمار دقیق رسانه‌ها:**").
+		Line("  📦 مجموع کل رسانه‌ها: *{total_media}*").
+		Line("  🖼️ تصاویر: *{photo_cnt}*").
+		Line("  🎬 ویدیوها: *{video_cnt}*").
+		Line("  🎙️ وویس‌ها: *{voice_cnt}*").
+		Line("  🎵 موسیقی: *{audio_cnt}*").
+		Line("  📁 اسناد و فایل‌ها: *{doc_cnt}*").
+		Line("  👾 استیکرها: *{sticker_cnt}*").
+		Line("  🎬 گیف‌ها (انیمیشن): *{anim_cnt}*").
+		Line("  📍 موقعیت‌های مکانی: *{location_cnt}*").
+		Line("  📇 مخاطبین: *{contact_cnt}*").
+		Line().
+		Line("🤝 **آمار تعاملات و پایش:**").
+		Line("  ↩️ تعداد ریپلای‌ها: *{reply_cnt}*").
+		Line("  ↪️ تعداد فورواردها: *{forward_cnt}*").
+		Line("  📉 پیام‌های حذف‌شده: *{del_cnt}*").
+		Line("  📝 پیام‌های ویرایش‌شده: *{edit_cnt}*").
+		Line().
+		Line("🔥 **ساعت اوج فعالیت:** *{peak_hour}:00* (با {peak_msgs} پیام)").
+		Line("📊 **کل پیام‌های ثبت‌شده:** *{total_msgs}*").
+		Bind("group_name", title).
+		Bind("chat_id", res.ChatID).
+		Bind("period_name", periodName).
+		Bind("time", c.JalaliString()).
+		Bind("text_cnt", Money(res.TextCount)).
+		Bind("word_cnt", Money(res.WordCount)).
+		Bind("char_cnt", Money(res.CharCount)).
+		Bind("command_cnt", Money(res.CommandCount)).
+		Bind("total_media", Money(res.TotalMedia)).
+		Bind("photo_cnt", Money(res.PhotoCount)).
+		Bind("video_cnt", Money(res.VideoCount)).
+		Bind("voice_cnt", Money(res.VoiceCount)).
+		Bind("audio_cnt", Money(res.AudioCount)).
+		Bind("doc_cnt", Money(res.DocCount)).
+		Bind("sticker_cnt", Money(res.StickerCount)).
+		Bind("anim_cnt", Money(res.AnimCount)).
+		Bind("location_cnt", Money(res.LocationCount)).
+		Bind("contact_cnt", Money(res.ContactCount)).
+		Bind("reply_cnt", Money(res.ReplyCount)).
+		Bind("forward_cnt", Money(res.ForwardCount)).
+		Bind("del_cnt", Money(res.DeleteCount)).
+		Bind("edit_cnt", Money(res.EditCount)).
+		Bind("peak_hour", res.PeakHour).
+		Bind("peak_msgs", Money(res.PeakHourMsgs)).
+		Bind("total_msgs", Money(res.TotalMsgs))
+
+	return report.Go(), nil
+}
+
 // MuteUser natively mutes the target user for a duration (auto-resolves target from reply or arguments if omitted)
 func (c *Ctx) MuteUser(d time.Duration, userID ...int64) error {
 	var target int64

@@ -108,6 +108,37 @@ func (s *SendChain) Buttons(buttons ...any) *SendChain {
 	return s
 }
 
+// ReplyMenu dynamically appends a single row of reply keyboard buttons to the message (supports multi-row appending)
+func (s *SendChain) ReplyMenu(buttons ...string) *SendChain {
+	if len(buttons) == 0 {
+		return s
+	}
+
+	var row []KeyboardButton
+	for _, text := range buttons {
+		row = append(row, NewKeyboardButton(text))
+	}
+
+	// Fetch or initialize active reply keyboard to append rows dynamically
+	var currentMarkup *ReplyKeyboardMarkup
+	if s.markup != nil {
+		if m, ok := s.markup.(*ReplyKeyboardMarkup); ok && m != nil {
+			currentMarkup = m
+		}
+	}
+
+	if currentMarkup == nil {
+		currentMarkup = &ReplyKeyboardMarkup{
+			Keyboard:       make([][]KeyboardButton, 0),
+			ResizeKeyboard: true,
+		}
+		s.markup = currentMarkup
+	}
+
+	currentMarkup.Keyboard = append(currentMarkup.Keyboard, row)
+	return s
+}
+
 // OnProgress registers a callback triggered during upload progress updates (1% to 100%)
 func (s *SendChain) OnProgress(fn func(percent float64)) *SendChain {
 	s.onProgress = fn
