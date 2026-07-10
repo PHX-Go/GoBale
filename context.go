@@ -27,6 +27,85 @@ type Ctx struct {
 	prevText string
 }
 
+// MuteUser natively mutes the target user for a duration (auto-resolves target from reply or arguments if omitted)
+func (c *Ctx) MuteUser(d time.Duration, userID ...int64) error {
+	var target int64
+	var err error
+	if len(userID) > 0 {
+		target = userID[0]
+	} else {
+		target, err = c.TargetUser()
+		if err != nil {
+			return err
+		}
+	}
+	return c.Chat().Mute(target).For(d).Go()
+}
+
+// UnmuteUser natively unmutes the target user (auto-resolves target from reply or arguments if omitted)
+func (c *Ctx) UnmuteUser(userID ...int64) error {
+	var target int64
+	var err error
+	if len(userID) > 0 {
+		target = userID[0]
+	} else {
+		target, err = c.TargetUser()
+		if err != nil {
+			return err
+		}
+	}
+	return c.Chat().Restrict(target).
+		SendMessages(true).
+		InviteUsers(true).
+		PinMessages(true).
+		ChangeInfo(true).
+		Go()
+}
+
+// DBSet is a shortcut helper to write a key-value pair to the local Database
+func (c *Ctx) DBSet(key string, val any) error {
+	return c.DB().Set(key, val).Go()
+}
+
+// DBGet is a shortcut helper to read a value from the local Database
+func (c *Ctx) DBGet(key string) (any, bool) {
+	return c.DB().Get(key).Go()
+}
+
+// DBDel is a shortcut helper to delete a key from the local Database
+func (c *Ctx) DBDel(key string) error {
+	return c.DB().Del(key).Go()
+}
+
+// SetState is a shortcut helper to update the active session FSM state
+func (c *Ctx) SetState(state string) (string, error) {
+	return c.Session().State(state).Go()
+}
+
+// GetState is a shortcut helper to retrieve the active session FSM state
+func (c *Ctx) GetState() (string, error) {
+	return c.Session().State().Go()
+}
+
+// SetData is a shortcut helper to save a value inside the active session data map
+func (c *Ctx) SetData(key string, val any) (any, error) {
+	return c.Session().Data(key, val).Go()
+}
+
+// GetData is a shortcut helper to read a value from the active session data map
+func (c *Ctx) GetData(key string) (any, error) {
+	return c.Session().Data(key).Go()
+}
+
+// JalaliString is a shortcut helper to format any Gregorian time (or time.Now() if omitted) into a Shamsi string
+func (c *Ctx) JalaliString(t ...time.Time) string {
+	target := time.Now()
+	if len(t) > 0 {
+		target = t[0]
+	}
+	return Jalali(target).Go()
+}
+
 // Reply opens the fluent sending chain pre-configured to reply to the active message (or original replied-to message if present)
 func (c *Ctx) Reply() *SendChain {
 	id, _ := c.ChatID()
@@ -36,7 +115,6 @@ func (c *Ctx) Reply() *SendChain {
 		chat: id,
 	}
 	if c.Message != nil {
-		// If this message is replying to another message, reply to the original target message natively
 		if c.Message.ReplyToMessage != nil {
 			s.replyTo = c.Message.ReplyToMessage.MessageID
 		} else {
@@ -46,17 +124,17 @@ func (c *Ctx) Reply() *SendChain {
 	return s
 }
 
-// SendText is a shortcut helper to send a simple text message to the current chat
-func (c *Ctx) SendText(text string) (*Message, error) {
-	return c.Send().Text(text).Go()
-}
-
 // ReplyText is a shortcut helper to reply to the active message (or original replied-to message) with a simple text
 func (c *Ctx) ReplyText(text string) (*Message, error) {
 	if c.Message == nil {
 		return nil, errors.New("no message in context to reply to")
 	}
 	return c.Reply().Text(text).Go()
+}
+
+// SendText is a shortcut helper to send a simple text message to the current chat
+func (c *Ctx) SendText(text string) (*Message, error) {
+	return c.Send().Text(text).Go()
 }
 
 // TempText is a shortcut helper to send a self-destroying text message
