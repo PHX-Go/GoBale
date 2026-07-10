@@ -27,6 +27,120 @@ type Ctx struct {
 	prevText string
 }
 
+// Pin is a shortcut helper to natively pin the active message (or specified message ID) in the current group
+func (c *Ctx) Pin(messageID ...int64) error {
+	chatID, err := c.ChatID()
+	if err != nil {
+		return err
+	}
+	targetID := c.Message.MessageID
+	if len(messageID) > 0 {
+		targetID = messageID[0]
+	}
+	return c.Bot.Chat(chatID).Pin(targetID).Go()
+}
+
+// Unpin is a shortcut helper to natively unpin the active message (or specified message ID) in the current group
+func (c *Ctx) Unpin(messageID ...int64) error {
+	chatID, err := c.ChatID()
+	if err != nil {
+		return err
+	}
+	targetID := c.Message.MessageID
+	if len(messageID) > 0 {
+		targetID = messageID[0]
+	}
+	return c.Bot.Chat(chatID).Unpin(targetID).Go()
+}
+
+// Purge natively deletes a specified number of recent visible messages from the current chat concurrently, skipping gaps
+func (c *Ctx) Purge(count int) error {
+	if c.Message == nil {
+		return errors.New("no message in context to purge from")
+	}
+
+	chatID, err := c.ChatID()
+	if err != nil {
+		return err
+	}
+
+	if count <= 0 {
+		count = 5
+	}
+	if count > 100 {
+		count = 100
+	}
+
+	msgID := c.Message.MessageID
+	botInstance := c.Bot
+
+	// Fire Adaptive Wave Deletion (AWD) in background to skip gaps concurrently
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				handlePanic(botInstance, r, nil)
+			}
+		}()
+
+		targetCount := int64(count)
+		deletedCount := int64(0)
+		currentOffset := int64(0)
+		maxSearchDepth := int64(count + 50) // Safe search boundary limit
+
+		for deletedCount < targetCount && currentOffset < maxSearchDepth {
+			remaining := targetCount - deletedCount
+			var wg sync.WaitGroup
+			var successChan = make(chan bool, remaining)
+
+			for i := int64(0); i < remaining; i++ {
+				targetID := msgID - currentOffset - i
+				if targetID <= 0 {
+					break
+				}
+
+				wg.Add(1)
+				// Throttle requests using the bot's central semaphore pool
+				botInstance.bgSemaphore <- struct{}{}
+				go func(id int64) {
+					defer func() {
+						<-botInstance.bgSemaphore
+						wg.Done()
+					}()
+
+					var res bool
+					errReq := botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+						"chat_id":    chatID,
+						"message_id": id,
+					}, &res)
+
+					if errReq == nil && res {
+						successChan <- true
+					}
+				}(targetID)
+			}
+
+			wg.Wait()
+			close(successChan)
+
+			// Calculate successful deletions in this wave
+			waveSuccesses := int64(0)
+			for range successChan {
+				waveSuccesses++
+			}
+
+			deletedCount += waveSuccesses
+			currentOffset += remaining
+
+			// Break if bottom boundary reached
+			if msgID-currentOffset <= 0 {
+				break
+			}
+		}
+	}()
+
+	return nil
+}
+
 // SendMarkdown is a shortcut helper to send a simple Markdown formatted text message to the current chat
 func (c *Ctx) SendMarkdown(text string) (*Message, error) {
 	return c.Send().Text(text).Markdown().Go()
