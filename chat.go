@@ -219,100 +219,88 @@ func (u *UnbanChain) Go() error {
 	return err
 }
 
+// PromoteChain holds admin privileges flags for chat promotion based on Bale schema
+type PromoteChain struct {
+	cc    *ChatChain
+	user  int64
+	info  *bool // can_change_info
+	post  *bool // can_post_messages
+	edit  *bool // can_edit_messages
+	del   *bool // can_delete_messages
+	vChat *bool // can_manage_video_chats
+	inv   *bool // can_invite_users
+	rest  *bool // can_restrict_members
+}
+
 // Promote initializes a promotion configuration chain
 func (c *ChatChain) Promote(userID int64) *PromoteChain {
 	return &PromoteChain{cc: c, user: userID}
 }
 
-// PromoteChain holds admin privileges flags for chat promotion
-type PromoteChain struct {
-	cc      *ChatChain
-	user    int64
-	info    bool // can_change_info
-	post    bool // can_post_messages
-	edit    bool // can_edit_messages
-	del     bool // can_delete_messages
-	inv     bool // can_invite_users
-	rest    bool // can_restrict_members
-	pin     bool // can_pin_messages
-	promote bool // can_promote_members
-	vChat   bool // can_manage_video_chats
-	topics  bool // can_manage_topics
-	anon    bool // is_anonymous
-	seeMem  bool // can_see_members
-	addSty  bool // can_add_story
-	gift    bool // can_send_gift_packet
-}
-
 // ChangeInfo sets can_change_info permission
-func (p *PromoteChain) ChangeInfo(v bool) *PromoteChain { p.info = v; return p }
+func (p *PromoteChain) ChangeInfo(v bool) *PromoteChain { p.info = &v; return p }
 
 // PostMessages sets can_post_messages permission
-func (p *PromoteChain) PostMessages(v bool) *PromoteChain { p.post = v; return p }
+func (p *PromoteChain) PostMessages(v bool) *PromoteChain { p.post = &v; return p }
 
 // EditMessages sets can_edit_messages permission
-func (p *PromoteChain) EditMessages(v bool) *PromoteChain { p.edit = v; return p }
+func (p *PromoteChain) EditMessages(v bool) *PromoteChain { p.edit = &v; return p }
 
 // DeleteMessages sets can_delete_messages permission
-func (p *PromoteChain) DeleteMessages(v bool) *PromoteChain { p.del = v; return p }
+func (p *PromoteChain) DeleteMessages(v bool) *PromoteChain { p.del = &v; return p }
+
+// ManageVideoChats sets can_manage_video_chats permission
+func (p *PromoteChain) ManageVideoChats(v bool) *PromoteChain { p.vChat = &v; return p }
 
 // InviteUsers sets can_invite_users permission
-func (p *PromoteChain) InviteUsers(v bool) *PromoteChain { p.inv = v; return p }
+func (p *PromoteChain) InviteUsers(v bool) *PromoteChain { p.inv = &v; return p }
 
 // RestrictMembers sets can_restrict_members permission
-func (p *PromoteChain) RestrictMembers(v bool) *PromoteChain { p.rest = v; return p }
+func (p *PromoteChain) RestrictMembers(v bool) *PromoteChain { p.rest = &v; return p }
 
-// PinMessages sets can_pin_messages permission
-func (p *PromoteChain) PinMessages(v bool) *PromoteChain { p.pin = v; return p }
-
-// PromoteMembers sets can_promote_members permission
-func (p *PromoteChain) PromoteMembers(v bool) *PromoteChain { p.promote = v; return p }
-
-// ManageTopics sets can_manage_topics permission
-func (p *PromoteChain) ManageTopics(v bool) *PromoteChain { p.topics = v; return p }
-
-// Anonymous sets is_anonymous permission
-func (p *PromoteChain) Anonymous(v bool) *PromoteChain { p.anon = v; return p }
-
-// Go executes the promotion request with dynamic payload builder
+// Go executes the promotion request on Bale servers with auto error logging
 func (p *PromoteChain) Go() error {
 	resolved := p.cc.bot.ResolveChatID(p.cc.chat)
-	payload := map[string]any{
-		"chat_id": resolved,
-		"user_id": p.user,
+
+	// Fetch current active member permissions natively to prevent overriding unconfigured fields
+	current, errQuery := p.cc.bot.Chat(resolved).Member(p.user).Go()
+	if errQuery != nil {
+		return fmt.Errorf("failed to retrieve current member rights for merging: %w", errQuery)
 	}
 
-	// Map flags to Bale API expected keys
-	if p.info {
-		payload["can_change_info"] = true
+	// Resolve fallback values (new administrators implicitly get false for omitted fields)
+	fallback := func(field bool) bool {
+		if current.Status != "administrator" && current.Status != "creator" {
+			return false
+		}
+		return field
 	}
-	if p.post {
-		payload["can_post_messages"] = true
+
+	// Dynamic mapper: prioritized explicit setter, fallback to current active permission
+	resolve := func(explicit *bool, currentVal bool) bool {
+		if explicit != nil {
+			return *explicit
+		}
+		return fallback(currentVal)
 	}
-	if p.edit {
-		payload["can_edit_messages"] = true
+
+	payload := map[string]any{
+		"chat_id":                resolved,
+		"user_id":                p.user,
+		"can_change_info":        resolve(p.info, current.CanChangeInfo),
+		"can_post_messages":      resolve(p.post, current.CanPostMessages),
+		"can_edit_messages":      resolve(p.edit, current.CanEditMessages),
+		"can_delete_messages":    resolve(p.del, current.CanDeleteMessages),
+		"can_manage_video_chats": resolve(p.vChat, current.CanManageVideoChats),
+		"can_invite_users":       resolve(p.inv, current.CanInviteUsers),
+		"can_restrict_members":   resolve(p.rest, current.CanRestrictMembers),
 	}
-	if p.del {
-		payload["can_delete_messages"] = true
-	}
-	if p.inv {
-		payload["can_invite_users"] = true
-	}
-	if p.rest {
-		payload["can_restrict_members"] = true
-	}
-	if p.pin {
-		payload["can_pin_messages"] = true
-	}
-	if p.promote {
-		payload["can_promote_members"] = true
-	}
-	if p.topics {
-		payload["can_manage_topics"] = true
-	}
-	if p.anon {
-		payload["is_anonymous"] = true
-	}
+
+	p.cc.bot.Log().Info("Outgoing promotion payload compiled").
+		Any("resolved_chat_id", resolved).
+		Int64("target_user_id", p.user).
+		Any("compiled_permissions", payload).
+		Go()
 
 	err := p.cc.bot.BaseRequest(p.cc.ctx, "promoteChatMember", payload, nil)
 	if err != nil {
@@ -776,55 +764,82 @@ func (c *ChatChain) Restrict(userID int64) *RestrictChain {
 	return &RestrictChain{cc: c, user: userID}
 }
 
-// RestrictChain handles fluent restrictions for chat members
+// RestrictChain handles fluent restrictions for chat members based on Bale schema
 type RestrictChain struct {
-	cc       *ChatChain
-	user     int64
-	sendMsg  bool
-	sendMed  bool
-	sendOth  bool
-	addPrev  bool
-	duration time.Duration
+	cc          *ChatChain
+	user        int64
+	sendMsg     *bool // can_send_messages
+	inviteUsers *bool // can_invite_users
+	pinMessages *bool // can_pin_messages (Private groups only)
+	changeInfo  *bool // can_change_info (Private groups only)
+	duration    time.Duration
 }
 
-// SendMessages configures if the user is allowed to send text messages
-func (r *RestrictChain) SendMessages(v bool) *RestrictChain {
-	r.sendMsg = v
-	return r
-}
+// SendMessages configures if the user is allowed to send standard messages
+func (r *RestrictChain) SendMessages(v bool) *RestrictChain { r.sendMsg = &v; return r }
 
-// SendMedia configures if the user is allowed to send media messages (photos, videos, etc.)
-func (r *RestrictChain) SendMedia(v bool) *RestrictChain {
-	r.sendMed = v
-	return r
-}
+// InviteUsers configures if the user is allowed to invite other users
+func (r *RestrictChain) InviteUsers(v bool) *RestrictChain { r.inviteUsers = &v; return r }
 
-// SendOther configures if the user is allowed to send other messages (stickers, gifs, etc.)
-func (r *RestrictChain) SendOther(v bool) *RestrictChain {
-	r.sendOth = v
-	return r
-}
+// PinMessages configures if the user is allowed to pin messages (Private groups only)
+func (r *RestrictChain) PinMessages(v bool) *RestrictChain { r.pinMessages = &v; return r }
 
-// AddPreviews configures if the user is allowed to add web page previews to their messages
-func (r *RestrictChain) AddPreviews(v bool) *RestrictChain {
-	r.addPrev = v
-	return r
-}
+// ChangeInfo configures if the user is allowed to change group info (Private groups only)
+func (r *RestrictChain) ChangeInfo(v bool) *RestrictChain { r.changeInfo = &v; return r }
 
 // For sets a native duration from now for how long the restriction will last before auto-lift
-func (r *RestrictChain) For(d time.Duration) *RestrictChain {
-	r.duration = d
-	return r
-}
+func (r *RestrictChain) For(d time.Duration) *RestrictChain { r.duration = d; return r }
 
 // Go executes the chat member restriction on Bale servers with auto error logging
 func (r *RestrictChain) Go() error {
 	resolved := r.cc.bot.ResolveChatID(r.cc.chat)
+	chatID, okChat := resolved.(int64)
+
+	// Fetch current active member permissions natively to prevent overriding unconfigured fields
+	current, errQuery := r.cc.bot.Chat(resolved).Member(r.user).Go()
+	if errQuery != nil {
+		return fmt.Errorf("failed to retrieve current member rights for merging: %w", errQuery)
+	}
+
+	// Resolve fallback value based on user's current restriction status (non-restricted users implicitly get true)
+	fallback := func(field bool) bool {
+		if current.Status != "restricted" && current.Status != "kicked" && current.Status != "left" {
+			return true
+		}
+		return field
+	}
+
+	// Dynamic mapper: prioritized explicit setter, fallback to current active permission
+	resolve := func(explicit *bool, currentVal bool) bool {
+		if explicit != nil {
+			return *explicit
+		}
+		return fallback(currentVal)
+	}
+
+	// Prevent redundant getChat requests by using cached chat status
+	cacheKey := fmt.Sprintf("chat_is_public:%v", resolved)
+	isPublic := false
+	if cachedVal, ok := r.cc.bot.Cache().Get(cacheKey).Go(); ok {
+		if val, okBool := cachedVal.(bool); okBool {
+			isPublic = val
+		}
+	} else {
+		if info, err := r.cc.bot.Chat(resolved).Info().Go(); err == nil && info != nil {
+			isPublic = info.Username != ""
+			r.cc.bot.Cache().Set(cacheKey, isPublic, 12*time.Hour).Go()
+		}
+	}
+
 	permissions := map[string]any{
-		"can_send_messages":         r.sendMsg,
-		"can_send_media_messages":   r.sendMed,
-		"can_send_other_messages":   r.sendOth,
-		"can_add_web_page_previews": r.addPrev,
+		"can_send_messages": resolve(r.sendMsg, current.CanSendMessages),
+		"can_invite_users":  resolve(r.inviteUsers, current.CanInviteUsers),
+	}
+
+	// Pin and Info are only configurable and editable in Private groups natively on Bale
+	if !isPublic {
+		permissions["can_pin_messages"] = resolve(r.pinMessages, current.CanPinMessages)
+		permissions["can_change_info"] = resolve(r.changeInfo, current.CanChangeInfo)
 	}
 
 	// Log compiled permissions payload before sending to network
@@ -846,17 +861,16 @@ func (r *RestrictChain) Go() error {
 	}
 
 	// Schedule automatic lifting of restrictions using framework's internal Task scheduler
-	if r.duration > 0 {
+	if r.duration > 0 && okChat {
 		botInstance := r.cc.bot
-		targetChat := r.cc.chat
 		targetUser := r.user
 
 		botInstance.Task().In(r.duration, func() {
-			_ = botInstance.Chat(targetChat).Restrict(targetUser).
+			_ = botInstance.Chat(chatID).Restrict(targetUser).
 				SendMessages(true).
-				SendMedia(true).
-				SendOther(true).
-				AddPreviews(true).
+				InviteUsers(true).
+				PinMessages(true).
+				ChangeInfo(true).
 				Go()
 		})
 	}
@@ -906,16 +920,15 @@ func (m *MuteChain) For(d time.Duration) *MuteChain {
 	return m
 }
 
-// Go executes the mute natively on Bale servers using restrictChatMember with scheduled auto-unmute
+// Go executes the mute natively on Bale servers and schedules automatic unmute
 func (m *MuteChain) Go() error {
 	resolved := m.cc.bot.ResolveChatID(m.cc.chat)
+	chatID, okChat := resolved.(int64)
 
-	// Compile permissions to natively revoke standard sending privileges
+	// Compile standard Bale permission keys for restricted member
 	perms := map[string]any{
-		"can_send_messages":         false,
-		"can_send_media_messages":   false,
-		"can_send_other_messages":   false,
-		"can_add_web_page_previews": false,
+		"can_send_messages": false,
+		"can_invite_users":  false,
 	}
 
 	err := m.cc.bot.BaseRequest(m.cc.ctx, "restrictChatMember", map[string]any{
@@ -930,17 +943,16 @@ func (m *MuteChain) Go() error {
 	}
 
 	// Schedule automatic unmute natively using framework's internal Task scheduler
-	if m.duration > 0 {
+	if m.duration > 0 && okChat {
 		botInstance := m.cc.bot
-		targetChat := m.cc.chat
 		targetUser := m.userID
 
 		botInstance.Task().In(m.duration, func() {
-			_ = botInstance.Chat(targetChat).Restrict(targetUser).
+			_ = botInstance.Chat(chatID).Restrict(targetUser).
 				SendMessages(true).
-				SendMedia(true).
-				SendOther(true).
-				AddPreviews(true).
+				InviteUsers(true).
+				PinMessages(true).
+				ChangeInfo(true).
 				Go()
 		})
 	}

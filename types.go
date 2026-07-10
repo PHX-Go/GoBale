@@ -325,40 +325,25 @@ type WebAppInfo struct {
 
 // ChatMember represents a user membership context inside chats with verified Bale fields
 type ChatMember struct {
-	// The member's status in the chat: creator, administrator, member, restricted, left or kicked
-	Status string `json:"status"`
-	// Information about the user
-	User User `json:"user"`
-	// True, if the user's presence in the chat is hidden (Detected via probe)
-	IsAnonymous bool `json:"is_anonymous,omitempty"`
-	// True, if the administrator can access the chat event log, chat statistics, etc.
-	CanManageChat bool `json:"can_manage_chat,omitempty"`
-	// True, if the administrator can create, edit, or delete forum topics (Detected via probe)
-	CanManageTopics bool `json:"can_manage_topics,omitempty"`
-	// True, if the administrator can delete messages of other users
-	CanDeleteMessages bool `json:"can_delete_messages,omitempty"`
-	// True, if the administrator can manage video chats
-	CanManageVideoChats bool `json:"can_manage_video_chats,omitempty"`
-	// True, if the administrator can restrict, ban or unban chat members
-	CanRestrictMembers bool `json:"can_restrict_members,omitempty"`
-	// True, if the administrator can add new administrators with a subset of their own privileges
-	CanPromoteMembers bool `json:"can_promote_members,omitempty"`
-	// True, if the user is allowed to change the chat title, photo and other settings
-	CanChangeInfo bool `json:"can_change_info,omitempty"`
-	// True, if the user is allowed to invite new users to the chat
-	CanInviteUsers bool `json:"can_invite_users,omitempty"`
-	// True, if the user is allowed to pin messages
-	CanPinMessages bool `json:"can_pin_messages,omitempty"`
-	// True, if the user is currently a member of the chat
-	IsMember bool `json:"is_member,omitempty"`
-	// True, if the user is allowed to send text messages, contacts, locations and venues
-	CanSendMessages bool `json:"can_send_messages,omitempty"`
-	// True, if the user is allowed to send audios, documents, photos, videos, video notes and voice notes
-	CanSendMediaMessages bool `json:"can_send_media_messages,omitempty"`
-	// True, if the user is allowed to send animations, games, stickers and use inline bots
-	CanSendOtherMessages bool `json:"can_send_other_messages,omitempty"`
-	// True, if the user is allowed to add web page previews to their messages
-	CanAddWebPagePreviews bool `json:"can_add_web_page_previews,omitempty"`
+	Status                string `json:"status"`
+	User                  User   `json:"user"`
+	IsAnonymous           bool   `json:"is_anonymous,omitempty"`
+	CanManageChat         bool   `json:"can_manage_chat,omitempty"`
+	CanManageTopics       bool   `json:"can_manage_topics,omitempty"`
+	CanDeleteMessages     bool   `json:"can_delete_messages,omitempty"`
+	CanManageVideoChats   bool   `json:"can_manage_video_chats,omitempty"`
+	CanRestrictMembers    bool   `json:"can_restrict_members,omitempty"`
+	CanPromoteMembers     bool   `json:"can_promote_members,omitempty"`
+	CanChangeInfo         bool   `json:"can_change_info,omitempty"`
+	CanInviteUsers        bool   `json:"can_invite_users,omitempty"`
+	CanPinMessages        bool   `json:"can_pin_messages,omitempty"`
+	IsMember              bool   `json:"is_member,omitempty"`
+	CanSendMessages       bool   `json:"can_send_messages,omitempty"`
+	CanSendMediaMessages  bool   `json:"can_send_media_messages,omitempty"`
+	CanSendOtherMessages  bool   `json:"can_send_other_messages,omitempty"`
+	CanAddWebPagePreviews bool   `json:"can_add_web_page_previews,omitempty"`
+	CanPostMessages       bool   `json:"can_post_messages,omitempty"`
+	CanEditMessages       bool   `json:"can_edit_messages,omitempty"`
 }
 
 // ChatPhoto represents chat avatar file references
