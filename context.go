@@ -318,12 +318,13 @@ func (c *Ctx) SetData(key string, val any) {
 
 // GetData is a shortcut helper to read a value from the active session data map directly
 func (c *Ctx) GetData(key string) any {
-	c.Session().mu.RLock()
-	defer c.Session().mu.RUnlock()
-	if c.Session().DataMap == nil {
+	s := c.Session()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.DataMap == nil {
 		return nil
 	}
-	return c.Session().DataMap[key]
+	return s.DataMap[key]
 }
 
 // JalaliString is a shortcut helper to format any Gregorian time (or time.Now() if omitted) into a Shamsi string
@@ -1312,9 +1313,6 @@ func (c *Ctx) SettingBtn(key string, targetChat ...any) *InlineButtonBuilder {
 
 // ToggleSetting toggles or sets a registered setting natively, supporting optional target chats for remote management
 func (c *Ctx) ToggleSetting(key string, state string, targetChat ...any) (any, error) {
-	c.Bot.mu.Lock()
-	defer c.Bot.mu.Unlock()
-
 	// Normalize key natively to prevent case-sensitivity and spacing bugs completely
 	key = strings.ToLower(strings.TrimSpace(key))
 
@@ -1338,7 +1336,7 @@ func (c *Ctx) ToggleSetting(key string, state string, targetChat ...any) (any, e
 	db := c.Bot.dbInstance
 	dbKey := fmt.Sprintf("group_config_%v_%s", resolved, key)
 
-	// Find setting entry
+	// Find setting entry (Safe to read concurrently without locks as settings is read-only after startup)
 	var entry *SettingEntry
 	for i := range c.Bot.settings {
 		if c.Bot.settings[i].Key == key {

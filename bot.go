@@ -1033,14 +1033,26 @@ func fetchNgrokURL(apiURL string) (string, error) {
 	return data.Tunnels[0].PublicURL, nil
 }
 
-// StartWorkers starts processing update worker channels
+// StartWorkers starts processing update worker channels with safe panic recovery per worker thread
 func (b *Bot) StartWorkers(ctx context.Context) {
 	for i := 0; i < b.numWorkers; i++ {
 		b.workersWg.Add(1)
 		go func() {
 			defer b.workersWg.Done()
 			for update := range b.workerChan {
-				b.processUpdate(ctx, update)
+				// Execute each update inside a panic-proof closure to keep worker threads alive
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							// Print complete crash stack trace natively in console
+							log.Printf("[Worker Thread Panic Recovery] Captured panic on worker: %v\n%s", r, debug.Stack())
+							if b.OnError != nil {
+								b.OnError(fmt.Errorf("worker panic: %v", r), nil)
+							}
+						}
+					}()
+					b.processUpdate(ctx, update)
+				}()
 			}
 		}()
 	}
