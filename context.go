@@ -1315,11 +1315,22 @@ func (c *Ctx) ToggleSetting(key string, state string, targetChat ...any) (any, e
 	c.Bot.mu.Lock()
 	defer c.Bot.mu.Unlock()
 
-	// Resolve target chat ID (fallback to current chat)
+	// Normalize key natively to prevent case-sensitivity and spacing bugs completely
+	key = strings.ToLower(strings.TrimSpace(key))
+
+	// Resolve target chat ID with secure type assertions to prevent empty interface/string clashes
 	var resolved any
 	if len(targetChat) > 0 && targetChat[0] != nil {
-		resolved = c.Bot.ResolveChatID(targetChat[0])
-	} else {
+		if str, okStr := targetChat[0].(string); okStr {
+			cleanStr := strings.TrimSpace(str)
+			if cleanStr != "" {
+				resolved = c.Bot.ResolveChatID(cleanStr)
+			}
+		} else {
+			resolved = c.Bot.ResolveChatID(targetChat[0])
+		}
+	}
+	if resolved == nil || resolved == "" {
 		id, _ := c.ChatID()
 		resolved = c.Bot.ResolveChatID(id)
 	}
@@ -1441,9 +1452,9 @@ type ToggleChain struct {
 func (c *Ctx) Toggle() *ToggleChain {
 	return &ToggleChain{
 		c:          c,
-		successMsg: "✅ تنظیم `%s` با موفقیت به حالت [%s] تغییر یافت.",
+		successMsg: "✅ تنظیم `%s` با موفقیت به حالت `%s` تغییر یافت.",
 		errorMsg:   "❌ خطایی رخ داد: %v",
-		invalidMsg: "⚠️ دستور نامعتبر! مثال:\n`/toggle lock_sticker on`\n`/toggle lock_gif off 4542691229` (ریموت)",
+		invalidMsg: "⚠️ دستور نامعتبر! مثال:\n`/toggle lock_sticker on`\n`/toggle lock_gif off 4542691229` (Remote)",
 		statusOn:   "🟢 روشن",
 		statusOff:  "🔴 خاموش",
 	}
