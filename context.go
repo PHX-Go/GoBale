@@ -1499,3 +1499,149 @@ func (t *ToggleChain) Go() (*Message, error) {
 
 	return t.c.ReplyText(fmt.Sprintf(t.successMsg, key, status))
 }
+
+// DownloadFile is a shortcut helper to natively download any file by its ID into a local path in one line
+func (c *Ctx) DownloadFile(fileID string, path string, name ...string) (string, error) {
+	dl := c.File(fileID).Download().Path(path)
+	if len(name) > 0 {
+		dl = dl.Name(name[0])
+	}
+	return dl.Go()
+}
+
+// ClearSession destroys the active session data and resets FSM states in one line
+func (c *Ctx) ClearSession() {
+	id, _ := c.ChatID()
+	c.Bot.Sessions.Clear(id)
+}
+
+// Emit is a shortcut helper to publish an event concurrently to the central EventBus
+func (c *Ctx) Emit(topic string, payload any) {
+	c.Bot.Bus.Publish(topic, payload)
+}
+
+// GetActiveFile extracts the file ID and dynamic original file name of any active media in the message
+func (c *Ctx) GetActiveFile() (string, string, error) {
+	msg := c.Message
+	if msg == nil {
+		return "", "", errors.New("no message in context")
+	}
+
+	// Automatically fallback to replied-to message if the trigger message contains no downloadable media
+	hasMedia := msg.Document != nil || msg.Video != nil || msg.Audio != nil || len(msg.Photo) > 0 ||
+		msg.Voice != nil || msg.Sticker != nil || msg.Animation != nil
+
+	if !hasMedia && msg.ReplyToMessage != nil {
+		msg = msg.ReplyToMessage
+	}
+
+	// Helper to extract a unique 12-character hash from the actual unique field of the FileID
+	hash := func(id string) string {
+		// 1. If it's a colon-separated Bale ID, extract the second field which is the unique file identifier
+		parts := strings.Split(id, ":")
+		if len(parts) >= 2 {
+			clean := strings.TrimPrefix(parts[1], "-")
+			if len(clean) > 12 {
+				return clean[len(clean)-12:] // Get the last 12 digits of the actual unique field
+			}
+			return clean
+		}
+		// 2. Fallback for standard base64 Telegram file IDs
+		if len(id) < 12 {
+			return id
+		}
+		return id[len(id)-12:]
+	}
+
+	var fileID string
+	var fileName string
+	var mimeType string
+	var defaultPrefix string
+
+	// Extract raw fields dynamically based on the active media type in the packet
+	if msg.Animation != nil {
+		fileID = msg.Animation.FileID
+		mimeType = msg.Animation.MimeType
+		defaultPrefix = "animation"
+		// Always ignore the static duplicate file name of client, and force-generate based on unique FileID hash
+		fileName = ""
+	} else if msg.Document != nil {
+		fileID = msg.Document.FileID
+		fileName = msg.Document.FileName
+		mimeType = msg.Document.MimeType
+		defaultPrefix = "file"
+	} else if msg.Video != nil {
+		fileID = msg.Video.FileID
+		fileName = msg.Video.FileName
+		mimeType = msg.Video.MimeType
+		defaultPrefix = "video"
+	} else if msg.Audio != nil {
+		fileID = msg.Audio.FileID
+		fileName = msg.Audio.FileName
+		mimeType = msg.Audio.MimeType
+		defaultPrefix = "audio"
+	} else if len(msg.Photo) > 0 {
+		largest := msg.Photo.Largest()
+		fileID = largest.FileID
+		mimeType = "image/jpeg"
+		defaultPrefix = "photo"
+	} else if msg.Voice != nil {
+		fileID = msg.Voice.FileID
+		mimeType = msg.Voice.MimeType
+		defaultPrefix = "voice"
+	} else if msg.Sticker != nil {
+		fileID = msg.Sticker.FileID
+		mimeType = "image/webp"
+		defaultPrefix = "sticker"
+	}
+
+	if fileID == "" {
+		return "", "", errors.New("no downloadable media found in this message")
+	}
+
+	// Resolve extension using a robust, fallback-safe bidirectional logic
+	ext := ""
+	if fileName != "" {
+		ext = filepath.Ext(fileName)
+	}
+
+	// If the filename has no extension (or empty), resolve it dynamically from the MIME subtype [1.1.2]
+	if ext == "" && mimeType != "" {
+		parts := strings.Split(strings.ToLower(mimeType), "/")
+		if len(parts) == 2 {
+			subtype := parts[1]
+			switch subtype {
+			case "jpeg", "jpg":
+				ext = ".jpg"
+			case "mpeg":
+				ext = ".mp3"
+			case "plain":
+				ext = ".txt"
+			case "octet-stream":
+				ext = ".bin"
+			case "quicktime":
+				ext = ".mov"
+			case "x-gif":
+				ext = ".gif"
+			default:
+				ext = "." + subtype
+			}
+		}
+	}
+
+	// Final fallback if both methods yielded no extension
+	if ext == "" {
+		ext = ".dat"
+	}
+
+	// Build the final filename, ensuring we append the extension if the original filename lacks one [1.1.2]
+	if fileName != "" {
+		if filepath.Ext(fileName) == "" {
+			fileName = fileName + ext
+		}
+	} else {
+		fileName = fmt.Sprintf("%s_%s%s", defaultPrefix, hash(fileID), ext)
+	}
+
+	return fileID, fileName, nil
+}
