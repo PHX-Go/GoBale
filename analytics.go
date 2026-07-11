@@ -139,9 +139,16 @@ func AnalyticsLogger() Handler {
 			inc(fmt.Sprintf("stat_lifetime:%d:%s", chatID, metric), delta)
 		}
 
+		// Helper to automatically increment user-specific granular metrics
+		logUserMetric := func(metric string, delta int64) {
+			inc(fmt.Sprintf("user_daily:%d:%d:%s", chatID, userID, metric), delta)
+			inc(fmt.Sprintf("user_lifetime:%d:%d:%s", chatID, userID, metric), delta)
+		}
+
 		isEdit := c.Update.EditedMessage != nil
 		if isEdit {
 			logMetric("edits", 1)
+			logUserMetric("edits", 1)
 		}
 
 		peakKey := fmt.Sprintf("stat_peak:%d:%d", chatID, currentHour)
@@ -155,6 +162,7 @@ func AnalyticsLogger() Handler {
 
 			if text[0] == '/' {
 				logMetric("command", 1)
+				logUserMetric("command", 1)
 			}
 
 			hasLink := rxLinkPattern.MatchString(text)
@@ -165,10 +173,12 @@ func AnalyticsLogger() Handler {
 
 		if c.Message.ReplyToMessage != nil {
 			logMetric("replies", 1)
+			logUserMetric("replies", 1)
 		}
 
 		if c.Message.ForwardDate != 0 {
 			logMetric("forwards", 1)
+			logUserMetric("forwards", 1)
 		}
 
 		var detected string
@@ -220,8 +230,15 @@ func AnalyticsLogger() Handler {
 
 		if detected != "" {
 			logMetric(detected, 1)
+			logUserMetric(detected, 1)
 		} else if !isEdit {
 			logMetric("text", 1)
+			logUserMetric("text", 1)
+		}
+
+		// Increment user's total active message count (sum of text and media)
+		if !isEdit {
+			logUserMetric("msgs", 1)
 		}
 
 		// Store user's actual name (not username) natively for leaderboard rendering
@@ -230,10 +247,6 @@ func AnalyticsLogger() Handler {
 			fullName += " " + c.Message.From.LastName
 		}
 		dbConcrete.store[fmt.Sprintf("user_name:%d", userID)] = fullName
-
-		// Increment user's message counts (Daily and Lifetime)
-		inc(fmt.Sprintf("user_daily:%d:%d:msgs", chatID, userID), 1)
-		inc(fmt.Sprintf("user_lifetime:%d:%d:msgs", chatID, userID), 1)
 
 		// Append userID to active group users list if not already present
 		activeUsersKey := fmt.Sprintf("active_users:%d", chatID)
@@ -461,16 +474,40 @@ func (a *AnalyticsChain) purgeDailyStats(chatID int64) {
 	}
 }
 
-// Leaderboard compiles and returns a beautifully formatted report of top 10 active chatters
-func (c *Ctx) Leaderboard(p ...PeriodType) (string, error) {
+// Leaderboard compiles and returns a beautifully formatted Persian RTL report of top N active chatters by specific metric (with remote support)
+func (c *Ctx) Leaderboard(metric string, limit int, targetChat any, p ...PeriodType) (string, error) {
 	period := PeriodDaily
 	if len(p) > 0 {
 		period = p[0]
 	}
 
-	chatID, err := c.ChatID()
-	if err != nil {
-		return "", err
+	resolved := c.Bot.ResolveChatID(targetChat)
+	if resolved == nil || resolved == "" {
+		id, err := c.ChatID()
+		if err != nil {
+			return "", err
+		}
+		resolved = c.Bot.ResolveChatID(id)
+	}
+
+	// Resolve the dynamic target chat ID safely into int64 for database keys
+	var chatID int64
+	switch v := resolved.(type) {
+	case int64:
+		chatID = v
+	case int:
+		chatID = int64(v)
+	case int32:
+		chatID = int64(v)
+	case string:
+		var id int64
+		if _, err := fmt.Sscanf(v, "%d", &id); err == nil {
+			chatID = id
+		}
+	}
+
+	if chatID == 0 {
+		return "", fmt.Errorf("unable to resolve chat ID as int64")
 	}
 
 	db := c.Bot.analyticsDB
@@ -479,8 +516,45 @@ func (c *Ctx) Leaderboard(p ...PeriodType) (string, error) {
 		return "", fmt.Errorf("analytics database is not initialized")
 	}
 
+	// Normalize and resolve dynamic aliases natively
+	metric = strings.ToLower(strings.TrimSpace(metric))
+	switch metric {
+	case "", "all", "messages":
+		metric = "msgs"
+	case "gif", "gifs":
+		metric = "animation"
+	case "doc", "docs", "file", "files":
+		metric = "document"
+	case "music":
+		metric = "audio"
+	case "picture", "pic", "pics":
+		metric = "photo"
+	}
+
+	metricNames := map[string]string{
+		"msgs":      "کل پیام‌های ارسالی",
+		"text":      "پیام‌های متنی",
+		"photo":     "تصاویر ارسالی (Photo)",
+		"video":     "ویدیوهای ارسالی (Video)",
+		"voice":     "پیام‌های صوتی (Voice)",
+		"audio":     "فایل‌های موسیقی (Audio)",
+		"document":  "اسناد و فایل‌ها (Document)",
+		"sticker":   "استیکرهای ارسالی (Sticker)",
+		"animation": "گیف‌های ارسالی (GIF)",
+		"location":  "موقعیت‌های مکانی (Location)",
+		"contact":   "مخاطبان به اشتراک گذاشته شده",
+		"replies":   "ریپلای‌های ارسالی",
+		"forwards":  "پیام‌های فوروارد شده",
+		"edits":     "پیام‌های ویرایش شده",
+		"command":   "دستورات صادر شده",
+	}
+
+	unitName, okMetric := metricNames[metric]
+	if !okMetric {
+		return "⚠️ معیار سنجش وارد شده نامعتبر است.\n\n**معیارهای مجاز:**\n`msgs, text, photo, video, voice, audio, doc, sticker, gif, location, contact, replies, forwards, edits, command`", nil
+	}
+
 	dbConcrete.mu.RLock()
-	// Read list of all active user IDs in this chat
 	activeUsersKey := fmt.Sprintf("active_users:%d", chatID)
 	var userList []int64
 	if val, ok := dbConcrete.store[activeUsersKey]; ok {
@@ -501,9 +575,9 @@ func (c *Ctx) Leaderboard(p ...PeriodType) (string, error) {
 		prefix = "user_lifetime"
 	}
 
-	// Retrieve message counts and cached names for each active user
+	// Retrieve message counts and cached names dynamically for each active user
 	for _, uid := range userList {
-		countKey := fmt.Sprintf("%s:%d:%d:msgs", prefix, chatID, uid)
+		countKey := fmt.Sprintf("%s:%d:%d:%s", prefix, chatID, uid, metric)
 		count := int64(0)
 		if val, ok := dbConcrete.store[countKey]; ok {
 			if iVal, okInt := asInt64(val); okInt {
@@ -525,7 +599,7 @@ func (c *Ctx) Leaderboard(p ...PeriodType) (string, error) {
 	dbConcrete.mu.RUnlock()
 
 	if len(chatters) == 0 {
-		return "📊 لیست فعال‌ترین کاربران خالی است.", nil
+		return fmt.Sprintf("📊 لیست برترین‌ها برای فیلد «%s» خالی است.", unitName), nil
 	}
 
 	// Sort active chatters in descending order
@@ -538,16 +612,23 @@ func (c *Ctx) Leaderboard(p ...PeriodType) (string, error) {
 		periodName = "کل دوره (تا به امروز)"
 	}
 
-	title := c.ChatTitle()
+	// Pass the resolved target chat ID explicitly to ChatTitle to prevent argument clashes
+	title := c.ChatTitle(resolved)
 
 	report := Text().
-		Line("🏆 **فعال‌ترین کاربران گروه ", title, "** 🏆").
+		Line("🏆 **فعال‌ترین کاربران گروه ", title, "**").
 		Line("📊 **دوره آمارگیر:** *{period_name}*").
-		Line("💬 **معیار سنجش:** *تعداد پیام‌های ارسالی*").
+		Line("💬 **معیار سنجش:** *{unit_name}*").
 		Line().
-		Bind("period_name", periodName)
+		Bind("period_name", periodName).
+		Bind("unit_name", unitName)
 
-	limit := 10
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
 	if len(chatters) < limit {
 		limit = len(chatters)
 	}
@@ -596,7 +677,7 @@ func (c *Ctx) Leaderboard(p ...PeriodType) (string, error) {
 		// Build Bale specific mention link
 		userLink := Link(isolatedName, fmt.Sprintf("uid:%d", ch.userID))
 
-		// Wrap the entire line inside LRI...PDI to guarantee strict LTR rendering
+		// Prepend \u2066 (LRI) to completely lock the visual row direction LTR, regardless of Persian names [1.2.2]
 		lineText := fmt.Sprintf("%s  %s %s - `%s` %s", unicodeLRI, emoji, userLink, Money(ch.count), unicodePDI)
 		report.Line(lineText)
 	}

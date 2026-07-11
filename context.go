@@ -1392,13 +1392,17 @@ func (c *Ctx) GetBool(key string) bool {
 // ChatTitle natively retrieves and caches the dynamic title of the target group (supporting optional remote overrides)
 func (c *Ctx) ChatTitle(targetChat ...any) string {
 	var resolved any
-	if len(targetChat) > 0 && targetChat[0] != nil {
+	if len(targetChat) > 0 && targetChat[0] != nil && targetChat[0] != "" {
 		resolved = c.Bot.ResolveChatID(targetChat[0])
 	} else {
-		// Check if a target chat ID was passed as first command argument (for remote PV settings!)
-		if arg := c.ArgString(0); arg != "" {
-			resolved = c.Bot.ResolveChatID(arg)
-		} else {
+		// Only parse ArgString(0) as remote chat ID if we are in PV and the arg is a valid numeric ID
+		if c.IsPrivate() && c.ArgString(0) != "" {
+			arg := c.ArgString(0)
+			if strings.HasPrefix(arg, "-") || (len(arg) > 0 && arg[0] >= '0' && arg[0] <= '9') {
+				resolved = c.Bot.ResolveChatID(arg)
+			}
+		}
+		if resolved == nil || resolved == "" {
 			id, _ := c.ChatID()
 			resolved = c.Bot.ResolveChatID(id)
 		}
@@ -1411,7 +1415,7 @@ func (c *Ctx) ChatTitle(targetChat ...any) string {
 		}
 	}
 
-	title := "گروه بدون نام"
+	title := "بدون نام" // Fixed default fallback to prevent "group group" duplication
 	if info, err := c.Bot.Chat(resolved).Info().Go(); err == nil && info != nil {
 		if info.Title != "" {
 			title = info.Title
