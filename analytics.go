@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,6 +116,7 @@ func AnalyticsLogger() Handler {
 		now := time.Now()
 		currentHour := now.Hour()
 		text := c.Message.Text
+		userID := c.Message.From.ID
 
 		dbConcrete.mu.Lock()
 
@@ -219,7 +221,39 @@ func AnalyticsLogger() Handler {
 		if detected != "" {
 			logMetric(detected, 1)
 		} else if !isEdit {
-			logMetric("text", 1) // Increment only if it has no media and is not an edit
+			logMetric("text", 1)
+		}
+
+		// Store user's actual name (not username) natively for leaderboard rendering
+		fullName := c.Message.From.FirstName
+		if c.Message.From.LastName != "" {
+			fullName += " " + c.Message.From.LastName
+		}
+		dbConcrete.store[fmt.Sprintf("user_name:%d", userID)] = fullName
+
+		// Increment user's message counts (Daily and Lifetime)
+		inc(fmt.Sprintf("user_daily:%d:%d:msgs", chatID, userID), 1)
+		inc(fmt.Sprintf("user_lifetime:%d:%d:msgs", chatID, userID), 1)
+
+		// Append userID to active group users list if not already present
+		activeUsersKey := fmt.Sprintf("active_users:%d", chatID)
+		var userList []int64
+		if val, ok := dbConcrete.store[activeUsersKey]; ok {
+			if list, okSlice := val.([]int64); okSlice {
+				userList = list
+			}
+		}
+		found := false
+		for _, id := range userList {
+			if id == userID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			userList = append(userList, userID)
+			dbConcrete.store[activeUsersKey] = userList
+			dbConcrete.appendWAL(walEntry{Op: walSet, Key: activeUsersKey, Val: userList})
 		}
 
 		dbConcrete.mu.Unlock()
@@ -413,16 +447,159 @@ func (a *AnalyticsChain) purgeDailyStats(chatID int64) {
 	var keysToDel []string
 	prefixDaily := fmt.Sprintf("stat_daily:%d:", chatID)
 	prefixPeak := fmt.Sprintf("stat_peak:%d:", chatID)
+	prefixUserDaily := fmt.Sprintf("user_daily:%d:", chatID) // Clears daily user message count at midnight
 
 	for k := range dbConcrete.store {
-		if strings.HasPrefix(k, prefixDaily) || strings.HasPrefix(k, prefixPeak) {
+		if strings.HasPrefix(k, prefixDaily) || strings.HasPrefix(k, prefixPeak) || strings.HasPrefix(k, prefixUserDaily) {
 			keysToDel = append(keysToDel, k)
 		}
 	}
 
 	for _, k := range keysToDel {
 		delete(dbConcrete.store, k)
-		// Append WAL record to persist deletion cleanly
 		dbConcrete.appendWAL(walEntry{Op: walDel, Key: k})
 	}
+}
+
+// Leaderboard compiles and returns a beautifully formatted report of top 10 active chatters
+func (c *Ctx) Leaderboard(p ...PeriodType) (string, error) {
+	period := PeriodDaily
+	if len(p) > 0 {
+		period = p[0]
+	}
+
+	chatID, err := c.ChatID()
+	if err != nil {
+		return "", err
+	}
+
+	db := c.Bot.analyticsDB
+	dbConcrete, ok := db.(*Database)
+	if !ok || dbConcrete == nil {
+		return "", fmt.Errorf("analytics database is not initialized")
+	}
+
+	dbConcrete.mu.RLock()
+	// Read list of all active user IDs in this chat
+	activeUsersKey := fmt.Sprintf("active_users:%d", chatID)
+	var userList []int64
+	if val, ok := dbConcrete.store[activeUsersKey]; ok {
+		if list, okSlice := val.([]int64); okSlice {
+			userList = list
+		}
+	}
+
+	type chatter struct {
+		userID int64
+		count  int64
+		name   string
+	}
+	var chatters []chatter
+
+	prefix := "user_daily"
+	if period == PeriodLifetime {
+		prefix = "user_lifetime"
+	}
+
+	// Retrieve message counts and cached names for each active user
+	for _, uid := range userList {
+		countKey := fmt.Sprintf("%s:%d:%d:msgs", prefix, chatID, uid)
+		count := int64(0)
+		if val, ok := dbConcrete.store[countKey]; ok {
+			if iVal, okInt := asInt64(val); okInt {
+				count = iVal
+			}
+		}
+
+		if count > 0 {
+			nameKey := fmt.Sprintf("user_name:%d", uid)
+			name := fmt.Sprintf("User %d", uid)
+			if val, ok := dbConcrete.store[nameKey]; ok {
+				if str, okStr := val.(string); okStr {
+					name = str
+				}
+			}
+			chatters = append(chatters, chatter{userID: uid, count: count, name: name})
+		}
+	}
+	dbConcrete.mu.RUnlock()
+
+	if len(chatters) == 0 {
+		return "📊 لیست فعال‌ترین کاربران خالی است.", nil
+	}
+
+	// Sort active chatters in descending order
+	sort.Slice(chatters, func(i, j int) bool {
+		return chatters[i].count > chatters[j].count
+	})
+
+	periodName := "امروز (روزانه)"
+	if period == PeriodLifetime {
+		periodName = "کل دوره (تا به امروز)"
+	}
+
+	title := c.ChatTitle()
+
+	report := Text().
+		Line("🏆 **فعال‌ترین کاربران گروه ", title, "** 🏆").
+		Line("📊 **دوره آمارگیر:** *{period_name}*").
+		Line("💬 **معیار سنجش:** *تعداد پیام‌های ارسالی*").
+		Line().
+		Bind("period_name", periodName)
+
+	limit := 10
+	if len(chatters) < limit {
+		limit = len(chatters)
+	}
+
+	getRankEmoji := func(rank int) string {
+		switch rank {
+		case 1:
+			return "🥇"
+		case 2:
+			return "🥈"
+		case 3:
+			return "🥉"
+		case 4:
+			return "4️⃣"
+		case 5:
+			return "5️⃣"
+		case 6:
+			return "6️⃣"
+		case 7:
+			return "7️⃣"
+		case 8:
+			return "8️⃣"
+		case 9:
+			return "9️⃣"
+		case 10:
+			return "🔟"
+		}
+		return fmt.Sprintf("%d.", rank)
+	}
+
+	// Unicode BiDi Isolation Constants (LRI, RLI, PDI)
+	const (
+		unicodeLRI = "\u2066" // Left-to-Right Isolate
+		unicodeRLI = "\u2067" // Right-to-Left Isolate
+		unicodePDI = "\u2069" // Pop Directional Isolate
+	)
+
+	// Compile report rows in LTR layout using Unicode Bidi Isolation
+	for i := 0; i < limit; i++ {
+		ch := chatters[i]
+		emoji := getRankEmoji(i + 1)
+
+		// Wrap the Persian name inside RLI...PDI to isolate its directionality
+		isolatedName := fmt.Sprintf("%s%s%s", unicodeRLI, ch.name, unicodePDI)
+
+		// Build Bale specific mention link
+		userLink := Link(isolatedName, fmt.Sprintf("uid:%d", ch.userID))
+
+		// Wrap the entire line inside LRI...PDI to guarantee strict LTR rendering
+		lineText := fmt.Sprintf("%s  %s %s - `%s` %s", unicodeLRI, emoji, userLink, Money(ch.count), unicodePDI)
+		report.Line(lineText)
+	}
+
+	return report.Go(), nil
 }
