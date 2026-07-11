@@ -2218,7 +2218,8 @@ func InternalRestrictGuard() Handler {
 // GroupGuard blocks or silently self-destroys stickers, gifs, or standard media based on GOB database settings automatically
 func GroupGuard() Handler {
 	return func(c *Ctx) {
-		if c.Message == nil || c.IsPrivate() {
+		// Bypass all checks if there's no message, if it is a private chat, if it's a channel post, or if the sender ID is invalid
+		if c.Message == nil || c.IsPrivate() || c.IsChannel() || c.SenderID() <= 0 {
 			c.Next()
 			return
 		}
@@ -2249,41 +2250,14 @@ func GroupGuard() Handler {
 			isMedia = true
 		}
 
-		// 1. Automatic Self-Destroying Media check supporting polymorphic duration types
+		// 1. Automatic Self-Destroying Media check (if "media_destroy" setting is active)
 		destroyVal, okDestroy := db.Get(fmt.Sprintf("group_config_%d_media_destroy", chatID))
 		if okDestroy {
-			var destroyDuration time.Duration
-			active := false
-
-			switch v := destroyVal.(type) {
-			case bool:
-				if v {
-					active = true
-					destroyDuration = 5 * time.Minute // Default fallback
-				}
-			case int:
-				if v > 0 {
-					active = true
-					destroyDuration = time.Duration(v) * time.Second
-				}
-			case int64:
-				if v > 0 {
-					active = true
-					destroyDuration = time.Duration(v) * time.Second
-				}
-			case string:
-				// Parse custom duration strings natively (e.g. "10m", "30s", "1h")
-				if parsed, err := ParseDuration(v); err == nil && parsed > 0 {
-					active = true
-					destroyDuration = parsed
-				}
-			}
-
-			if active && isMedia {
+			if active, okBool := destroyVal.(bool); okBool && active && isMedia {
 				msgID := c.Message.MessageID
 				bot := c.Bot
-				// Schedule automatic self-destruction silently after calculated duration
-				bot.Task().In(destroyDuration, func() {
+				// Schedule automatic self-destruction silently in 5 minutes
+				bot.Task().In(5*time.Minute, func() {
 					_ = bot.BaseRequest(context.Background(), "deleteMessage", map[string]any{
 						"chat_id":    chatID,
 						"message_id": msgID,

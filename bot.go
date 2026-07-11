@@ -248,6 +248,30 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 	bot.On().Use(Recovery())
 
+	// Register system join verification callback natively in bot.go
+	bot.On().Callback("_sys_join_verify").Do(func(c *Ctx) {
+		if c.Update == nil || c.Update.CallbackQuery == nil {
+			return
+		}
+
+		var targetChat string
+		_ = c.ScanCallbackArgs(&targetChat)
+
+		// Re-verify membership dynamically on click
+		isMember, err := c.IsMemberOf(targetChat)
+		if err != nil {
+			_ = c.Answer().Text("❌ خطایی در تایید عضویت رخ داد. ادمین بودن ربات در کانال را بررسی کنید.").Alert().Go()
+			return
+		}
+
+		if isMember {
+			_ = c.Answer().Text("✅ عضویت شما تایید شد! سپاس از همراهی شما.").Alert().Go()
+			_ = c.Delete() // Delete the verification panel natively
+		} else {
+			_ = c.Answer().Text("❌ شما هنوز عضو کانال نشده‌اید! لطفاً ابتدا دکمه عضویت را زده و عضو شوید.").Alert().Go()
+		}
+	})
+
 	// Register system config callbacks in bot.go with dynamic ReplyMarkup capture
 	bot.On().Callback("_sys_cfg").Do(func(c *Ctx) {
 		if c.Update == nil || c.Update.CallbackQuery == nil || c.Update.CallbackQuery.Message == nil {

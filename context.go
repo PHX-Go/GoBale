@@ -27,6 +27,67 @@ type Ctx struct {
 	prevText string
 }
 
+// ForwardTo natively forwards the active message in context to a target chat in one line
+func (c *Ctx) ForwardTo(targetChat any) (*Message, error) {
+	if c.Message == nil {
+		return nil, errors.New("no message in context to forward")
+	}
+	return c.Bot.Send(targetChat).Forward(c.Message.Chat.ID, c.Message.MessageID).Go()
+}
+
+// CopyTo natively copies the active message in context to a target chat in one line
+func (c *Ctx) CopyTo(targetChat any) (*Message, error) {
+	if c.Message == nil {
+		return nil, errors.New("no message in context to copy")
+	}
+	return c.Bot.Send(targetChat).Copy(c.Message.Chat.ID, c.Message.MessageID).Go()
+}
+
+// JoinGuard checks if the user is a member of the target channel, and automatically sends a beautiful verification panel if they are not
+func (c *Ctx) JoinGuard(targetChat any, inviteLink string) (bool, error) {
+	isMember, err := c.IsMemberOf(targetChat)
+	if err != nil {
+		// Log warning if bot is not admin in the target channel to prevent crashes
+		c.Bot.Log().Warn("JoinGuard failed to check membership (ensure bot is admin in the target channel)").Err(err).Go()
+		return true, nil // Fallback to let them proceed if the check itself fails
+	}
+
+	if isMember {
+		return true, nil
+	}
+
+	resolved := c.Bot.ResolveChatID(targetChat)
+
+	// Compile a beautiful inline keyboard with join link and dynamic verification callback
+	markup := InlineMarkup().
+		Row(NewInlineKeyboardButtonURL("📢 عضویت در کانال", inviteLink)).
+		Row(Btn("✅ عضو شدم (تایید)").Callback(fmt.Sprintf("_sys_join_verify:%v", resolved))).
+		Build()
+
+	text := "⚠️ *[جوین اجباری]*\n\nکاربر عزیز، برای استفاده از خدمات این ربات، ابتدا باید در کانال رسمی ما عضو شوید."
+	_, _ = c.Send().Text(text).Markup(markup).Markdown().Go()
+
+	return false, nil
+}
+
+// IsMemberOf natively checks if the current sender is a member of the specified channel or group chat (handling Bale's 404 non-member quirk)
+func (c *Ctx) IsMemberOf(targetChat any) (bool, error) {
+	resolved := c.Bot.ResolveChatID(targetChat)
+	member, err := c.Bot.Chat(resolved).Member(c.SenderID()).Go()
+	if err != nil {
+		// Bale platform quirk: if a user is not a member of the channel, getChatMember returns a hard 400/404 error instead of status: left!
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "no such group or user") || strings.Contains(errMsg, "404") || strings.Contains(errMsg, "400") {
+			return false, nil // Conclusive proof that the user is NOT a member (resolves as clean false without system error)
+		}
+		return false, err // Real system error (e.g. bot is not admin in the target channel or connection timeout)
+	}
+
+	// Check if the user's status is creator, administrator or standard member natively
+	isMember := member.Status == "creator" || member.Status == "administrator" || member.Status == "member"
+	return isMember, nil
+}
+
 // Pin is a shortcut helper to natively pin the active message (or specified message ID) in the current group
 func (c *Ctx) Pin(messageID ...int64) error {
 	chatID, err := c.ChatID()

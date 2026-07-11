@@ -533,8 +533,8 @@ type IsAdminChain struct {
 
 // Go executes check permissions on Bale servers and returns true/false with auto error logging
 func (ia *IsAdminChain) Go() (bool, error) {
-	// Bypasses the API request if the chat is a private direct message
-	if ia.cc.c != nil && ia.cc.c.IsPrivate() {
+	// Bypasses the API request if the chat is a private direct message or channel
+	if ia.cc.c != nil && (ia.cc.c.IsPrivate() || ia.cc.c.IsChannel() || ia.cc.c.SenderID() <= 0) {
 		return true, nil
 	}
 
@@ -1454,8 +1454,8 @@ func (c *ChatChain) IsOwner(userID ...int64) *IsOwnerChain {
 
 // Go executes the creator/ownership check on Bale servers and returns true/false with auto error logging
 func (io *IsOwnerChain) Go() (bool, error) {
-	// Bypasses the API request if the chat is a private direct message
-	if io.cc.c != nil && io.cc.c.IsPrivate() {
+	// Bypasses the API request if the chat is a private direct message or channel
+	if io.cc.c != nil && (io.cc.c.IsPrivate() || io.cc.c.IsChannel() || io.cc.c.SenderID() <= 0) {
 		return true, nil
 	}
 
