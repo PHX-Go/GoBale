@@ -27,6 +27,39 @@ type Ctx struct {
 	prevText string
 }
 
+// SendLater schedules a simple text message to be sent to the current chat after a specified delay
+func (c *Ctx) SendLater(text string, d time.Duration) {
+	bot := c.Bot
+	chatID, err := c.ChatID()
+	if err != nil {
+		return
+	}
+	bot.Task().In(d, func() {
+		_, _ = bot.Send(chatID).Text(text).Go()
+	})
+}
+
+// ReplyLater schedules a smart reply message to be sent after a specified delay
+func (c *Ctx) ReplyLater(text string, d time.Duration) {
+	bot := c.Bot
+	chatID, err := c.ChatID()
+	if err != nil {
+		return
+	}
+	var replyID int64
+	if c.Message != nil {
+		// Respect smart reply logic to target the original message if present
+		if c.Message.ReplyToMessage != nil {
+			replyID = c.Message.ReplyToMessage.MessageID
+		} else {
+			replyID = c.Message.MessageID
+		}
+	}
+	bot.Task().In(d, func() {
+		_, _ = bot.Send(chatID).Text(text).Reply(replyID).Go()
+	})
+}
+
 // ForwardTo natively forwards the active message in context to a target chat in one line
 func (c *Ctx) ForwardTo(targetChat any) (*Message, error) {
 	if c.Message == nil {
