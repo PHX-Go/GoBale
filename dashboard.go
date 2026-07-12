@@ -33,33 +33,6 @@ func (d *DashChain) Addr(a string) *DashChain {
 	return d
 }
 
-// checkDashAuth validates the SOCKET_TOKEN against the request (query param or header).
-// FIX: previously /debug/pprof/* and /ws had zero authentication, exposing runtime
-// profiling and live metrics to anyone who could reach the port. If SOCKET_TOKEN is
-// unset, access stays open (local/dev convenience); if it is set, it's enforced.
-func checkDashAuth(r *http.Request) bool {
-	token := GetEnv[string]("SOCKET_TOKEN")
-	if token == "" {
-		return true
-	}
-	provided := r.URL.Query().Get("token")
-	if provided == "" {
-		provided = r.Header.Get("X-Socket-Token")
-	}
-	return provided == token
-}
-
-func authWrap(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !checkDashAuth(r) {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte("unauthorized"))
-			return
-		}
-		h(w, r)
-	}
-}
-
 // openBrowser opens the specified URL in the default browser of the OS cross-platformly
 func openBrowser(url string) {
 	var err error
@@ -80,16 +53,16 @@ func openBrowser(url string) {
 	}
 }
 
-// Go fires the dashboard monitoring service and starts unified WebSocket streaming
+// Go fires the dashboard monitoring service asynchronously and serves metrics via a REST API
 func (d *DashChain) Go() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/debug/pprof/", authWrap(pprof.Index))
-	mux.HandleFunc("/debug/pprof/cmdline", authWrap(pprof.Cmdline))
-	mux.HandleFunc("/debug/pprof/profile", authWrap(pprof.Profile))
-	mux.HandleFunc("/debug/pprof/symbol", authWrap(pprof.Symbol))
-	mux.HandleFunc("/debug/pprof/trace", authWrap(pprof.Trace))
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
-	// Legacy fallback API endpoint
+	// API endpoint to serve live metrics dynamically via REST polling [3]
 	mux.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -100,7 +73,7 @@ func (d *DashChain) Go() error {
 			activeS = d.bot.Sessions.GetSessionsCount()
 		}
 		dbKeys := 0
-		if db, ok := d.bot.dbInstance.(*Database); ok {
+		if db, ok := d.bot.dbInstance.(*Database); ok && db != nil {
 			db.mu.RLock()
 			dbKeys = len(db.store)
 			db.mu.RUnlock()
@@ -122,73 +95,13 @@ func (d *DashChain) Go() error {
 		_ = json.NewEncoder(w).Encode(payload)
 	})
 
-	// Unified WebSocket endpoint hosted directly on the same dashboard port (e.g. :8080/ws)
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		// FIX: enforce the same token check as pprof; previously this endpoint
-		// streamed live internal metrics to any client with no auth at all.
-		if !checkDashAuth(r) {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		// Upgrade connection using the native SocketServer upgrade engine
-		d.bot.Socket().ServeHTTP(w, r)
-	})
-
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-		// FIX: inject SOCKET_TOKEN (if set) into the page's WebSocket URL so the
-		// browser client actually authenticates against the new /ws check above.
-		token := GetEnv[string]("SOCKET_TOKEN")
-		page := htmlPage
-		if token != "" {
-			page = strings.ReplaceAll(page,
-				`const wsUri = "ws://" + window.location.host + "/ws";`,
-				fmt.Sprintf(`const wsUri = "ws://" + window.location.host + "/ws?token=%s";`, token))
-		}
-
-		_, _ = w.Write([]byte(page))
-	})
-
-	// Periodically stream real-time metrics over WebSocket to all active dashboard clients
-	d.bot.Task().Every(1*time.Second, func() {
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		activeS := 0
-		if d.bot.Sessions != nil {
-			activeS = d.bot.Sessions.GetSessionsCount()
-		}
-		dbKeys := 0
-		if db, ok := d.bot.dbInstance.(*Database); ok {
-			db.mu.RLock()
-			dbKeys = len(db.store)
-			db.mu.RUnlock()
-		}
-		activeShield, _ := d.bot.Shield().IsActive().Go()
-		payload := map[string]any{
-			"cpu_percent":     d.bot.GetCPU(),
-			"alloc_mb":        float64(m.Alloc) / (1024 * 1024),
-			"sys_mb":          float64(m.Sys) / (1024 * 1024),
-			"queue_depth":     len(d.bot.workerChan),
-			"goroutines":      runtime.NumGoroutine(),
-			"total_updates":   atomic.LoadUint64(&d.bot.totalUpdates),
-			"latency_ms":      float64(atomic.LoadInt64(&d.bot.Client.NetLatencyNs)) / 1000000.0,
-			"active_sessions": activeS,
-			"db_keys":         dbKeys,
-			"num_gc":          m.NumGC,
-			"shield_active":   activeShield,
-		}
-		d.bot.Socket().BroadcastJSON("metrics", payload)
+		_, _ = w.Write([]byte(htmlPage))
 	})
 
 	// Async browser auto-opener right before starting the blocking server
@@ -205,16 +118,23 @@ func (d *DashChain) Go() error {
 
 	log.Printf("dashboard server is running on http://localhost%s", d.addr)
 	server := &http.Server{
-		Addr:         d.addr,
-		Handler:      mux,
-		ReadTimeout:  35 * time.Second,
-		WriteTimeout: 35 * time.Second,
+		Addr:    d.addr,
+		Handler: mux,
 	}
 	d.bot.dashServer = server
-	return server.ListenAndServe()
+
+	// Fire the HTTP/HTTPS server asynchronously in background (non-blocking for caller)
+	go func() {
+		err := server.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed {
+			log.Printf("[Dashboard Server Error] %v", err)
+		}
+	}()
+
+	return nil
 }
 
-// htmlPage contains the embedded visual monitoring layout with resilient, vector-only WS client
+// htmlPage contains the embedded visual monitoring layout with zero external network dependencies and native AJAX polling
 const htmlPage = `
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -222,178 +142,285 @@ const htmlPage = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>داشبورد ادمین ربات بله</title>
-    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap');
-        body { font-family: 'Vazirmatn', sans-serif; -webkit-tap-highlight-color: transparent; }
+        /* Zero external dependencies. Replaced Tailwind CDN and Google Fonts with native system font stacks for instant render */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, Tahoma, sans-serif;
+            background-color: #09090b;
+            color: #f4f4f5;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            line-height: 1.5;
+        }
+        .container {
+            max-width: 1024px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 16px;
+            flex-grow: 1;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #27272a;
+            padding-bottom: 12px;
+            margin-bottom: 20px;
+            gap: 8px;
+        }
+        .title {
+            font-size: 20px;
+            font-weight: 800;
+            color: #34d399;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .subtitle {
+            font-size: 11px;
+            color: #71717a;
+            margin-top: 2px;
+        }
+        .badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            background-color: rgba(16, 185, 129, 0.1);
+            color: #34d399;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .badge-red {
+            border-color: rgba(239, 68, 68, 0.3);
+            background-color: rgba(239, 68, 68, 0.1);
+            color: #f87171;
+        }
+        /* Pulsating dot vector */
+        .dot {
+            position: relative;
+            display: flex;
+            height: 6px;
+            width: 6px;
+        }
+        .dot::before {
+            content: '';
+            animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+            position: absolute;
+            display: inline-flex;
+            height: 100%;
+            width: 100%;
+            border-radius: 50%;
+            background-color: currentColor;
+            opacity: 0.75;
+        }
+        .dot::after {
+            content: '';
+            position: relative;
+            display: inline-flex;
+            border-radius: 50%;
+            height: 6px;
+            width: 6px;
+            background-color: currentColor;
+        }
+        @keyframes ping {
+            75%, 100% { transform: scale(3); opacity: 0; }
+        }
+        /* Responsive Grid layout */
+        main {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+        @media (max-width: 480px) {
+            main {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        /* Card design matching original look */
+        .card {
+            background-color: rgba(24, 24, 27, 0.4);
+            border: 1px solid #18181b;
+            padding: 12px;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            min-height: 95px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            color: #a1a1aa;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .card-body {
+            margin-top: 8px;
+        }
+        .card-value {
+            font-size: 20px;
+            font-weight: 900;
+            color: #f4f4f5;
+        }
+        .unit {
+            font-size: 11px;
+            font-weight: 400;
+            color: #52525b;
+        }
+        .cyan-text { color: #22d3ee; }
+        .emerald-text { color: #34d399; }
+        .amber-text { color: #fbbf24; }
+        .indigo-text { color: #818cf8; }
+        .blue-text { color: #60a5fa; }
+        /* Progress Bar */
+        .progress-container {
+            width: 100%;
+            background-color: #27272a;
+            border-radius: 9999px;
+            height: 4px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            border-radius: 9999px;
+            transition: width 0.5s ease;
+        }
+        .bg-emerald { background-color: #10b981; }
+        .bg-amber { background-color: #f59e0b; }
+        .bg-red { background-color: #ef4444; }
+        .bg-purple { background-color: #a855f7; }
     </style>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col justify-between selection:bg-emerald-500 selection:text-zinc-950">
-    <div class="max-w-5xl mx-auto w-full px-3 py-4 md:py-6 flex-grow">
-        <header class="flex flex-row justify-between items-center border-b border-zinc-900 pb-3 mb-5 gap-2">
+<body>
+    <div class="container">
+        <header>
             <div>
-                <h1 class="text-lg md:text-2xl font-extrabold text-emerald-400 tracking-tight flex items-center gap-1.5">
-                    <span class="relative flex h-2.5 w-2.5">
-                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                    </span>
+                <h1 class="title">
+                    <span class="dot" style="color: #10b981;"></span>
                     مانیتورینگ بله
                 </h1>
-                <p class="text-[10px] md:text-xs text-zinc-500 mt-0.5">وضعیت آنلاین منابع سرور و همروندی</p>
+                <p class="subtitle">وضعیت آنلاین منابع سرور و همروندی</p>
             </div>
-            <div id="shield-badge" class="px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300">
-                در حال بارگذاری...
-            </div>
+            <div id="shield-badge" class="badge">در حال بارگذاری...</div>
         </header>
 
-        <main class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">مصرف پردازنده (CPU)</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m14 0h2M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="cpu-percent" class="text-2xl font-black text-zinc-100">0.00%</p>
-                    <div class="w-full bg-zinc-800 rounded-full h-1 mt-2 overflow-hidden">
-                        <div id="cpu-bar" class="bg-emerald-500 h-1 rounded-full transition-all duration-500" style="width: 0%"></div>
+        <main>
+            <!-- CPU Card -->
+            <div class="card">
+                <div class="card-header"><span>مصرف پردازنده (CPU)</span></div>
+                <div class="card-body">
+                    <p id="cpu-percent" class="card-value">0.00%</p>
+                    <div class="progress-container">
+                        <div id="cpu-bar" class="progress-bar bg-emerald" style="width: 0%"></div>
                     </div>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">حافظه فعال (Heap)</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="alloc-mb" class="text-2xl font-black text-zinc-100">0.00 <span class="text-xs font-normal text-zinc-500">MB</span></p>
+            <!-- Heap Memory Card -->
+            <div class="card">
+                <div class="card-header"><span>حافظه فعال (Heap)</span></div>
+                <div class="card-body">
+                    <p id="alloc-mb" class="card-value">0.00 <span class="unit">MB</span></p>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">حافظه رزرو (Sys)</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="sys-mb" class="text-2xl font-black text-zinc-100">0.00 <span class="text-xs font-normal text-zinc-500">MB</span></p>
+            <!-- Reserved Memory Card -->
+            <div class="card">
+                <div class="card-header"><span>حافظه رزرو (Sys)</span></div>
+                <div class="card-body">
+                    <p id="sys-mb" class="card-value">0.00 <span class="unit">MB</span></p>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">صف پردازش (Queue)</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="queue-depth" class="text-2xl font-black text-zinc-100">0 <span class="text-xs font-normal text-zinc-500">/ 1000</span></p>
-                    <div class="w-full bg-zinc-800 rounded-full h-1 mt-2 overflow-hidden">
-                        <div id="queue-bar" class="bg-purple-500 h-1 rounded-full transition-all duration-500" style="width: 0%"></div>
+            <!-- Queue Card -->
+            <div class="card">
+                <div class="card-header"><span>صف پردازش (Queue)</span></div>
+                <div class="card-body">
+                    <p id="queue-depth" class="card-value">0 <span class="unit">/ 1000</span></p>
+                    <div class="progress-container">
+                        <div id="queue-bar" class="progress-bar bg-purple" style="width: 0%"></div>
                     </div>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">گوروتین‌های زنده</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="goroutines" class="text-2xl font-black text-cyan-400">0</p>
+            <!-- Goroutines Card -->
+            <div class="card">
+                <div class="card-header"><span>گوروتین‌های زنده</span></div>
+                <div class="card-body">
+                    <p id="goroutines" class="card-value cyan-text">0</p>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">پیام‌های دریافتی</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="total-updates" class="text-2xl font-black text-emerald-400">0</p>
+            <!-- Updates Card -->
+            <div class="card">
+                <div class="card-header"><span>پیام‌های دریافتی</span></div>
+                <div class="card-body">
+                    <p id="total-updates" class="card-value emerald-text">0</p>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">تأخیر شبکه (Latency)</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="latency-ms" class="text-2xl font-black text-amber-400">0.00 <span class="text-xs font-normal text-zinc-500">ms</span></p>
+            <!-- Latency Card -->
+            <div class="card">
+                <div class="card-header"><span>تأخیر شبکه (Latency)</span></div>
+                <div class="card-body">
+                    <p id="latency-ms" class="card-value amber-text">0.00 <span class="unit">ms</span></p>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">نشست‌های فعال</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="active-sessions" class="text-2xl font-black text-zinc-100">0</p>
+            <!-- Sessions Card -->
+            <div class="card">
+                <div class="card-header"><span>نشست‌های فعال</span></div>
+                <div class="card-body">
+                    <p id="active-sessions" class="card-value">0</p>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">رکوردهای دیتابیس</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="db-keys" class="text-2xl font-black text-indigo-400">0</p>
+            <!-- DB Keys Card -->
+            <div class="card">
+                <div class="card-header"><span>رکوردهای دیتابیس</span></div>
+                <div class="card-body">
+                    <p id="db-keys" class="card-value indigo-text">0</p>
                 </div>
             </div>
 
-            <div class="bg-zinc-900/40 border border-zinc-900 p-3 rounded-xl flex flex-col justify-between min-h-[95px]">
-                <div class="flex justify-between items-start">
-                    <span class="text-[11px] text-zinc-400 font-bold">دوره‌های زباله‌روب (GC)</span>
-                    <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                </div>
-                <div class="mt-2">
-                    <p id="num-gc" class="text-2xl font-black text-blue-400">0</p>
+            <!-- GC Card -->
+            <div class="card">
+                <div class="card-header"><span>دوره‌های زباله‌روب (GC)</span></div>
+                <div class="card-body">
+                    <p id="num-gc" class="card-value blue-text">0</p>
                 </div>
             </div>
         </main>
     </div>
 
-    <script>
-        // Resilient WebSocket client that automatically connects to the same port on /ws
-        const wsUri = "ws://" + window.location.host + "/ws";
-        let websocket;
-
-        function initWebSocket() {
-            websocket = new WebSocket(wsUri);
-
-            websocket.onopen = function() {
+    <script {nonce}>
+        // Highly resilient local AJAX Polling mechanism to replace WebSockets completely [3]
+        async function fetchMetrics() {
+            try {
+                const response = await fetch('/api/metrics');
+                if (!response.ok) throw new Error('API response error');
+                const data = await response.json();
+                renderMetrics(data);
+                
                 const badge = document.getElementById('shield-badge');
-                badge.innerText = "متصل به WebSocket Stream";
-                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 flex items-center gap-1.5";
-                badge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span></span> متصل به WebSocket Stream';
-            };
-
-            websocket.onmessage = function(evt) {
-                try {
-                    const data = JSON.parse(evt.data);
-                    if (data.action === "metrics") {
-                        renderMetrics(data.payload);
-                    }
-                } catch (e) {
-                    console.error("Failed to parse WS packet", e);
-                }
-            };
-
-            websocket.onclose = function() {
+                badge.innerText = "متصل به API";
+                badge.className = "badge";
+                badge.innerHTML = '<span class="dot" style="color: #10b981;"></span> متصل به API';
+            } catch (error) {
+                console.error("Failed to fetch metrics", error);
                 const badge = document.getElementById('shield-badge');
-                badge.innerText = "قطع ارتباط! تلاش برای اتصال مجدد...";
-                badge.className = "px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1.5";
-                badge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span> قطع ارتباط! تلاش برای اتصال مجدد...';
-
-                // Resilient auto-reconnect loop
-                setTimeout(initWebSocket, 2000);
-            };
-
-            websocket.onerror = function(err) {
-                websocket.close();
-            };
+                badge.innerText = "خطا در ارتباط! تلاش مجدد...";
+                badge.className = "badge badge-red";
+                badge.innerHTML = '<span class="dot" style="color: #ef4444;"></span> خطا در ارتباط! تلاش مجدد...';
+            }
         }
 
         function renderMetrics(data) {
@@ -403,56 +430,55 @@ const htmlPage = `
             cpuBar.style.width = Math.min(cpuVal, 100) + '%';
 
             if (cpuVal > 80) {
-                cpuBar.className = 'bg-red-500 h-1 rounded-full transition-all duration-500';
+                cpuBar.className = 'progress-bar bg-red';
             } else if (cpuVal > 40) {
-                cpuBar.className = 'bg-amber-500 h-1 rounded-full transition-all duration-500';
+                cpuBar.className = 'progress-bar bg-amber';
             } else {
-                cpuBar.className = 'bg-emerald-500 h-1 rounded-full transition-all duration-500';
+                cpuBar.className = 'progress-bar bg-emerald';
             }
 
-            document.getElementById('alloc-mb').innerHTML = data.alloc_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
-            document.getElementById('sys-mb').innerHTML = data.sys_mb.toFixed(2) + ' <span class="text-[10px] font-normal text-zinc-500">MB</span>';
+            document.getElementById('alloc-mb').innerHTML = data.alloc_mb.toFixed(2) + ' <span class="unit">MB</span>';
+            document.getElementById('sys-mb').innerHTML = data.sys_mb.toFixed(2) + ' <span class="unit">MB</span>';
             document.getElementById('goroutines').innerText = data.goroutines.toLocaleString();
 
-            // FIX: queue-depth / queue-bar were rendered in HTML but never updated here before.
             const queueVal = data.queue_depth;
-            document.getElementById('queue-depth').innerHTML = queueVal.toLocaleString() + ' <span class="text-xs font-normal text-zinc-500">/ 1000</span>';
+            document.getElementById('queue-depth').innerHTML = queueVal.toLocaleString() + ' <span class="unit">/ 1000</span>';
             const queueBar = document.getElementById('queue-bar');
             queueBar.style.width = Math.min(queueVal / 10, 100) + '%';
             if (queueVal > 800) {
-                queueBar.className = 'bg-red-500 h-1 rounded-full transition-all duration-500';
+                queueBar.className = 'progress-bar bg-red';
             } else if (queueVal > 300) {
-                queueBar.className = 'bg-amber-500 h-1 rounded-full transition-all duration-500';
+                queueBar.className = 'progress-bar bg-amber';
             } else {
-                queueBar.className = 'bg-purple-500 h-1 rounded-full transition-all duration-500';
+                queueBar.className = 'progress-bar bg-purple';
             }
 
             const latencyVal = data.latency_ms;
             if (latencyVal > 0) {
-                document.getElementById('latency-ms').innerHTML = latencyVal.toFixed(1) + ' <span class="text-[10px] font-normal text-zinc-500">ms</span>';
+                document.getElementById('latency-ms').innerHTML = latencyVal.toFixed(1) + ' <span class="unit">ms</span>';
             } else {
-                document.getElementById('latency-ms').innerHTML = '<span class="text-xs font-normal text-zinc-500">در انتظار درخواست...</span>';
+                document.getElementById('latency-ms').innerHTML = '<span class="unit">در انتظار درخواست...</span>';
             }
 
             document.getElementById('total-updates').innerText = data.total_updates.toLocaleString();
             document.getElementById('active-sessions').innerText = data.active_sessions.toLocaleString();
             document.getElementById('db-keys').innerText = data.db_keys.toLocaleString();
-
-            // FIX: num-gc had a placeholder in HTML but was never written to before.
             document.getElementById('num-gc').innerText = data.num_gc.toLocaleString();
 
             const shieldBadge = document.getElementById('shield-badge');
-            // Check shield active status dynamically and update badge with pure vectors
+            // Check shield active status dynamically and update badge
             if (data.shield_active === true) {
-                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span></span>  سپر دفاعی فعال';
-                shieldBadge.className = 'px-2.5 py-1 rounded text-[10px] md:text-xs font-bold bg-red-950/40 text-red-400 border border-red-900/30 flex items-center gap-1.5';
+                shieldBadge.innerHTML = '<span class="dot" style="color: #ef4444;"></span>  سپر دفاعی فعال';
+                shieldBadge.className = 'badge badge-red';
             } else {
-                shieldBadge.innerHTML = '<span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span></span> متصل به WebSocket Stream';
-                shieldBadge.className = 'px-2.5 py-1 rounded-md text-[10px] md:text-xs font-bold transition-all duration-300 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 flex items-center gap-1.5';
+                shieldBadge.innerHTML = '<span class="dot" style="color: #10b981;"></span> متصل به API';
+                shieldBadge.className = 'badge';
             }
         }
 
-        initWebSocket();
+        // Start dynamic REST polling natively every 1 second [3]
+        fetchMetrics();
+        setInterval(fetchMetrics, 1000);
     </script>
 </body>
 </html>

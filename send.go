@@ -1,9 +1,11 @@
 package gobale
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +50,9 @@ type SendChain struct {
 	stretch    bool
 	onProgress func(percent float64)
 	useQueue   bool
+	split      bool
+	splitSize  int64
+	cleanup    bool
 }
 
 // Buttons dynamically appends a single row of inline buttons (supports string callback pairs, custom builders, URL/Copy/WebApp buttons)
@@ -388,7 +393,7 @@ func (s *SendChain) Settings(chatID ...any) *SendChain {
 	return s
 }
 
-// Go executes the sending chain process with full support for media, locations, contacts, and automated settings lifecycle
+// Go executes the sending chain process with full support for media, locations, contacts, and automated settings/splitting/cleanup lifecycles
 func (s *SendChain) Go() (*Message, error) {
 	if s.chat == nil {
 		return nil, errors.New("missing chat destination")
@@ -424,6 +429,81 @@ func (s *SendChain) Go() (*Message, error) {
 		// 2. Lock settings panel interaction natively to the current command executor via unchained Set
 		if s.c != nil {
 			sess.Set("active_settings_admin_id", s.c.SenderID())
+		}
+	}
+
+	// Auto-Split Upload Flow: If split is active and local file exceeds threshold, compress and upload natively
+	var localPath string
+	if s.doc != nil {
+		if path, ok := s.doc.(string); ok && isLocalFile(path) {
+			localPath = path
+		}
+	}
+
+	// Deferred original file cleanup block to guarantee native disk deletion on success, failure, or panic
+	if s.cleanup && localPath != "" {
+		defer os.Remove(localPath)
+	}
+
+	if s.split && localPath != "" {
+		stat, err := os.Stat(localPath)
+		if err == nil {
+			limit := s.splitSize
+			if limit <= 0 {
+				limit = 15 * 1024 * 1024 // Safe 15MB default
+			}
+
+			if stat.Size() > limit {
+				// Compress and split the large file natively into smaller zip volumes
+				parts, errSplit := zipAndSplitFile(localPath, limit)
+				if errSplit != nil {
+					return nil, errSplit
+				}
+
+				totalParts := len(parts)
+				var lastMsg *Message
+
+				// Sequential upload of each zip volume to Bale natively
+				for idx, partPath := range parts {
+					partFile, errOpen := os.Open(partPath)
+					if errOpen != nil {
+						return nil, errOpen
+					}
+
+					inputFile := InputFile{
+						FileName: filepath.Base(partPath),
+						Reader:   partFile,
+						Field:    "document",
+					}
+
+					// Dynamic global progress bar calculator
+					var onProgressWrapper func(pct float64)
+					if s.onProgress != nil {
+						onProgressWrapper = func(pct float64) {
+							// Translate current part progress into total global file percentage
+							globalPct := (float64(idx) / float64(totalParts) * 100.0) + (pct / float64(totalParts))
+							s.onProgress(globalPct)
+						}
+					}
+
+					payload := map[string]any{
+						"chat_id": resolved,
+						"caption": fmt.Sprintf("📂 Part %d of %d", idx+1, totalParts),
+					}
+
+					var msgPart Message
+					errUpload := s.bot.Client.BaseRequestMultipartWithProgress(s.ctx, "sendDocument", payload, []InputFile{inputFile}, onProgressWrapper, &msgPart)
+					_ = partFile.Close()
+					_ = os.Remove(partPath) // Silently delete temporary zip volume file from temp directory
+
+					if errUpload != nil {
+						return nil, errUpload
+					}
+					lastMsg = &msgPart
+				}
+
+				return lastMsg, nil // Returns the final part message as verification
+			}
 		}
 	}
 
@@ -1394,4 +1474,139 @@ func (p *SendPollChain) Go() (*Message, error) {
 	var msg Message
 	err := p.sc.bot.BaseRequest(p.sc.ctx, "sendPoll", payload, &msg)
 	return &msg, err
+}
+
+// Split enables or disables automatic chunk splitting for large file uploads on Bale
+func (s *SendChain) Split(v bool) *SendChain {
+	s.split = v
+	return s
+}
+
+// SplitSize sets the native chunk size threshold (supports format strings like "15m" or "500k")
+func (s *SendChain) SplitSize(size string) *SendChain {
+	parsed, err := ParseSize(size)
+	if err == nil && parsed > 0 {
+		s.splitSize = parsed
+	} else {
+		s.splitSize = 15 * 1024 * 1024 // Safe 15MB default fallback
+	}
+	return s
+}
+
+// zipAndSplitFile compresses a local file into a zip archive and splits it natively into smaller zip volumes
+func zipAndSplitFile(path string, chunkSize int64) ([]string, error) {
+	// 1. Create a temporary single .zip file on disk
+	zipName := filepath.Base(path) + ".zip"
+	zipPath := filepath.Join(os.TempDir(), zipName)
+
+	zipFile, err := os.OpenFile(zipPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return nil, err
+	}
+
+	zipWriter := zip.NewWriter(zipFile)
+	fileToZip, err := os.Open(path)
+	if err != nil {
+		_ = zipFile.Close()
+		_ = os.Remove(zipPath)
+		return nil, err
+	}
+	defer fileToZip.Close()
+
+	// Create a zip file entry with the original file name
+	info, err := fileToZip.Stat()
+	if err != nil {
+		_ = zipFile.Close()
+		_ = os.Remove(zipPath)
+		return nil, err
+	}
+	header, err := zip.FileInfoHeader(info)
+	if err != nil {
+		_ = zipFile.Close()
+		_ = os.Remove(zipPath)
+		return nil, err
+	}
+	header.Name = filepath.Base(path)
+	header.Method = zip.Deflate // Use standard Deflate compression method
+
+	writer, err := zipWriter.CreateHeader(header)
+	if err != nil {
+		_ = zipFile.Close()
+		_ = os.Remove(zipPath)
+		return nil, err
+	}
+
+	// Copy original file bytes into the zip writer
+	_, err = io.Copy(writer, fileToZip)
+	if err != nil {
+		_ = zipFile.Close()
+		_ = os.Remove(zipPath)
+		return nil, err
+	}
+
+	_ = zipWriter.Close()
+	_ = zipFile.Close()
+
+	// 2. Split the resulting compressed .zip file into part volumes (e.g. .zip.001, .zip.002)
+	splitFile, err := os.Open(zipPath)
+	if err != nil {
+		_ = os.Remove(zipPath)
+		return nil, err
+	}
+	defer func() {
+		_ = splitFile.Close()
+		_ = os.Remove(zipPath) // Clean up the temporary single zip file from temp directory
+	}()
+
+	zipInfo, err := splitFile.Stat()
+	if err != nil {
+		return nil, err
+	}
+	totalSize := zipInfo.Size()
+
+	var partPaths []string
+	buffer := make([]byte, 1024*1024) // 1MB streaming buffer
+
+	for offset := int64(0); offset < totalSize; {
+		// Name the parts natively as standard split zip volumes (e.g. archive.zip.001, archive.zip.002)
+		partName := fmt.Sprintf("%s.%03d", zipName, len(partPaths)+1)
+		partPath := filepath.Join(os.TempDir(), partName)
+
+		partFile, err := os.OpenFile(partPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		if err != nil {
+			return nil, err
+		}
+
+		var written int64 = 0
+		for written < chunkSize {
+			toRead := int64(len(buffer))
+			if chunkSize-written < toRead {
+				toRead = chunkSize - written
+			}
+			n, errRead := splitFile.Read(buffer[:toRead])
+			if n > 0 {
+				_, errWrite := partFile.Write(buffer[:n])
+				if errWrite != nil {
+					_ = partFile.Close()
+					return nil, errWrite
+				}
+				written += int64(n)
+				offset += int64(n)
+			}
+			if errRead != nil {
+				break
+			}
+		}
+		_ = partFile.Sync()
+		_ = partFile.Close()
+		partPaths = append(partPaths, partPath)
+	}
+
+	return partPaths, nil
+}
+
+// Cleanup enables or disables automatic deletion of the original local file after upload completion
+func (s *SendChain) Cleanup(v bool) *SendChain {
+	s.cleanup = v
+	return s
 }

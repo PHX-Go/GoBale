@@ -531,3 +531,34 @@ func asInt64(val any) (int64, bool) {
 	}
 	return 0, false
 }
+
+// ParseSize converts a human-readable size string (e.g. "15m", "500k", "15mb", "500kb") into bytes natively
+func ParseSize(s string) (int64, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+
+	// Handle Megabytes (m or mb)
+	if strings.HasSuffix(s, "mb") {
+		val, err := strconv.ParseInt(strings.TrimSuffix(s, "mb"), 10, 64)
+		return val * 1024 * 1024, err
+	}
+	if strings.HasSuffix(s, "m") {
+		val, err := strconv.ParseInt(strings.TrimSuffix(s, "m"), 10, 64)
+		return val * 1024 * 1024, err
+	}
+
+	// Handle Kilobytes (k or kb)
+	if strings.HasSuffix(s, "kb") {
+		val, err := strconv.ParseInt(strings.TrimSuffix(s, "kb"), 10, 64)
+		return val * 1024, err
+	}
+	if strings.HasSuffix(s, "k") {
+		val, err := strconv.ParseInt(strings.TrimSuffix(s, "k"), 10, 64)
+		return val * 1024, err
+	}
+
+	// Fallback: assume raw bytes
+	return strconv.ParseInt(s, 10, 64)
+}
