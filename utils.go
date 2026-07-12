@@ -517,8 +517,8 @@ func DataPath(filename string) string {
 	return filepath.Join("data", filename)
 }
 
-// Convert interface numeric values to int64 safely
-func asInt64(val any) (int64, bool) {
+// AsInt64 converts interface numeric values to int64 safely and publicly
+func AsInt64(val any) (int64, bool) {
 	switch v := val.(type) {
 	case int64:
 		return v, true

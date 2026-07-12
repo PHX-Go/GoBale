@@ -363,7 +363,7 @@ func (a *AnalyticsChain) Go() (*AnalyticsResult, error) {
 	getVal := func(metric string) int64 {
 		key := fmt.Sprintf("%s:%d:%s", prefix, chatID, metric)
 		if val, ok := db.Get(key); ok {
-			if num, okNum := asInt64(val); okNum {
+			if num, okNum := AsInt64(val); okNum {
 				return num
 			}
 		}
@@ -580,7 +580,7 @@ func (c *Ctx) Leaderboard(metric string, limit int, targetChat any, p ...PeriodT
 		countKey := fmt.Sprintf("%s:%d:%d:%s", prefix, chatID, uid, metric)
 		count := int64(0)
 		if val, ok := dbConcrete.store[countKey]; ok {
-			if iVal, okInt := asInt64(val); okInt {
+			if iVal, okInt := AsInt64(val); okInt {
 				count = iVal
 			}
 		}
@@ -718,7 +718,7 @@ func (c *Ctx) UserCard(p ...PeriodType) (string, error) {
 	getVal := func(metric string) int64 {
 		key := fmt.Sprintf("%s:%d:%d:%s", prefix, chatID, targetUserID, metric)
 		if val, ok := dbConcrete.store[key]; ok {
-			if num, okNum := asInt64(val); okNum {
+			if num, okNum := AsInt64(val); okNum {
 				return num
 			}
 		}

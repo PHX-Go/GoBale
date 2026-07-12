@@ -1726,7 +1726,7 @@ func (c *Ctx) GetActiveFile() (string, string, error) {
 		ext = ".dat"
 	}
 
-	// Build the final filename, ensuring we append the extension if the original filename lacks one [1.1.2]
+	// Build the final filename, ensuring we append the extension if the original filename lacks one
 	if fileName != "" {
 		if filepath.Ext(fileName) == "" {
 			fileName = fileName + ext
@@ -1736,4 +1736,63 @@ func (c *Ctx) GetActiveFile() (string, string, error) {
 	}
 
 	return fileID, fileName, nil
+}
+
+// ProcessReferral parses the start deep-link, prevents self-referrals, records the invitation natively, and returns the inviter's ID
+func (c *Ctx) ProcessReferral() (int64, bool) {
+	code := c.DeepLink()
+	if code == "" {
+		return 0, false
+	}
+
+	// Parse inviter numeric ID (deep link usually holds inviter's ID, e.g. "/start 300075772")
+	inviterID, err := strconv.ParseInt(code, 10, 64)
+	if err != nil || inviterID <= 0 {
+		return 0, false
+	}
+
+	// Prevent self-referral fraud natively (users cannot invite themselves)
+	if inviterID == c.SenderID() {
+		return 0, false
+	}
+
+	dbKey := fmt.Sprintf("inviter_for:%d", c.SenderID())
+
+	// Check if this user was already invited previously (prevents double-credit fraud globally)
+	if _, ok := c.DBGet(dbKey); ok {
+		return 0, false
+	}
+
+	// Store who invited this user globally in the GOB database
+	_ = c.DBSet(dbKey, inviterID)
+
+	// Natively increment the inviter's global successful invites count
+	invitesKey := fmt.Sprintf("invites_count:%d", inviterID)
+	currentInvites := int64(0)
+	if val, ok := c.DBGet(invitesKey); ok {
+		if num, okNum := AsInt64(val); okNum {
+			currentInvites = num
+		}
+	}
+	_ = c.DBSet(invitesKey, currentInvites+1)
+
+	// Publish referral event concurrently to the EventBus
+	c.Emit("user.referral", map[string]any{
+		"InviterID": inviterID,
+		"InvitedID": c.SenderID(),
+	})
+
+	return inviterID, true
+}
+
+// ReferralLink dynamically generates the secure referral link of the current user for this bot
+func (c *Ctx) ReferralLink() (string, error) {
+	// Fetch bot profile natively using Me() helper
+	me, err := c.Bot.Me().Go()
+	if err != nil {
+		c.Bot.Log().Error("ReferralLink failed to query bot profile").Err(err).Go()
+		return "", err
+	}
+	// Construct the correct Bale compliant deep link using bot username and sender ID
+	return fmt.Sprintf("https://ble.ir/%s?start=%d", me.Username, c.SenderID()), nil
 }
