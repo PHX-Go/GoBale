@@ -775,3 +775,20 @@ func (a AskReview) Method() string {
 func (a AskReview) Params() any {
 	return a
 }
+
+// GetUserProfilePhotos holds user profile photos query parameters
+type GetUserProfilePhotos struct {
+	UserID int64 `json:"user_id"`
+	Offset int   `json:"offset,omitempty"`
+	Limit  int   `json:"limit,omitempty"`
+}
+
+// Method returns the API method name
+func (g GetUserProfilePhotos) Method() string {
+	return "getUserProfilePhotos"
+}
+
+// Params returns the request parameters
+func (g GetUserProfilePhotos) Params() any {
+	return g
+}

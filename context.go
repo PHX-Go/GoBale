@@ -1796,3 +1796,88 @@ func (c *Ctx) ReferralLink() (string, error) {
 	// Construct the correct Bale compliant deep link using bot username and sender ID
 	return fmt.Sprintf("https://ble.ir/%s?start=%d", me.Username, c.SenderID()), nil
 }
+
+// DownloadAvatar is a shortcut helper to natively download any user's profile photo in one line
+func (c *Ctx) DownloadAvatar(userID int64, path string, name ...string) (string, error) {
+	var chatInfo ChatFullInfo
+	err := c.Bot.BaseRequest(c.ctx, "getChat", map[string]any{
+		"chat_id": userID,
+	}, &chatInfo)
+	if err != nil {
+		return "", err
+	}
+
+	// Verify if the target user actually has an active profile photo set on Bale
+	if chatInfo.Photo == nil || (chatInfo.Photo.BigFileID == "" && chatInfo.Photo.SmallFileID == "") {
+		return "", fmt.Errorf("user %d has no profile photo", userID)
+	}
+
+	// Prioritize the highest resolution BigFileID (640x640), fallback to SmallFileID if empty
+	fileID := chatInfo.Photo.BigFileID
+	if fileID == "" {
+		fileID = chatInfo.Photo.SmallFileID
+	}
+
+	fileName := fmt.Sprintf("avatar_%d.jpg", userID)
+	if len(name) > 0 {
+		fileName = name[0]
+	}
+
+	return c.DownloadFile(fileID, path, fileName)
+}
+
+// SendAvatar sends the target user's profile photo natively with a custom caption, and returns the file ID for optional downloads
+func (c *Ctx) SendAvatar(userID ...int64) (string, *Message, error) {
+	var targetID int64
+	var err error
+	if len(userID) > 0 {
+		targetID = userID[0]
+	} else {
+		targetID, err = c.TargetUser()
+		if err != nil {
+			targetID = c.SenderID()
+		}
+	}
+
+	// Fetch target user metadata natively using getChat
+	var chatInfo ChatFullInfo
+	err = c.Bot.BaseRequest(c.ctx, "getChat", map[string]any{
+		"chat_id": targetID,
+	}, &chatInfo)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Verify if the target user actually has an active profile photo set on Bale
+	if chatInfo.Photo == nil || (chatInfo.Photo.BigFileID == "" && chatInfo.Photo.SmallFileID == "") {
+		return "", nil, fmt.Errorf("user %d has no profile photo", targetID)
+	}
+
+	// Prioritize the highest resolution BigFileID (640x640), fallback to SmallFileID if empty
+	fileID := chatInfo.Photo.BigFileID
+	if fileID == "" {
+		fileID = chatInfo.Photo.SmallFileID
+	}
+
+	// Extract actual display name
+	name := chatInfo.FirstName
+	if chatInfo.LastName != "" {
+		name += " " + chatInfo.LastName
+	}
+	if name == "" {
+		name = fmt.Sprintf("User %d", targetID)
+	}
+
+	// Build a beautiful Bale specific mention link
+	userLink := Link(name, fmt.Sprintf("uid:%d", targetID))
+	caption := fmt.Sprintf("👤 **کاربر:** %s\n🆔 **شناسه:** `%d`", userLink, targetID)
+
+	// Send the photo instantly using the existing fileID natively on Bale's servers
+	msg, errSend := c.Send().
+		Photo(fileID).
+		Caption(caption).
+		Markdown().
+		Go()
+
+	return fileID, msg, errSend
+}

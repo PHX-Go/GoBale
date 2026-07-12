@@ -650,3 +650,9 @@ type Poll struct {
 	AllowsRevoting        bool         `json:"allows_revoting"` // Detected: Bale specific
 	MembersOnly           bool         `json:"members_only"`    // Detected: Bale specific
 }
+
+// UserProfilePhotos represents a user's profile photos returned by Bale
+type UserProfilePhotos struct {
+	TotalCount int           `json:"total_count"`
+	Photos     [][]PhotoSize `json:"photos"`
+}
