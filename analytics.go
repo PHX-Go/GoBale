@@ -684,3 +684,100 @@ func (c *Ctx) Leaderboard(metric string, limit int, targetChat any, p ...PeriodT
 
 	return report.Go(), nil
 }
+
+// UserCard compiles and returns a beautifully formatted Persian activity report card of the target user
+func (c *Ctx) UserCard(p ...PeriodType) (string, error) {
+	period := PeriodLifetime
+	if len(p) > 0 {
+		period = p[0]
+	}
+
+	chatID, err := c.ChatID()
+	if err != nil {
+		return "", err
+	}
+
+	// Resolve target user (fallback to sender if no reply or explicit ID is present)
+	targetUserID, errTarget := c.TargetUser()
+	if errTarget != nil {
+		targetUserID = c.SenderID()
+	}
+
+	db := c.Bot.analyticsDB
+	dbConcrete, ok := db.(*Database)
+	if !ok || dbConcrete == nil {
+		return "", fmt.Errorf("analytics database is not initialized")
+	}
+
+	prefix := "user_daily"
+	if period == PeriodLifetime {
+		prefix = "user_lifetime"
+	}
+
+	dbConcrete.mu.RLock()
+	getVal := func(metric string) int64 {
+		key := fmt.Sprintf("%s:%d:%d:%s", prefix, chatID, targetUserID, metric)
+		if val, ok := dbConcrete.store[key]; ok {
+			if num, okNum := asInt64(val); okNum {
+				return num
+			}
+		}
+		return 0
+	}
+
+	// Retrieve dynamic cached name of the user
+	nameKey := fmt.Sprintf("user_name:%d", targetUserID)
+	name := fmt.Sprintf("User %d", targetUserID)
+	if val, ok := dbConcrete.store[nameKey]; ok {
+		if str, okStr := val.(string); okStr {
+			name = str
+		}
+	}
+	dbConcrete.mu.RUnlock()
+
+	// Query member properties natively to check their group status
+	member, errMember := c.Chat().Member(targetUserID).Go()
+	status := "نامشخص"
+	if errMember == nil && member != nil {
+		status = member.Status
+		switch status {
+		case "creator":
+			status = "👑 سازنده گروه"
+		case "administrator":
+			status = "⭐️ مدیر گروه"
+		case "restricted":
+			status = "🚫 محدود شده"
+		case "member":
+			status = "👤 عضو عادی"
+		}
+	}
+
+	periodName := "امروز (روزانه)"
+	if period == PeriodLifetime {
+		periodName = "کل دوره (تا به امروز)"
+	}
+
+	// Build Bale specific mention link natively using the Link helper
+	userLink := Link(name, fmt.Sprintf("uid:%d", targetUserID))
+
+	// Compile complete activity report card dynamically without any verbose Bind boilerplate
+	report := Text().
+		Line("🪪 کارت فعالیت کاربر در گروه ", c.ChatTitle(), "").
+		Line().
+		Line("👤 کاربر: ", userLink).
+		Line("ℹ️ وضعیت عضویت: ", status, "").
+		Line("📅 بازه آمارگیر: ", periodName, "").
+		Line().
+		Line("📊 خلاصه عملکرد:").
+		Line("  💬 کل پیام‌های ارسالی: ", Money(getVal("msgs")), "").
+		Line("  ✍️ پیام‌های متنی: ", Money(getVal("text")), "").
+		Line("  📦 کل رسانه‌های ارسالی: ", Money(getVal("photo")+getVal("video")+getVal("voice")+getVal("audio")+getVal("sticker")+getVal("animation")+getVal("document")), "").
+		Line().
+		Line("🗂️ تفکیک رسانه‌ها:").
+		Line("  🖼️ تصویر: ", Money(getVal("photo")), " | 🎥 ویدیو: ", Money(getVal("video")), "").
+		Line("  🎙️ وویس: ", Money(getVal("voice")), " | 🎵 موسیقی: ", Money(getVal("audio")), "").
+		Line("  🎭 استیکر: ", Money(getVal("sticker")), " | 🎞️ گیف: ", Money(getVal("animation")), "").
+		Line("  📄 اسناد و فایل‌ها: ", Money(getVal("document")), "")
+
+	return report.Go(), nil
+}
