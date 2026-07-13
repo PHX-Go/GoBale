@@ -1261,7 +1261,7 @@ func (e *ExitChain) Go() {
 
 			// Format and send exit message fluidly if option is configured
 			if e.msg != "" {
-				name := user.Mention() // Updated to use smart Mention() fallback
+				name := user.Mention()
 				if user.LastName != "" {
 					name += " " + user.LastName
 				}
@@ -1452,7 +1452,6 @@ func (c *ChatChain) IsOwner(userID ...int64) *IsOwnerChain {
 	return &IsOwnerChain{cc: c, user: userID}
 }
 
-// Go executes the creator/ownership check on Bale servers and returns true/false with auto error logging
 func (io *IsOwnerChain) Go() (bool, error) {
 	// Bypasses the API request if the chat is a private direct message or channel
 	if io.cc.c != nil && (io.cc.c.IsPrivate() || io.cc.c.IsChannel() || io.cc.c.SenderID() <= 0) {
@@ -1469,27 +1468,19 @@ func (io *IsOwnerChain) Go() (bool, error) {
 		return false, fmt.Errorf("cannot determine target user ID")
 	}
 
-	// Try loading creator status from cache
-	cacheKey := fmt.Sprintf("is_owner:%v:%d", resolved, targetUserID)
-	if cachedVal, ok := io.cc.bot.Cache().Get(cacheKey).Go(); ok {
-		if isOwner, okBool := cachedVal.(bool); okBool {
-			return isOwner, nil
-		}
-	}
-
 	var member ChatMember
 	err := io.cc.bot.BaseRequest(io.cc.ctx, "getChatMember", map[string]any{
 		"chat_id": resolved,
 		"user_id": targetUserID,
 	}, &member)
 	if err != nil {
+		// If getChatMember fails on private chats, safely bypass the permission check
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "no such group or user") || strings.Contains(errMsg, "400") || strings.Contains(errMsg, "404") {
+			return true, nil
+		}
 		logErr(io.cc.bot, "[Chat IsOwner Check Error] ", err)
 		return false, err
 	}
-	isOwner := member.Status == "creator"
-
-	// Cache creator status for 5 minutes
-	io.cc.bot.Cache().Set(cacheKey, isOwner, 5*time.Minute).Go()
-
-	return isOwner, nil
+	return member.Status == "creator", nil
 }

@@ -677,7 +677,7 @@ func (c *Ctx) Leaderboard(metric string, limit int, targetChat any, p ...PeriodT
 		// Build Bale specific mention link
 		userLink := Link(isolatedName, fmt.Sprintf("uid:%d", ch.userID))
 
-		// Prepend \u2066 (LRI) to completely lock the visual row direction LTR, regardless of Persian names [1.2.2]
+		// Prepend \u2066 (LRI) to completely lock the visual row direction LTR, regardless of Persian names
 		lineText := fmt.Sprintf("%s  %s %s - `%s` %s", unicodeLRI, emoji, userLink, Money(ch.count), unicodePDI)
 		report.Line(lineText)
 	}

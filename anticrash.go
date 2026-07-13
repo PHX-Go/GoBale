@@ -1061,7 +1061,8 @@ func (b *Bot) PreScanUpdate(u *Update) bool {
 	for _, r := range runes {
 		// Instant block on zero-width bidi bombs
 		if isZeroWidth(r) || isRTLOverride(r) {
-			return true
+			totalCombining = 999 // Force trigger
+			break
 		}
 		if isForeignComplexScript(r) {
 			foreignComplexCount++
@@ -1077,13 +1078,33 @@ func (b *Bot) PreScanUpdate(u *Update) bool {
 	// Calculate combining marks density
 	densityRatio := float64(totalCombining) / float64(len(runes))
 
-	// Severe threat triggers (based on our upgraded 3D shield)
+	// Severe threat triggers
 	highDensity := totalCombining > 3 && densityRatio > 0.10
 	isSymbolCrash := enclosingCombining > 2
 	isForeignCrash := foreignComplexCount > 2
 
-	if highDensity || isSymbolCrash || isForeignCrash {
-		return true
+	if highDensity || isSymbolCrash || isForeignCrash || totalCombining == 999 {
+		// Delete the malicious crash payload instantly to protect all clients in background asynchronously
+		botInstance := b
+		chatID := msg.Chat.ID
+		msgID := msg.MessageID
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Safe recovery
+				}
+			}()
+			_ = botInstance.BaseRequest(context.Background(), "deleteMessage", map[string]any{
+				"chat_id":    chatID,
+				"message_id": msgID,
+			}, nil)
+		}()
+
+		// Intercept and sanitize the payload, replacing it with a safe system command natively
+		msg.Text = "/_crash_intercept_"
+		msg.Caption = ""
+		u.IsIntercepted = true // Set secure flag to prevent manual trigger spoofing!
+		return false           // Let it proceed to the worker pool safely as a harmless command!
 	}
 
 	return false

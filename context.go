@@ -345,17 +345,11 @@ func (c *Ctx) AnalyticsReport(p ...PeriodType) (string, error) {
 	return report.Go(), nil
 }
 
-// MuteUser natively mutes the target user for a duration (auto-resolves target from reply or arguments if omitted)
-func (c *Ctx) MuteUser(d time.Duration, userID ...int64) error {
-	var target int64
-	var err error
-	if len(userID) > 0 {
-		target = userID[0]
-	} else {
-		target, err = c.TargetUser()
-		if err != nil {
-			return err
-		}
+// MuteUser mutes the target user purely without any logging side-effects
+func (c *Ctx) MuteUser(d time.Duration) error {
+	target, err := c.TargetUser()
+	if err != nil {
+		return err
 	}
 	return c.Chat().Mute(target).For(d).Go()
 }
@@ -378,6 +372,21 @@ func (c *Ctx) UnmuteUser(userID ...int64) error {
 		PinMessages(true).
 		ChangeInfo(true).
 		Go()
+}
+
+// BanUser bans the target user purely without any logging side-effects
+func (c *Ctx) BanUser(userID ...int64) error {
+	var target int64
+	var err error
+	if len(userID) > 0 {
+		target = userID[0]
+	} else {
+		target, err = c.TargetUser()
+		if err != nil {
+			return err
+		}
+	}
+	return c.Chat().Ban(target).Go()
 }
 
 // DBSet is a shortcut helper to write a key-value pair to the local Database
@@ -1322,10 +1331,10 @@ func (c *Ctx) BotCanPromote() bool {
 
 // SendSettings is a shortcut helper to send the settings panel natively with an auto-locked owner check and dynamic recovery
 func (c *Ctx) SendSettings(text string, layout [][]string, closeCallback string) (*Message, error) {
-	// Lock the settings interaction to the command executor dynamically (Fixed: no value assignment)
+	// Lock the settings interaction to the command executor dynamically
 	c.SetData("active_settings_admin_id", c.SenderID())
 
-	// Cache the custom panel data inside session to allow dynamic restorations on cancel/confirm (Fixed: no value assignment)
+	// Cache the custom panel data inside session to allow dynamic restorations on cancel/confirm
 	c.SetData("custom_settings_text", text)
 	c.SetData("custom_settings_layout", layout)
 	c.SetData("custom_settings_close", closeCallback)
@@ -1697,7 +1706,7 @@ func (c *Ctx) GetActiveFile() (string, string, error) {
 		ext = filepath.Ext(fileName)
 	}
 
-	// If the filename has no extension (or empty), resolve it dynamically from the MIME subtype [1.1.2]
+	// If the filename has no extension (or empty), resolve it dynamically from the MIME subtype
 	if ext == "" && mimeType != "" {
 		parts := strings.Split(strings.ToLower(mimeType), "/")
 		if len(parts) == 2 {
@@ -1880,4 +1889,299 @@ func (c *Ctx) SendAvatar(userID ...int64) (string, *Message, error) {
 		Go()
 
 	return fileID, msg, errSend
+}
+
+// ModLogChain handles fluent configurations for dynamic moderation logging natively with auto-expiry
+type ModLogChain struct {
+	c          *Ctx
+	title      string
+	targetID   int64
+	executorID int64
+	reason     string
+	duration   time.Duration
+	markup     any
+	expireDur  time.Duration // Added for global automatic expiration tracking
+	expireText string        // Added for custom expired status label
+}
+
+// ModLog opens the fluent, highly customizable moderation logging chain natively
+func (c *Ctx) ModLog(title string) *ModLogChain {
+	executorID := int64(0)
+	if c.Message != nil && c.Message.From != nil {
+		executorID = c.Message.From.ID
+	}
+	return &ModLogChain{
+		c:          c,
+		title:      title,
+		executorID: executorID,
+		reason:     "ثبت نشده",
+	}
+}
+
+// Target sets the target user ID for the log, automatically resolving their cached display name
+func (m *ModLogChain) Target(userID int64) *ModLogChain {
+	m.targetID = userID
+	return m
+}
+
+// Executor sets a custom executor user ID (or 0 for automated system actions)
+func (m *ModLogChain) Executor(userID int64) *ModLogChain {
+	m.executorID = userID
+	return m
+}
+
+// Reason sets the reason of the moderation action
+func (m *ModLogChain) Reason(r string) *ModLogChain {
+	if r != "" {
+		m.reason = r
+	}
+	return m
+}
+
+// For sets a native duration of the restriction to be printed in the log
+func (m *ModLogChain) For(d time.Duration) *ModLogChain {
+	m.duration = d
+	return m
+}
+
+// ExpireIn automatically schedules the ModLog message to be edited in-place (removing buttons and appending expired text) after a duration
+func (m *ModLogChain) ExpireIn(d time.Duration, text string) *ModLogChain {
+	m.expireDur = d
+	m.expireText = text
+	return m
+}
+
+// UnmuteBtn automatically compiles and appends the native Unmute inline button
+func (m *ModLogChain) UnmuteBtn() *ModLogChain {
+	chatID, _ := m.c.ChatID()
+	m.markup = InlineMarkup().Row(Btn("🔊 رفع سکوت (Unmute)").Callback(fmt.Sprintf("_sys_modlog:unmute:%d:%d", chatID, m.targetID))).Build()
+	return m
+}
+
+// UnbanBtn automatically compiles and appends the native Unban inline button
+func (m *ModLogChain) UnbanBtn() *ModLogChain {
+	chatID, _ := m.c.ChatID()
+	m.markup = InlineMarkup().Row(Btn("✅ رفع مسدودسازی (Unban)").Callback(fmt.Sprintf("_sys_modlog:unban:%d:%d", chatID, m.targetID))).Build()
+	return m
+}
+
+// UnwarnBtn automatically compiles and appends the native Unwarn inline button
+func (m *ModLogChain) UnwarnBtn() *ModLogChain {
+	chatID, _ := m.c.ChatID()
+	m.markup = InlineMarkup().Row(Btn("📉 بخشش اخطار (Unwarn)").Callback(fmt.Sprintf("_sys_modlog:unwarn:%d:%d", chatID, m.targetID))).Build()
+	return m
+}
+
+// Go compiles, formats, and dispatches the customized ModLog report asynchronously to the configured channel
+func (m *ModLogChain) Go() {
+	if m.c.Bot.modLogChatID == nil || m.c.Bot.modLogChatID == "" {
+		return
+	}
+
+	botInstance := m.c.Bot
+	modLogChat := botInstance.modLogChatID
+	markupCopy := m.markup
+	expireDur := m.expireDur
+	expireText := m.expireText
+	title := m.title
+	targetID := m.targetID
+	executorID := m.executorID
+	reason := m.reason
+	duration := m.duration
+	chatTitle := m.c.ChatTitle()
+
+	go func() {
+		defer func() { recover() }()
+
+		db := botInstance.dbInstance
+		dbConcrete, ok := db.(*Database)
+		if !ok || dbConcrete == nil {
+			return
+		}
+
+		// Resolve executor ID safely: if system triggers it, use Group Creator or Bot Owner
+		if executorID == targetID {
+			chatID, errChat := m.c.ChatID()
+			if errChat == nil {
+				creatorID := int64(0)
+				var admins []ChatMember
+				errAdmins := botInstance.BaseRequest(context.Background(), "getChatAdministrators", map[string]any{"chat_id": chatID}, &admins)
+				if errAdmins == nil {
+					for _, adm := range admins {
+						if adm.Status == "creator" {
+							creatorID = adm.User.ID
+							break
+						}
+					}
+				}
+				if creatorID > 0 {
+					executorID = creatorID
+				} else {
+					executorID = botInstance.MaintenanceAdminID
+				}
+			} else {
+				executorID = botInstance.MaintenanceAdminID
+			}
+		}
+
+		resolveName := func(uid int64) string {
+			if uid <= 0 {
+				return ""
+			}
+			dbConcrete.mu.RLock()
+			cachedVal, okName := dbConcrete.store[fmt.Sprintf("user_name:%d", uid)]
+			dbConcrete.mu.RUnlock()
+			if okName {
+				if str, okStr := cachedVal.(string); okStr && str != "" {
+					return str
+				}
+			}
+			var chatInfo ChatFullInfo
+			err := botInstance.BaseRequest(context.Background(), "getChat", map[string]any{"chat_id": uid}, &chatInfo)
+			if err == nil {
+				name := chatInfo.FirstName
+				if chatInfo.LastName != "" {
+					name += " " + chatInfo.LastName
+				}
+				if name != "" {
+					dbConcrete.mu.Lock()
+					dbConcrete.store[fmt.Sprintf("user_name:%d", uid)] = name
+					dbConcrete.appendWAL(walEntry{Op: walSet, Key: fmt.Sprintf("user_name:%d", uid), Val: name})
+					dbConcrete.mu.Unlock()
+					return name
+				}
+			}
+			return fmt.Sprintf("User %d", uid)
+		}
+
+		executorLink := "🤖 سیستم خودکار ربات"
+		if executorID > 0 {
+			executorLink = Link(resolveName(executorID), fmt.Sprintf("uid:%d", executorID))
+		}
+		targetLink := "نامشخص"
+		if targetID > 0 {
+			targetLink = Link(resolveName(targetID), fmt.Sprintf("uid:%d", targetID))
+		}
+
+		report := Text().Line(title).Line()
+		if targetID > 0 {
+			report.Line("👤 **کاربر هدف:** ", targetLink).Line("🆔 **شناسه عددی:** `", fmt.Sprintf("%d", targetID), "`")
+		}
+		if duration > 0 {
+			report.Line("🕒 **مدت زمان:** `", duration.String(), "`")
+		}
+		report.Line("👮‍♂️ **مجری:** ", executorLink).Line("📝 **علت:** *", reason, "*").Line("📢 **مکان:** ", chatTitle)
+
+		reportStr := report.Go()
+		logMsg, err := botInstance.SendModLog(reportStr, markupCopy)
+
+		// Handle automatic in-place visual expiration of the ModLog message
+		if err == nil && logMsg != nil && expireDur > 0 && expireText != "" {
+			logMsgID := logMsg.MessageID
+			botInstance.Task().In(expireDur, func() {
+				resolvedText := fmt.Sprintf("%s\n\n🔄 **وضعیت:** %s", reportStr, expireText)
+				_ = botInstance.BaseRequest(context.Background(), "editMessageText", map[string]any{
+					"chat_id":      botInstance.ResolveChatID(modLogChat),
+					"message_id":   logMsgID,
+					"text":         resolvedText,
+					"parse_mode":   "Markdown",
+					"reply_markup": nil, // Explicitly pass nil to delete/remove the buttons!
+				}, nil)
+			})
+		}
+	}()
+}
+
+// ConfigToggleBtn automatically compiles and appends an inline button that, when clicked by the owner, disables/unlocks the specified setting key in GOB DB
+func (m *ModLogChain) ConfigToggleBtn(key string, btnLabel string, successLabel string) *ModLogChain {
+	chatID, _ := m.c.ChatID()
+	m.markup = InlineMarkup().Row(
+		Btn(btnLabel).Callback(fmt.Sprintf("_sys_modlog:config_toggle:%d:%s:%s", chatID, key, successLabel)),
+	).Build()
+	return m
+}
+
+// ArgsTail joins all command arguments starting from startIdx to the end as a single space-separated string
+func (c *Ctx) ArgsTail(startIdx int, fallback ...string) string {
+	args, ok := c.Arg().([]string)
+	if !ok || startIdx < 0 || startIdx >= len(args) {
+		if len(fallback) > 0 {
+			return fallback[0]
+		}
+		return ""
+	}
+	return strings.Join(args[startIdx:], " ")
+}
+
+// ParseTimedArgs parses a timed command (e.g., /mute [userID] [duration] [reason]) and handles optional arguments dynamically
+func (c *Ctx) ParseTimedArgs(defaultDur time.Duration, defaultReason string) (time.Duration, string) {
+	args, ok := c.Arg().([]string)
+	if !ok || len(args) == 0 {
+		return defaultDur, defaultReason
+	}
+
+	// Determine starting index of timed arguments (skip target user ID if explicitly provided)
+	startIdx := 0
+	if c.Message.ReplyToMessage == nil {
+		if len(args) > 0 {
+			if _, err := strconv.ParseInt(args[0], 10, 64); err == nil {
+				startIdx = 1
+			}
+		}
+	}
+
+	if startIdx >= len(args) {
+		return defaultDur, defaultReason
+	}
+
+	timedArgs := args[startIdx:]
+
+	// Try to parse the first timed word as a duration
+	if dur, err := ParseDuration(timedArgs[0]); err == nil && dur > 0 {
+		reason := defaultReason
+		if len(timedArgs) > 1 {
+			reason = strings.Join(timedArgs[1:], " ")
+		}
+		return dur, reason
+	}
+
+	// If the first timed word is not a duration, treat all timed arguments as the reason
+	return defaultDur, strings.Join(timedArgs, " ")
+}
+
+// ResolveTarget resolves target user ID automatically and replies with a friendly alert on failure
+func (c *Ctx) ResolveTarget() (int64, bool) {
+	target, err := c.TargetUser()
+	if err != nil {
+		_, _ = c.ReplyText("⚠️ کاربر مورد نظر مشخص نشده است. لطفاً روی پیام کاربر ریپلای کنید یا آیدی عددی او را وارد کنید.")
+		return 0, false
+	}
+	return target, true
+}
+
+// Title sets the main title of the ModLogChain report
+func (m *ModLogChain) Title(t string) *ModLogChain { m.title = t; return m }
+
+// TargetID returns the resolved target user ID of the ModLogChain
+func (m *ModLogChain) TargetID() int64 { return m.targetID }
+
+// Duration returns the configured duration of the ModLogChain
+func (m *ModLogChain) Duration() time.Duration { return m.duration }
+
+// ReasonText returns the configured reason of the ModLogChain
+func (m *ModLogChain) ReasonText() string { return m.reason }
+
+// ModLogTemplate initializes and compiles a globally registered ModLog layout cleanly
+func (c *Ctx) ModLogTemplate(name string, target int64, duration time.Duration, reason string) *ModLogChain {
+	m := c.ModLog("")
+	m.Target(target).For(duration).Reason(reason)
+
+	c.Bot.mu.RLock()
+	fn, ok := c.Bot.modLogTemplates[name]
+	c.Bot.mu.RUnlock()
+
+	if ok && fn != nil {
+		fn(m) // Execute the custom layout defined by the developer at startup
+	}
+	return m
 }

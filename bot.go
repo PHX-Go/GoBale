@@ -75,6 +75,8 @@ type Bot struct {
 	menusOnce          sync.Once
 	menuMaxWidth       int
 	Bus                *EventBus
+	modLogChatID       any
+	modLogTemplates    map[string]func(*ModLogChain)
 }
 
 type BotBuilder struct {
@@ -109,7 +111,7 @@ func (b *BotBuilder) Logger(l *GoBaleLogger) *BotBuilder {
 	return b
 }
 
-// SuppressEmptyUpdates sets whether to bypass/suppress getUpdates logs only when result is empty [1]
+// SuppressEmptyUpdates sets whether to bypass/suppress getUpdates logs only when result is empty
 func (b *BotBuilder) SuppressEmptyUpdates(v bool) *BotBuilder {
 	if b.logger != nil {
 		b.logger.SuppressEmptyUpdates = v
@@ -194,23 +196,24 @@ func (b *BotBuilder) Go() (*Bot, error) {
 	_ = store.Load()
 
 	bot := &Bot{
-		Client:       NewClient(b.token),
-		Sessions:     store,
-		workerChan:   make(chan *Update, 1000),
-		numWorkers:   b.workers,
-		cmds:         make(map[string][]Handler),
-		texts:        make(map[string][]Handler),
-		states:       make(map[string][]Handler),
-		callbacks:    make(map[string][]Handler),
-		Blacklist:    make(map[int64]bool),
-		dbInstance:   NewDatabase(DataPath("gobale_database.gob")),
-		cache:        newBotCache(),
-		safirKey:     b.safirKey,
-		safirBotID:   b.safirBotID,
-		paginations:  make(map[string]*PaginationBuilder),
-		Bus:          NewEventBus(),
-		menus:        make(map[string]*MenuNode),
-		replyButtons: make(map[string]bool),
+		Client:          NewClient(b.token),
+		Sessions:        store,
+		workerChan:      make(chan *Update, 1000),
+		numWorkers:      b.workers,
+		cmds:            make(map[string][]Handler),
+		texts:           make(map[string][]Handler),
+		states:          make(map[string][]Handler),
+		callbacks:       make(map[string][]Handler),
+		Blacklist:       make(map[int64]bool),
+		dbInstance:      NewDatabase(DataPath("gobale_database.gob")),
+		cache:           newBotCache(),
+		safirKey:        b.safirKey,
+		safirBotID:      b.safirBotID,
+		paginations:     make(map[string]*PaginationBuilder),
+		Bus:             NewEventBus(),
+		menus:           make(map[string]*MenuNode),
+		replyButtons:    make(map[string]bool),
+		modLogTemplates: make(map[string]func(*ModLogChain)),
 	}
 
 	bot.MaintenanceAdminID = b.adminID
@@ -248,7 +251,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 	bot.On().Use(Recovery())
 
-	// Register system join verification callback natively in bot.go
+	// Register system join verification callback natively
 	bot.On().Callback("_sys_join_verify").Do(func(c *Ctx) {
 		if c.Update == nil || c.Update.CallbackQuery == nil {
 			return
@@ -309,7 +312,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 			return
 		}
 
-		// Capture the entire active keyboard layout and main text dynamically from the live message markup [1]
+		// Capture the entire active keyboard layout and main text dynamically from the live message markup
 		_, _ = sess.Data("custom_settings_markup", c.Update.CallbackQuery.Message.ReplyMarkup).Go()
 		_, _ = sess.Data("custom_settings_text", c.Update.CallbackQuery.Message.Text).Go()
 
@@ -326,6 +329,129 @@ func (b *BotBuilder) Go() (*Bot, error) {
 
 		_, _ = c.Edit().Text(confirmText).Markup(markup).Markdown().Go()
 		_ = c.Answer().Go()
+	})
+
+	// Register system modlog revert callback natively in bot.go with dynamic config toggling
+	bot.On().Callback("_sys_modlog").Do(func(c *Ctx) {
+		if c.Update == nil || c.Update.CallbackQuery == nil || c.Update.CallbackQuery.Message == nil {
+			return
+		}
+
+		// Split the callback data safely to bypass greedy argument parsing
+		dataParts := strings.Split(c.Update.CallbackQuery.Data, ":")
+		if len(dataParts) < 3 {
+			return
+		}
+		action := dataParts[1]
+		chatIDStr := dataParts[2]
+		chatID, _ := strconv.ParseInt(chatIDStr, 10, 64)
+
+		// 1. Dynamic Security Guard: Ensure ONLY the native group creator/owner or Bot Admin can interact
+		isBotOwner := c.SenderID() == c.Bot.MaintenanceAdminID
+		isGroupOwner := false
+		if !isBotOwner {
+			isGroupOwner, _ = c.Bot.Chat(chatID).IsOwner(c.SenderID()).Go()
+		}
+
+		if !isBotOwner && !isGroupOwner {
+			_ = c.Answer().Text("❌ این عملیات فقط مخصوص سازنده بومی گروه یا ادمین ربات است.").Alert().Go()
+			c.Abort()
+			return
+		}
+
+		var errAct error
+		var successText string
+
+		// 2. Process action dynamically based on registration type
+		if action == "config_toggle" {
+			var key string
+			var successLabel string
+			_ = c.ScanCallbackArgs(&action, &chatIDStr, &key, &successLabel)
+
+			db := c.Bot.dbInstance
+
+			// Map correct GOB DB key format
+			dbKey := fmt.Sprintf("group_config_%d_%s", chatID, key)
+			if key == "group_lock" {
+				dbKey = fmt.Sprintf("group_lock_%d", chatID)
+			}
+
+			// Disable/unlock the settings natively by writing false to GOB DB
+			errAct = db.Set(dbKey, false)
+			successText = fmt.Sprintf("🔓 %s", successLabel)
+		} else {
+			var userID int64
+			_ = c.ScanCallbackArgs(&action, &chatIDStr, &userID)
+
+			switch action {
+			case "unmute":
+				errAct = c.Bot.Chat(chatID).Restrict(userID).
+					SendMessages(true).
+					InviteUsers(true).
+					PinMessages(true).
+					ChangeInfo(true).
+					Go()
+				successText = "🔊 رفع سکوت کاربر اعمال شد."
+
+			case "unban":
+				errAct = c.Bot.Chat(chatID).Unban(userID).OnlyIfBanned(true).Go()
+				successText = "✅ رفع مسدودیت کاربر اعمال شد."
+
+			case "unwarn":
+				countKey := fmt.Sprintf("warn_count:%d:%d", chatID, userID)
+				reasonsKey := fmt.Sprintf("warn_reasons:%d:%d", chatID, userID)
+				expiresKey := fmt.Sprintf("warn_expires:%d:%d", chatID, userID)
+
+				db := c.Bot.dbInstance
+				dbFast, useTxKeys := db.(*Database)
+
+				var newCount int
+				unwarnFn := func(store map[string]any) {
+					current := 0
+					if val, ok := store[countKey]; ok {
+						if iVal, okInt := val.(int); okInt {
+							current = iVal
+						} else if iVal, okInt := val.(int64); okInt {
+							current = int(iVal)
+						}
+					}
+					if current > 0 {
+						newCount = current - 1
+						store[countKey] = newCount
+
+						if valExp, okExp := store[expiresKey]; okExp {
+							if list, okSlice := valExp.([]int64); okSlice && len(list) > 0 {
+								store[expiresKey] = list[:len(list)-1]
+							}
+						}
+					}
+				}
+				if useTxKeys {
+					_ = dbFast.TxKeys([]string{countKey, expiresKey}, unwarnFn)
+				} else {
+					_ = db.Tx(unwarnFn)
+				}
+
+				if newCount == 0 {
+					_ = db.Del(countKey)
+					_ = db.Del(reasonsKey)
+					_ = db.Del(expiresKey)
+				}
+				successText = "📉 یک اخطار از پرونده کاربر بخشیده شد."
+			}
+		}
+
+		if errAct != nil {
+			_ = c.Answer().Text(fmt.Sprintf("❌ خطایی در اجرای عملیات رخ داد: %v", errAct.Error())).Alert().Go()
+			return
+		}
+
+		_ = c.Answer().Text("✅ با موفقیت اعمال شد.").Go()
+
+		// 3. Dynamic UI Update: Edit the ModLog message in-place to show the action has been resolved!
+		origText := c.Update.CallbackQuery.Message.Text
+		resolvedText := fmt.Sprintf("%s\n\n🔄 **وضعیت:** %s (توسط مالک گروه)", origText, successText)
+		_, _ = c.Edit().Text(resolvedText).Markup(nil).Markdown().Go()
 	})
 
 	bot.On().Callback("_sys_cfg_confirm").Do(func(c *Ctx) {
@@ -385,7 +511,7 @@ func (b *BotBuilder) Go() (*Bot, error) {
 			nextState := !active
 			_ = c.Bot.dbInstance.Set(dbKey, nextState)
 
-			// Dynamically update the specific button's text (emoji) inside the captured custom layout [1]
+			// Dynamically update the specific button's text (emoji) inside the captured custom layout
 			if okMarkup && customMarkup != nil {
 				for rIdx, row := range customMarkup.InlineKeyboard {
 					for cIdx, btn := range row {
@@ -768,7 +894,7 @@ func (p *PollChain) Go() {
 			params := map[string]any{
 				"offset":  offset,
 				"limit":   100,
-				"timeout": 20, // Increased timeout for efficient long-polling
+				"timeout": 20,
 			}
 
 			var updates []Update
@@ -819,6 +945,7 @@ func (p *PollChain) Go() {
 				}
 				offset = updates[len(updates)-1].UpdateID + 1
 			}
+
 		}
 	}
 }
@@ -1680,4 +1807,39 @@ func (a *APIChain) Go(result ...any) (any, error) {
 
 	err := a.bot.BaseRequest(a.ctx, a.method, a.params, target)
 	return target, err
+}
+
+// ModLog configures a centralized admin channel to automatically receive detailed moderation logs natively
+func (b *Bot) ModLog(chatID any) *Bot {
+	b.modLogChatID = chatID
+	return b
+}
+
+// SendModLog sends a formatted Markdown report to the configured ModLog channel natively
+func (b *Bot) SendModLog(text string, markup ...any) (*Message, error) {
+	if b.modLogChatID == nil || b.modLogChatID == "" {
+		return nil, fmt.Errorf("modlog channel not configured")
+	}
+	resolved := b.ResolveChatID(b.modLogChatID)
+
+	var replyMarkup any
+	if len(markup) > 0 {
+		replyMarkup = markup[0]
+	}
+
+	var msg Message
+	err := b.BaseRequest(context.Background(), "sendMessage", map[string]any{
+		"chat_id":      resolved,
+		"text":         text,
+		"parse_mode":   "Markdown",
+		"reply_markup": replyMarkup,
+	}, &msg)
+	return &msg, err
+}
+
+// RegisterModLogTemplate registers a reusable, dynamic custom template layout for modlogs
+func (b *Bot) RegisterModLogTemplate(name string, fn func(*ModLogChain)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.modLogTemplates[name] = fn
 }

@@ -29,6 +29,7 @@ type Update struct {
 	EditedMessage    *Message          `json:"edited_message,omitempty"`
 	CallbackQuery    *CallbackQuery    `json:"callback_query,omitempty"`
 	PreCheckoutQuery *PreCheckoutQuery `json:"pre_checkout_query,omitempty"`
+	IsIntercepted    bool              `json:"-"` // Internal flag to verify intercepted Zalgo/Crash threats
 }
 
 // Message represents a single chat message containing text or media
@@ -150,10 +151,10 @@ type MessageEntity struct {
 	Type          string `json:"type"`
 	Offset        int    `json:"offset"`
 	Length        int    `json:"length"`
-	URL           string `json:"url,omitempty"`             // New: for text_link
-	User          *User  `json:"user,omitempty"`            // New: for text_mention
-	Language      string `json:"language,omitempty"`        // New: for pre
-	CustomEmojiID string `json:"custom_emoji_id,omitempty"` // New: for custom_emoji
+	URL           string `json:"url,omitempty"`
+	User          *User  `json:"user,omitempty"`
+	Language      string `json:"language,omitempty"`
+	CustomEmojiID string `json:"custom_emoji_id,omitempty"`
 }
 
 // Animation represents silent loop video animation parameters
@@ -511,7 +512,7 @@ func (s StickerFilePath) MarshalJSON() ([]byte, error) {
 
 // InputSticker represents sticker configuration for custom sets with strict typing
 type InputSticker struct {
-	Sticker   StickerInput `json:"sticker"` // Refactored: strict StickerInput interface
+	Sticker   StickerInput `json:"sticker"`
 	EmojiList []string     `json:"emoji_list"`
 	Keywords  []string     `json:"keywords,omitempty"`
 }
@@ -588,16 +589,16 @@ type SafirErr struct {
 	Description string `json:"description"`
 }
 
-// MessageOrigin represents the origin of a forwarded message (EXPERIMENTAL)
+// MessageOrigin represents the origin of a forwarded message
 type MessageOrigin struct {
-	Type            string `json:"type"`                       // "user", "hidden_user", "chat", or "channel"
-	Date            int64  `json:"date"`                       // Date the message was originally sent
-	SenderUser      *User  `json:"sender_user,omitempty"`      // Present if Type is "user"
-	SenderUserName  string `json:"sender_user_name,omitempty"` // Present if Type is "hidden_user"
-	SenderChat      *Chat  `json:"sender_chat,omitempty"`      // Present if Type is "chat"
-	AuthorSignature string `json:"author_signature,omitempty"` // Present if Type is "chat" or "channel"
-	Chat            *Chat  `json:"chat,omitempty"`             // Present if Type is "channel"
-	MessageID       int64  `json:"message_id,omitempty"`       // Present if Type is "channel"
+	Type            string `json:"type"`
+	Date            int64  `json:"date"`
+	SenderUser      *User  `json:"sender_user,omitempty"`
+	SenderUserName  string `json:"sender_user_name,omitempty"`
+	SenderChat      *Chat  `json:"sender_chat,omitempty"`
+	AuthorSignature string `json:"author_signature,omitempty"`
+	Chat            *Chat  `json:"chat,omitempty"`
+	MessageID       int64  `json:"message_id,omitempty"`
 }
 
 // Largest returns the PhotoSize with the highest resolution (usually the last element)
@@ -634,7 +635,7 @@ func (l *Location) DistanceTo(other *Location) float64 {
 type PollOption struct {
 	Text         string `json:"text"`
 	VoterCount   int    `json:"voter_count"`
-	PersistentID int    `json:"persistent_id"` // Detected: Bale specific
+	PersistentID int    `json:"persistent_id"`
 }
 
 // Poll contains all information about a poll
@@ -647,8 +648,8 @@ type Poll struct {
 	IsAnonymous           bool         `json:"is_anonymous"`
 	Type                  string       `json:"type"`
 	AllowsMultipleAnswers bool         `json:"allows_multiple_answers"`
-	AllowsRevoting        bool         `json:"allows_revoting"` // Detected: Bale specific
-	MembersOnly           bool         `json:"members_only"`    // Detected: Bale specific
+	AllowsRevoting        bool         `json:"allows_revoting"`
+	MembersOnly           bool         `json:"members_only"`
 }
 
 // UserProfilePhotos represents a user's profile photos returned by Bale
