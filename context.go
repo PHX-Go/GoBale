@@ -1891,6 +1891,91 @@ func (c *Ctx) SendAvatar(userID ...int64) (string, *Message, error) {
 	return fileID, msg, errSend
 }
 
+// ArgsTail joins all command arguments starting from startIdx to the end as a single space-separated string
+func (c *Ctx) ArgsTail(startIdx int, fallback ...string) string {
+	args, ok := c.Arg().([]string)
+	if !ok || startIdx < 0 || startIdx >= len(args) {
+		if len(fallback) > 0 {
+			return fallback[0]
+		}
+		return ""
+	}
+	return strings.Join(args[startIdx:], " ")
+}
+
+// ParseTimedArgs parses a timed command (e.g., /mute [userID] [duration] [reason]) and handles optional arguments dynamically
+func (c *Ctx) ParseTimedArgs(defaultDur time.Duration, defaultReason string) (time.Duration, string) {
+	args, ok := c.Arg().([]string)
+	if !ok || len(args) == 0 {
+		return defaultDur, defaultReason
+	}
+
+	// Determine starting index of timed arguments (skip target user ID if explicitly provided)
+	startIdx := 0
+	if c.Message.ReplyToMessage == nil {
+		if len(args) > 0 {
+			if _, err := strconv.ParseInt(args[0], 10, 64); err == nil {
+				startIdx = 1
+			}
+		}
+	}
+
+	if startIdx >= len(args) {
+		return defaultDur, defaultReason
+	}
+
+	timedArgs := args[startIdx:]
+
+	// Try to parse the first timed word as a duration
+	if dur, err := ParseDuration(timedArgs[0]); err == nil && dur > 0 {
+		reason := defaultReason
+		if len(timedArgs) > 1 {
+			reason = strings.Join(timedArgs[1:], " ")
+		}
+		return dur, reason
+	}
+
+	// If the first timed word is not a duration, treat all timed arguments as the reason
+	return defaultDur, strings.Join(timedArgs, " ")
+}
+
+// ResolveTarget resolves target user ID automatically and replies with a friendly alert on failure
+func (c *Ctx) ResolveTarget() (int64, bool) {
+	target, err := c.TargetUser()
+	if err != nil {
+		_, _ = c.ReplyText("⚠️ کاربر مورد نظر مشخص نشده است. لطفاً روی پیام کاربر ریپلای کنید یا آیدی عددی او را وارد کنید.")
+		return 0, false
+	}
+	return target, true
+}
+
+// Title sets the main title of the ModLogChain report
+func (m *ModLogChain) Title(t string) *ModLogChain { m.title = t; return m }
+
+// TargetID returns the resolved target user ID of the ModLogChain
+func (m *ModLogChain) TargetID() int64 { return m.targetID }
+
+// Duration returns the configured duration of the ModLogChain
+func (m *ModLogChain) Duration() time.Duration { return m.duration }
+
+// ReasonText returns the configured reason of the ModLogChain
+func (m *ModLogChain) ReasonText() string { return m.reason }
+
+// ModLogTemplate initializes and compiles a globally registered ModLog layout cleanly
+func (c *Ctx) ModLogTemplate(name string, target int64, duration time.Duration, reason string) *ModLogChain {
+	m := c.ModLog("")
+	m.Target(target).For(duration).Reason(reason)
+
+	c.Bot.mu.RLock()
+	fn, ok := c.Bot.modLogTemplates[name]
+	c.Bot.mu.RUnlock()
+
+	if ok && fn != nil {
+		fn(m) // Execute the custom layout defined by the developer at startup
+	}
+	return m
+}
+
 // ModLogChain handles fluent configurations for dynamic moderation logging natively with auto-expiry
 type ModLogChain struct {
 	c          *Ctx
@@ -1951,24 +2036,36 @@ func (m *ModLogChain) ExpireIn(d time.Duration, text string) *ModLogChain {
 	return m
 }
 
-// UnmuteBtn automatically compiles and appends the native Unmute inline button
-func (m *ModLogChain) UnmuteBtn() *ModLogChain {
+// UnmuteBtn automatically compiles and appends the Unmute button with an optional custom label
+func (m *ModLogChain) UnmuteBtn(label ...string) *ModLogChain {
+	btnText := "🔊 رفع سکوت (Unmute)"
+	if len(label) > 0 && label[0] != "" {
+		btnText = label[0]
+	}
 	chatID, _ := m.c.ChatID()
-	m.markup = InlineMarkup().Row(Btn("🔊 رفع سکوت (Unmute)").Callback(fmt.Sprintf("_sys_modlog:unmute:%d:%d", chatID, m.targetID))).Build()
+	m.Btn(btnText, fmt.Sprintf("_sys_modlog:unmute:%d:%d", chatID, m.targetID))
 	return m
 }
 
-// UnbanBtn automatically compiles and appends the native Unban inline button
-func (m *ModLogChain) UnbanBtn() *ModLogChain {
+// UnbanBtn automatically compiles and appends the Unban button with an optional custom label
+func (m *ModLogChain) UnbanBtn(label ...string) *ModLogChain {
+	btnText := "✅ رفع مسدودسازی (Unban)"
+	if len(label) > 0 && label[0] != "" {
+		btnText = label[0]
+	}
 	chatID, _ := m.c.ChatID()
-	m.markup = InlineMarkup().Row(Btn("✅ رفع مسدودسازی (Unban)").Callback(fmt.Sprintf("_sys_modlog:unban:%d:%d", chatID, m.targetID))).Build()
+	m.Btn(btnText, fmt.Sprintf("_sys_modlog:unban:%d:%d", chatID, m.targetID))
 	return m
 }
 
-// UnwarnBtn automatically compiles and appends the native Unwarn inline button
-func (m *ModLogChain) UnwarnBtn() *ModLogChain {
+// UnwarnBtn automatically compiles and appends the Unwarn button with an optional custom label
+func (m *ModLogChain) UnwarnBtn(label ...string) *ModLogChain {
+	btnText := "📉 بخشش اخطار (Unwarn)"
+	if len(label) > 0 && label[0] != "" {
+		btnText = label[0]
+	}
 	chatID, _ := m.c.ChatID()
-	m.markup = InlineMarkup().Row(Btn("📉 بخشش اخطار (Unwarn)").Callback(fmt.Sprintf("_sys_modlog:unwarn:%d:%d", chatID, m.targetID))).Build()
+	m.Btn(btnText, fmt.Sprintf("_sys_modlog:unwarn:%d:%d", chatID, m.targetID))
 	return m
 }
 
@@ -2095,93 +2192,36 @@ func (m *ModLogChain) Go() {
 // ConfigToggleBtn automatically compiles and appends an inline button that, when clicked by the owner, disables/unlocks the specified setting key in GOB DB
 func (m *ModLogChain) ConfigToggleBtn(key string, btnLabel string, successLabel string) *ModLogChain {
 	chatID, _ := m.c.ChatID()
-	m.markup = InlineMarkup().Row(
-		Btn(btnLabel).Callback(fmt.Sprintf("_sys_modlog:config_toggle:%d:%s:%s", chatID, key, successLabel)),
-	).Build()
+	m.Btn(btnLabel, fmt.Sprintf("_sys_modlog:config_toggle:%d:%s:%s", chatID, key, successLabel))
 	return m
 }
 
-// ArgsTail joins all command arguments starting from startIdx to the end as a single space-separated string
-func (c *Ctx) ArgsTail(startIdx int, fallback ...string) string {
-	args, ok := c.Arg().([]string)
-	if !ok || startIdx < 0 || startIdx >= len(args) {
-		if len(fallback) > 0 {
-			return fallback[0]
-		}
-		return ""
+// Config configures target, reason, and optional duration for the report in a single line
+func (m *ModLogChain) Config(target int64, reason string, d ...time.Duration) *ModLogChain {
+	m.targetID = target
+	m.reason = reason
+	if len(d) > 0 {
+		m.duration = d[0]
 	}
-	return strings.Join(args[startIdx:], " ")
+	return m
 }
 
-// ParseTimedArgs parses a timed command (e.g., /mute [userID] [duration] [reason]) and handles optional arguments dynamically
-func (c *Ctx) ParseTimedArgs(defaultDur time.Duration, defaultReason string) (time.Duration, string) {
-	args, ok := c.Arg().([]string)
-	if !ok || len(args) == 0 {
-		return defaultDur, defaultReason
-	}
-
-	// Determine starting index of timed arguments (skip target user ID if explicitly provided)
-	startIdx := 0
-	if c.Message.ReplyToMessage == nil {
-		if len(args) > 0 {
-			if _, err := strconv.ParseInt(args[0], 10, 64); err == nil {
-				startIdx = 1
-			}
+// Btn appends a dynamic inline button to the ModLog report on the fly
+func (m *ModLogChain) Btn(text, callback string) *ModLogChain {
+	var inlineMarkup *InlineKeyboardMarkup
+	if m.markup != nil {
+		if im, ok := m.markup.(*InlineKeyboardMarkup); ok {
+			inlineMarkup = im
 		}
 	}
-
-	if startIdx >= len(args) {
-		return defaultDur, defaultReason
-	}
-
-	timedArgs := args[startIdx:]
-
-	// Try to parse the first timed word as a duration
-	if dur, err := ParseDuration(timedArgs[0]); err == nil && dur > 0 {
-		reason := defaultReason
-		if len(timedArgs) > 1 {
-			reason = strings.Join(timedArgs[1:], " ")
+	if inlineMarkup == nil {
+		inlineMarkup = &InlineKeyboardMarkup{
+			InlineKeyboard: make([][]InlineKeyboardButton, 0),
 		}
-		return dur, reason
+		m.markup = inlineMarkup
 	}
 
-	// If the first timed word is not a duration, treat all timed arguments as the reason
-	return defaultDur, strings.Join(timedArgs, " ")
-}
-
-// ResolveTarget resolves target user ID automatically and replies with a friendly alert on failure
-func (c *Ctx) ResolveTarget() (int64, bool) {
-	target, err := c.TargetUser()
-	if err != nil {
-		_, _ = c.ReplyText("⚠️ کاربر مورد نظر مشخص نشده است. لطفاً روی پیام کاربر ریپلای کنید یا آیدی عددی او را وارد کنید.")
-		return 0, false
-	}
-	return target, true
-}
-
-// Title sets the main title of the ModLogChain report
-func (m *ModLogChain) Title(t string) *ModLogChain { m.title = t; return m }
-
-// TargetID returns the resolved target user ID of the ModLogChain
-func (m *ModLogChain) TargetID() int64 { return m.targetID }
-
-// Duration returns the configured duration of the ModLogChain
-func (m *ModLogChain) Duration() time.Duration { return m.duration }
-
-// ReasonText returns the configured reason of the ModLogChain
-func (m *ModLogChain) ReasonText() string { return m.reason }
-
-// ModLogTemplate initializes and compiles a globally registered ModLog layout cleanly
-func (c *Ctx) ModLogTemplate(name string, target int64, duration time.Duration, reason string) *ModLogChain {
-	m := c.ModLog("")
-	m.Target(target).For(duration).Reason(reason)
-
-	c.Bot.mu.RLock()
-	fn, ok := c.Bot.modLogTemplates[name]
-	c.Bot.mu.RUnlock()
-
-	if ok && fn != nil {
-		fn(m) // Execute the custom layout defined by the developer at startup
-	}
+	row := []InlineKeyboardButton{NewInlineKeyboardButtonData(text, callback)}
+	inlineMarkup.InlineKeyboard = append(inlineMarkup.InlineKeyboard, row)
 	return m
 }
