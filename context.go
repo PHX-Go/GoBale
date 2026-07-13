@@ -2225,3 +2225,9 @@ func (m *ModLogChain) Btn(text, callback string) *ModLogChain {
 	inlineMarkup.InlineKeyboard = append(inlineMarkup.InlineKeyboard, row)
 	return m
 }
+
+// Markup sets the inline keyboard or reply markup for the ModLogChain report
+func (m *ModLogChain) Markup(markup any) *ModLogChain {
+	m.markup = markup
+	return m
+}

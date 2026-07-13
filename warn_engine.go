@@ -336,6 +336,38 @@ func (we *WarnEngine) Warn(c *Ctx, reason string) error {
 		_, _ = c.Send().Text(msgText).Markdown().Temp(15 * time.Second).Go()
 	}
 
+	// Automatically dispatch a beautifully formatted ModLog report if ModLog is configured
+	if we.bot.modLogChatID != nil && we.bot.modLogChatID != "" {
+		logTitle := "⚠️ **ثبت اخطار انضباطی (Warn)**"
+		var buttons any
+
+		// Compile native custom buttons dynamically based on punishment type
+		switch step.Type {
+		case PunishMute:
+			logTitle = "🔇 **سکوت انضباطی کاربر (Mute)**"
+			buttons = InlineMarkup().Row(Btn("🔊 رفع سکوت (Unmute)").Callback(fmt.Sprintf("_sys_modlog:unmute:%d:%d", chatID, userID))).Build()
+		case PunishBan:
+			logTitle = "🚫 **مسدودسازی دائم کاربر (Ban)**"
+			buttons = InlineMarkup().Row(Btn("✅ رفع مسدودسازی (Unban)").Callback(fmt.Sprintf("_sys_modlog:unban:%d:%d", chatID, userID))).Build()
+		default:
+			buttons = InlineMarkup().Row(Btn("📉 بخشش اخطار (Unwarn)").Callback(fmt.Sprintf("_sys_modlog:unwarn:%d:%d", chatID, userID))).Build()
+		}
+
+		mLog := c.ModLog(logTitle).
+			Target(userID).
+			Reason(reason).
+			Markup(buttons)
+
+		// Set visual automatic expiration of buttons safely
+		if step.Duration > 0 {
+			mLog.For(step.Duration)
+			mLog.ExpireIn(step.Duration, "⏳ زمان مجازات سپری شد / محدودیت دکمه لغو گردید")
+		} else if we.cooldown > 0 {
+			mLog.ExpireIn(we.cooldown, "⏳ مهلت بخشش اخطار به پایان رسید")
+		}
+		mLog.Go()
+	}
+
 	// Reset warnings from DB if max limits are reached
 	if newCount >= we.maxWarns {
 		_ = db.Del(countKey)
