@@ -1,0 +1,1382 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GoBale Framework - مستندات جامع و مرجع فنی</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-right">
+      <button class="menu-toggle-btn" id="menuToggleBtn" aria-label="Toggle Menu">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+      </button>
+      <div class="brand">
+        <div class="brand-logo">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+        </div>
+        <span class="brand-text">GoBale</span>
+        <span class="brand-version">v1.2.0</span>
+      </div>
+    </div>
+
+    <div class="header-center">
+      <button class="search-trigger-btn" id="searchTriggerBtn">
+        <div class="search-hint">
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <span>جستجوی سراسری در کل متون و کدهای داکیومنت...</span>
+        </div>
+        <kbd class="search-kbd">Ctrl K</kbd>
+      </button>
+    </div>
+
+    <div class="header-left">
+      <a href="https://github.com/PHX-Go/GoBale" target="_blank" class="header-btn">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+        <span>گیت‌هاب</span>
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+      </a>
+      <a href="#ch1" class="header-btn primary">
+        <span>شروع سریع</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- Layout Container -->
+  <div class="layout">
+
+    <!-- Right Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+          <span>شروع و مبانی</span>
+        </div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="#ch1" class="sidebar-link active">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                <span>۱. مقدمه و شروع سریع</span>
+              </div>
+              <span class="nav-badge">Quick</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch2" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
+                <span>۲. معماری بات و اجرا</span>
+              </div>
+              <span class="nav-badge">Core</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle></svg>
+          <span>مسیریابی و کانتکست</span>
+        </div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="#ch3" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle></svg>
+                <span>۳. موتور مسیریابی</span>
+              </div>
+              <span class="nav-badge">On()</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch4" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                <span>۴. موتور کانتکست Ctx</span>
+              </div>
+              <span class="nav-badge">Ctx</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          <span>پیام‌رسانی و رابط کاربری</span>
+        </div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="#ch5" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                <span>۵. ارسال پیام و مدیا</span>
+              </div>
+              <span class="nav-badge">Send</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch6" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                <span>۶. کیبورد، منو و صفحه‌بندی</span>
+              </div>
+              <span class="nav-badge">UI</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          <span>امنیت و مدیریت چت</span>
+        </div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="#ch7" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                <span>۷. سپر امنیتی و میدلورها</span>
+              </div>
+              <span class="nav-badge">Guard</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch8" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                <span>۸. موتور اخطار و مجازات</span>
+              </div>
+              <span class="nav-badge">Warn</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch11" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                <span>۱۱. مدیریت چت‌ها</span>
+              </div>
+              <span class="nav-badge">Admin</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+          <span>جریان‌های کاری و داده</span>
+        </div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="#ch9" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M6 21V9a9 9 0 0 0 9 9"></path></svg>
+                <span>۹. جریان‌های مکالمه‌ای و FSM</span>
+              </div>
+              <span class="nav-badge">FSM</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch10" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                <span>۱۰. دیتابیس WAL و سشن</span>
+              </div>
+              <span class="nav-badge">WAL</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+          <span>سیستم‌های پیشرفته</span>
+        </div>
+        <ul class="sidebar-nav">
+          <li>
+            <a href="#ch12" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                <span>۱۲. وب‌سوکت و انتقال فایل</span>
+              </div>
+              <span class="nav-badge">Socket</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch13" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
+                <span>۱۳. پرداخت‌ها و سامانه سفیر</span>
+              </div>
+              <span class="nav-badge">Pay</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch14" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="2"></circle><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path></svg>
+                <span>۱۴. ایونت‌باس و داشبورد</span>
+              </div>
+              <span class="nav-badge">Dash</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch15" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg>
+                <span>۱۵. آنالیتیکس و لیدربورد</span>
+              </div>
+              <span class="nav-badge">Stats</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch16" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                <span>۱۶. ابزارها و تقویم جلالی</span>
+              </div>
+              <span class="nav-badge">Utils</span>
+            </a>
+          </li>
+          <li>
+            <a href="#ch17" class="sidebar-link">
+              <div class="sidebar-link-content">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+                <span>۱۷. مرجع کامل API</span>
+              </div>
+              <span class="nav-badge">API</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <div class="content-wrapper">
+
+        <!-- Hero Banner -->
+        <div class="hero-banner">
+          <div class="hero-tag">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span>فریم‌ورک نسل جدید ربات‌های پیام‌رسان بله</span>
+          </div>
+          <h1 class="hero-title">توسعه پرسرعت، همزمان و ایمن با GoBale</h1>
+          <p class="hero-subtitle">
+            فریم‌ورک GoBale یک بسته ماژولار، با کارایی فوق‌العاده بالا و الگوی طراحی زنجیره‌ای (Fluent Builder) برای زبان Go است که تمامی قابلیت‌های پیام‌رسان بله را با نهایت امنیت، دیتابیس بدون افت دیتای WAL، سپر ضد کرش یونیکد و ابزارهای مانیتورینگ زنده در اختیارتان می‌گذارد.
+          </p>
+          <div class="hero-actions">
+            <a href="#ch1" class="header-btn primary">
+              <span>شروع کار در ۵ دقیقه</span>
+              <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+            </a>
+            <a href="#ch17" class="header-btn">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+              <span>مشاهده کاتالوگ متدها</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Feature Grid -->
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-icon-wrapper"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg></div>
+            <div class="feature-title">عملکرد فوق سریع O(1)</div>
+            <div class="feature-desc">بهره‌گیری از کلاینت HTTP بهینه با Connection Pooling، فشرده‌سازی خودکار Gzip و دیتابیس حافظه‌محور WAL.</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon-wrapper"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg></div>
+            <div class="feature-title">سپر امنیتی چندبعدی</div>
+            <div class="feature-desc">تشخیص و خنثی‌سازی خودکار بمب‌های یونیکد، کاراکترهای Zalgo، متون مخرب و جلوگیری قطعی از کرش بات.</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon-wrapper"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg></div>
+            <div class="feature-title">معماری زنجیره‌ای (Fluent)</div>
+            <div class="feature-desc">سینتکس تمیز و خوانا برای ارسال پیام، مدیا، کیبوردها، تنظیمات و میدلورها با متد Go().</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon-wrapper"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg></div>
+            <div class="feature-title">دیتابیس درونی WAL</div>
+            <div class="feature-desc">سیستم ماندگاری وضعیت کاربران و تنظیمات با لاگ ترتیبی باینری، بازیابی خودکار و Compactor دوره‌ای.</div>
+          </div>
+        </div>
+
+        <!-- Chapter 1 -->
+        <article class="doc-chapter" id="ch1">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 01</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> فصل ۱: مقدمه، ویژگی‌ها و شروع سریع</h2>
+            <p class="chapter-lead">آشنایی با ساختار پکیج GoBale، نحوه نصب، تنظیم متغیرهای محیطی و راه‌اندازی اولین ربات انعکاس‌دهنده (Echo Bot).</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱.۱ پیش‌نیازها و نصب پکیج</h3>
+            <p>برای شروع به زبان برنامه‌نویسی Go نسخه 1.20 یا بالاتر نیاز دارید. بسته را با اجرای دستور زیر در ترمینال اضافه کنید:</p>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">ترمینال - نصب پکیج</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">bash</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>go get github.com/PHX-Go/GoBale</code></pre>
+</div>
+
+            <p>یا برای دریافت آخرین تغییرات برنچ اصلی مخزن:</p>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">ترمینال - نصب نسخه اصلی</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">bash</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>go get github.com/PHX-Go/GoBale@main</code></pre>
+</div>
+
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱.۲ پیکربندی متغیرهای محیطی (.env)</h3>
+            <p>یک فایل با نام <code>.env</code> در پوشه ریشه پروژه خود ساخته و توکن بات و شناسه ادمین را وارد کنید:</p>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">فایل .env</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">env</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>BALE_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz\nADMIN_ID=987654321</code></pre>
+</div>
+
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱.۳ نمونه کد کامل اکو بات (Echo Bot)</h3>
+            <p>کد زیر یک نمونه اجرایی کامل با پشتیبانی از فشرده‌سازی Gzip و پردازش دستورات است:</p>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">main.go</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>package main
+
+import (
+	"log"
+
+	gobale "github.com/PHX-Go/GoBale"
+)
+
+func main() {
+	// بارگذاری متغیرهای محیطی از فایل .env
+	gobale.Env().Go()
+
+	token := gobale.GetEnv[string]("BALE_TOKEN")
+	adminID := gobale.GetEnv[int64]("ADMIN_ID")
+
+	// مقداردهی اولیه بات با تنظیم شناسه ادمین و فشرده‌سازی Gzip
+	bot, err := gobale.New(token).
+		Admin(adminID).
+		Gzip().
+		Go()
+
+	if err != nil {
+		log.Fatalf("خطا در راه‌اندازی ربات: %v", err)
+	}
+
+	// تعریف هندلر دستور /start
+	bot.On().Cmd("start").Do(func(c *gobale.Ctx) {
+		c.Send().
+			Text("به ربات GoBale خوش آمدید! هر پیامی ارسال کنید تکرار می‌شود.").
+			Go()
+	})
+
+	// تعریف هندلر دریافت کلیه پیام‌های متنی
+	bot.On().Msg().Do(func(c *gobale.Ctx) {
+		c.Send().
+			Text("پیام شما: " + c.Text()).
+			Go()
+	})
+
+	// اجرای ربات به روش Polling
+	log.Println("ربات در حال اجرا است...")
+	bot.Run().Polling().Go()
+}</code></pre>
+</div>
+
+            
+<div class="callout tip">
+  <div class="callout-icon"><svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></div>
+  <div class="callout-content">
+    <div class="callout-title">بهینه‌سازی مصرف شبکه</div>
+    <p style="margin: 0;">متد <code>.Gzip()</code> مصرف پهنای باند سرور را در ارسال و دریافت دیتا تا بیش از ۷۰ درصد کاهش می‌دهد.</p>
+  </div>
+</div>
+
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱.۴ دیاگرام چرخه پردازش رویدادها</h3>
+            <div class="diagram-card">
+              <div class="diagram-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg> چرخه پردازش Update در GoBale</div>
+              <div class="flow-flex">
+                <div class="flow-node">سرور بله (Bale API)</div>
+                <div class="flow-arrow">&larr;</div>
+                <div class="flow-node highlight">Worker Pool / Receiver</div>
+                <div class="flow-arrow">&larr;</div>
+                <div class="flow-node">سپر ضد کرش یونیکد</div>
+                <div class="flow-arrow">&larr;</div>
+                <div class="flow-node highlight">پایپ‌لاین میدلورها (Use)</div>
+                <div class="flow-arrow">&larr;</div>
+                <div class="flow-node">موتور روتر (On)</div>
+                <div class="flow-arrow">&larr;</div>
+                <div class="flow-node highlight">هندلر کاربر (Do)</div>
+              </div>
+            </div>
+          </section>
+        </article>
+
+        <!-- Chapter 2 -->
+        <article class="doc-chapter" id="ch2">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 02</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg> فصل ۲: معماری هسته و روش‌های اجرا</h2>
+            <p class="chapter-lead">بررسی گزینه‌های سازنده <code>gobale.New()</code> و ۳ روش اجرای Polling، Webhook و Native WebSocket.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۲.۱ سازنده ربات و گزینه‌های زنجیره‌ای</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>متد پیکربندی</th>
+                    <th>نوع ورودی</th>
+                    <th>توضیح عملکرد</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>.Admin(ids ...int64)</code></td><td><code>int64</code></td><td>ثبت شناسه‌های عددی ادمین‌های بات برای اعتبارسنجی‌ها.</td></tr>
+                  <tr><td><code>.Gzip()</code></td><td>-</td><td>فعال‌سازی فشرده‌سازی ترنزیت دیتا.</td></tr>
+                  <tr><td><code>.Timeout(d time.Duration)</code></td><td><code>time.Duration</code></td><td>تایم‌اوت درخواست‌های شبکه به سرور بله (پیش‌فرض: 30s).</td></tr>
+                  <tr><td><code>.Workers(n int)</code></td><td><code>int</code></td><td>تعداد پردازنده‌های موازی در صف پردازش بات.</td></tr>
+                  <tr><td><code>.Logger(l *slog.Logger)</code></td><td><code>*slog.Logger</code></td><td>تزریق لاگر ساختاریافته اختصاصی.</td></tr>
+                  <tr><td><code>.Database(db Storage)</code></td><td><code>Storage</code></td><td>تزریق دیتابیس اختصاصی یا WAL محلی.</td></tr>
+                  <tr><td><code>.EventBus(eb *EventBus)</code></td><td><code>*EventBus</code></td><td>متصل‌کردن سیستم انتشار و اشتراک رویدادها.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۲.۲ روش‌های سه‌گانه اجرا</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">روش‌های اجرا</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// ۱. اجرای Long Polling
+bot.Run().Polling().
+	Limit(100).
+	Timeout(25).
+	Go()
+
+// ۲. اجرای Webhook
+bot.Run().Webhook().
+	Listen(":8443").
+	URL("https://yourdomain.com/webhook").
+	Secret("secret_key").
+	Go()
+
+// ۳. اجرای WebSocket Native
+bot.Run().WebSocket().
+	URL("wss://api.bale.ai/v1/stream").
+	Reconnect(true).
+	Go()</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 3 -->
+        <article class="doc-chapter" id="ch3">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 03</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle></svg> فصل ۳: موتور مسیریابی و هندلرها</h2>
+            <p class="chapter-lead">نحوه تعریف مسیرها با <code>bot.On()</code>، استخراج آرگومان‌های دستور، فیلترهای Regex و رویدادهای دکمه شیشه‌ای.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۳.۱ فیلترهای رویداد</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">انواع فیلترها</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// دستورات با اسامی مستعار
+bot.On().Cmd("help", "rahnama", "guide").Do(func(c *gobale.Ctx) {
+	c.Send().Text("لیست راهنما...").Go()
+})
+
+// تطبیق متن با Regex
+bot.On().Regex(`^کد:\s*(\d+)$`).Do(func(c *gobale.Ctx) {
+	c.Send().Text("کد پیگیری دریافت شد.").Go()
+})
+
+// دریافت انواع رسانه
+bot.On().Photo().Do(func(c *gobale.Ctx) { c.Reply().Text("عکس دریافت شد.").Go() })
+bot.On().Video().Do(func(c *gobale.Ctx) { c.Reply().Text("ویدیو دریافت شد.").Go() })
+bot.On().Voice().Do(func(c *gobale.Ctx) { c.Reply().Text("ویس دریافت شد.").Go() })
+bot.On().Document().Do(func(c *gobale.Ctx) { c.Reply().Text("فایل دریافت شد.").Go() })
+
+// کلیک دکمه‌های شیشه‌ای
+bot.On().Callback("menu_settings").Do(func(c *gobale.Ctx) {
+	c.Answer().Text("ورود به تنظیمات...").Go()
+})</code></pre>
+</div>
+
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۳.۲ استخراج آرگومان‌های دستورات</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">استخراج آرگومان‌ها</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>bot.On().Cmd("ban").AdminOnly().Do(func(c *gobale.Ctx) {
+	// استخراج مستقیم با تعیین مقدار پیش‌فرض
+	targetID := c.ArgInt(0, 0)
+	reason := c.ArgString(1, "بدون دلیل مشخص")
+
+	// اسکن همزمان با ScanArgs
+	var userID int64
+	var banReason string
+	if err := c.ScanArgs(&userID, &banReason); err != nil {
+		c.Reply().Text("فرمت: /ban 12345 دلیل").Go()
+		return
+	}
+})</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 4 -->
+        <article class="doc-chapter" id="ch4">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 04</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> فصل ۴: موتور کانتکست (Context Engine - Ctx)</h2>
+            <p class="chapter-lead">متدهای کمکی بررسی چت، هویت کاربر، پیام‌های خودتخریب‌گر و کنترل پایپ‌لاین.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۴.۱ متدهای استخراج هویت</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr><th>متد</th><th>خروجی</th><th>توضیحات</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>c.UserID()</code></td><td><code>(int64, error)</code></td><td>شناسه عددی کاربر فرستنده.</td></tr>
+                  <tr><td><code>c.ChatID()</code></td><td><code>(int64, error)</code></td><td>شناسه پنجره چت جاری.</td></tr>
+                  <tr><td><code>c.SenderID()</code></td><td><code>int64</code></td><td>شناسه فرستنده مستقیم و ایمن.</td></tr>
+                  <tr><td><code>c.IsAdmin()</code></td><td><code>bool</code></td><td>بررسی دسترسی ادمین.</td></tr>
+                  <tr><td><code>c.IsGroup()</code></td><td><code>bool</code></td><td>تشخیص گروه یا سوپرگروه.</td></tr>
+                  <tr><td><code>c.IsPrivate()</code></td><td><code>bool</code></td><td>تشخیص چت شخصی مستقیم با بات.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۴.۲ پیام‌های خودتخریب‌گر و اکشن‌ها</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">اکشن‌ها و پیام موقت</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>bot.On().Cmd("ping").Do(func(c *gobale.Ctx) {
+	c.Typing() // نمایش حالت تایپ در بالای صفحه
+	c.TempText("پاسخ تست پینگ! (حذف پس از ۵ ثانیه)", 5 * time.Second)
+	c.Del().Delay(3 * time.Second).Go() // حذف دستور اولیه
+})</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 5 -->
+        <article class="doc-chapter" id="ch5">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 05</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> فصل ۵: سیستم پیشرفته ارسال پیام و رسانه</h2>
+            <p class="chapter-lead">سازنده‌های <code>c.Send()</code> و <code>c.Reply()</code>، فرمت‌بندی متن، ارسال مدیا، ویرایش و حذف.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۵.۱ ارسال متن و رسانه</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">نمونه‌های ارسال</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// ارسال متن با مارک‌داون و کیبورد شیشه‌ای
+c.Send().
+	Text("*پیام مهم*\nاین یک متن تستی است.").
+	Markdown().
+	Inline(
+		gobale.InlineKeyboard().
+			Row(gobale.Btn("مشاهده سایت", "https://example.com").URL())
+	).
+	Silent().
+	Go()
+
+// ارسال عکس با کپشن
+c.Send().
+	Photo("https://example.com/image.jpg").
+	Caption("کپشن عکس").
+	Go()
+
+// ریپلای به پیام فعلی
+c.Reply().Text("پاسخ ثبت شد.").Go()</code></pre>
+</div>
+
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۵.۲ ویرایش و حذف پیام</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">ویرایش و حذف</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// ویرایش متن پیام
+c.Edit().MessageID(12345).Text("متن جدید").Go()
+
+// حذف پیام
+c.Delete()</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 6 -->
+        <article class="doc-chapter" id="ch6">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 06</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg> فصل ۶: کیبوردها، منوهای درختی و صفحه‌بندی</h2>
+            <p class="chapter-lead">ساخت کیبوردهای شیشه‌ای، منوهای داینامیک سلسله‌مراتبی و صفحه‌بندی پیشرفته بدون پرش صفحه.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۶.۱ کیبوردهای شیشه‌ای و منوی درختی</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">کیبورد و منو</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// کیبورد شیشه‌ای ماتریسی
+kb := gobale.InlineKeyboard().
+	Row(
+		gobale.Btn("پروفایل", "act_profile"),
+		gobale.Btn("تنظیمات", "act_settings"),
+	).
+	Row(
+		gobale.Btn("کانال بله", "https://ble.ir/example").URL(),
+	)
+
+c.Send().Text("منوی اصلی:").Inline(kb).Go()
+
+// منوی درختی چندسطحی با برگشت خودکار
+menu := gobale.NewMenu("main").
+	Text("لطفاً بخش مورد نظر را انتخاب کنید:").
+	Button("فروشگاه", "shop").
+	Button("پشتیبانی", "support")
+
+menu.SubMenu("shop").
+	Text("محصولات فروشگاه:").
+	Button("محصول ۱", "p1").
+	AutoBack()</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 7 -->
+        <article class="doc-chapter" id="ch7">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 07</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg> فصل ۷: سپر امنیتی، میدلورها و AntiCrash</h2>
+            <p class="chapter-lead">سپر محافظت در برابر متون مخرب Zalgo، بمب‌های یونیکد، میدلورهای ضد اسپم، ضد لینک و قفل رسانه.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۷.۱ سپر ضد کرش یونیکد (Zalgo Defense)</h3>
+            <p>خنثی‌سازی خودکار تهدیدات متنی یونیکد و جلوگیری از کرش ربات در مواجهه با ورودی‌های مخرب:</p>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">فعال‌سازی AntiCrash</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// ثبت میدلور عمومی ضد کرش
+bot.Use(gobale.AntiCrashMiddleware())</code></pre>
+</div>
+
+          </section>
+
+          <section class="doc-section">
+            <h3 class="section-title">۷.۲ میدلورهای امنیتی گروه</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">میدلورهای محافظتی</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// ۱. ضد لینک با لیست سفید دامنه‌ها
+bot.Use(gobale.AntiLink(nil, 5*time.Second, "ارسال لینک ممنوع است!", "ble.ir", "bale.ai"))
+
+// ۲. ضد اسپم (حداکثر ۵ پیام در بازه ۳ ثانیه‌ای)
+bot.Use(gobale.AntiSpam(nil, 5, 3*time.Second, "لطفاً اسپم نکنید!"))
+
+// ۳. ضد کلمات نامناسب
+bot.Use(gobale.AntiProfanity(nil, 5*time.Second, []string{"کلمه۱", "کلمه۲"}))
+
+// ۴. ضد پیام‌های فوروارد شده
+bot.Use(gobale.AntiForward(nil, 5*time.Second))</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 8 -->
+        <article class="doc-chapter" id="ch8">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 08</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg> فصل ۸: موتور اخطار و مجازات پلکانی</h2>
+            <p class="chapter-lead">سیستم ثبت و انقضای اخطارها، اعمال مجازات‌های خودکار (سکوت، اخراج، بن) و دستورات ادمین.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۸.۱ پیکربندی WarnEngine</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">موتور اخطار پلکانی</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>engine := gobale.NewWarnEngine(bot).
+	AddStep(gobale.Warn("اخطار ۱: قوانین را رعایت کنید.")).
+	AddStep(gobale.Mute(2*time.Hour, "شما ۲ ساعت سایلنت شدید.")).
+	AddStep(gobale.Kick("شما از گروه اخراج شدید.")).
+	AddStep(gobale.Ban("شما به صورت دائمی مسدود شدید.")).
+	Cooldown(24 * time.Hour) // کاهش خودکار اخطار پس از ۲۴ ساعت
+
+// ثبت خودکار دستورات /warn, /unwarn, /warns
+engine.AutoCommands()
+
+// اتصال به میدلور ضد لینک
+bot.Use(gobale.AntiLink(engine, 5*time.Second, "ارسال لینک ممنوع است!"))</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 9 -->
+        <article class="doc-chapter" id="ch9">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 09</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M6 21V9a9 9 0 0 0 9 9"></path></svg> فصل ۹: جریان‌های مکالمه‌ای و ویزاردها</h2>
+            <p class="chapter-lead">طراحی فرم‌های چندمرحله‌ای تعاملی با اعتبارسنجی ورودی هر مرحله.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۹.۱ ساخت ویزارد مکالمه (WizardChain)</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">ویزارد ثبت‌نام</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>bot.On().Cmd("register").Do(func(c *gobale.Ctx) {
+	c.NewWizard().
+		Step("نام و نام خانوادگی خود را وارد کنید:", func(ctx *gobale.Ctx) {
+			ctx.SetData("name", ctx.Text())
+		}).
+		StepWithValidation(
+			"شماره تماس ۱۱ رقمی خود را وارد کنید:",
+			func(text string) bool { return len(text) == 11 },
+			"شماره نامعتبر است! باید ۱۱ رقمی باشد.",
+			func(ctx *gobale.Ctx) {
+				ctx.SetData("phone", ctx.Text())
+			},
+		).
+		OnComplete(func(ctx *gobale.Ctx) {
+			ctx.Send().Text("ثبت‌نام با موفقیت تکمیل شد!").Go()
+		}).
+		Start()
+})</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 10 -->
+        <article class="doc-chapter" id="ch10">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 10</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg> فصل ۱۰: دیتابیس Write-Ahead Log (WAL) و سشن‌ها</h2>
+            <p class="chapter-lead">معماری دیتابیس باینری فوق‌سریع با خواندن درون‌حافظه‌ای $O(1)$ و ثبت ترتیبی لاگ دیسک.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۰.۱ کار با دیتابیس و سشن کاربر</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">دیتابیس WAL و سشن</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// کار با دیتابیس مستقیم WAL
+c.DBSet("user_status:" + fmt.Sprint(c.SenderID()), "active")
+val, ok := c.DBGet("user_status:" + fmt.Sprint(c.SenderID()))
+
+// کار با سشن کاربر
+session := c.Session()
+session.Set("cart_count", 3)
+count := session.GetInt("cart_count")</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 11 -->
+        <article class="doc-chapter" id="ch11">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 11</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg> فصل ۱۱: مدیریت چت‌ها و اختیارات گروه</h2>
+            <p class="chapter-lead">مدیریت اعضای گروه، اخراج، بن، سکوت، پین پیام‌ها و بررسی عضویت اجباری (JoinGuard).</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۱.۱ متدهای ادمین چت</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">مدیریت چت</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// بن کردن کاربر
+c.BanUser(targetUserID)
+
+// سکوت کاربر به مدت ۱ ساعت
+c.MuteUser(1 * time.Hour)
+
+// بررسی عضویت اجباری در کانال
+isMember, err := c.JoinGuard("@mychannel", "https://ble.ir/mychannel")
+if !isMember {
+	return
+}</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 12 -->
+        <article class="doc-chapter" id="ch12">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 12</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg> فصل ۱۲: موتور وب‌سوکت و انتقال پیشرفته فایل</h2>
+            <p class="chapter-lead">استریمینگ بلادرنگ با وب‌سوکت، دانلود تکه‌تکه با گزارش پیشرفت (OnProgress).</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۲.۱ دانلود فایل با درصد پیشرفت</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">دانلود فایل</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>path, err := c.File(fileID).
+	Download().
+	Name("video.mp4").
+	Path("./downloads").
+	OnProgress(func(percent float64) {
+		log.Printf("پیشرفت دانلود: %.2f%%", percent)
+	}).
+	Go()</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 13 -->
+        <article class="doc-chapter" id="ch13">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 13</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg> فصل ۱۳: پرداخت‌ها، فروشگاه و سامانه سفیر</h2>
+            <p class="chapter-lead">صدور فاکتور ریالی، تاییدیه خرید و ارسال پیامک‌های تراکنشی و OTP با سامانه سفیر.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۳.۱ صدور فاکتور و ارسال پیامک سفیر</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">پرداخت و سفیر</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// صدور فاکتور خرید
+c.Pay().
+	Invoice("اشتراک ماهانه", "دسترسی به خدمات ویژه", "ORDER_123", "PROVIDER_TOKEN").
+	Price("مبلغ اشتراک", 200000). // ریال
+	Go()
+
+// ارسال پیامک و OTP با سامانه سفیر
+c.Safir().
+	Phone("09123456789").
+	Text("کد ورود شما: 58291").
+	Go()</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 14 -->
+        <article class="doc-chapter" id="ch14">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 14</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="2"></circle><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path></svg> فصل ۱۴: ایونت‌باس، لاگر و داشبورد مانیتورینگ</h2>
+            <p class="chapter-lead">ایونت‌باس مرکزی Pub/Sub، لاگر ساختاریافته و داشبورد وب زنده برای پایش سخت‌افزار و ربات.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۴.۱ ایونت‌باس و داشبورد زنده</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">ایونت‌باس و داشبورد</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// ثبت رویداد در ایونت‌باس
+eb := gobale.NewEventBus()
+eb.Subscribe("new_order", func(payload any) {
+	log.Printf("سفارش جدید: %v", payload)
+})
+eb.Publish("new_order", map[string]int{"order_id": 998})
+
+// راه‌اندازی داشبورد وب زنده روی پورت 8080
+bot.Dash().Addr(":8080").Go()</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 15 -->
+        <article class="doc-chapter" id="ch15">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 15</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line></svg> فصل ۱۵: آنالیتیکس و جدول لیدربورد کاربران</h2>
+            <p class="chapter-lead">آمار دقیق پیام‌ها، ساعات اوج ترافیک و رتبه‌بندی اعضای فعال گروه.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۵.۱ دریافت گزارش آمار گروه</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">آنالیتیکس</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>bot.On().Cmd("stats").Do(func(c *gobale.Ctx) {
+	report, err := c.AnalyticsReport(gobale.PeriodDaily)
+	if err == nil {
+		c.Send().Text(report).Go()
+	}
+})</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 16 -->
+        <article class="doc-chapter" id="ch16">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 16</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg> فصل ۱۶: ابزارها، تقویم جلالی و هلپرها</h2>
+            <p class="chapter-lead">تبدیل تاریخ شمسی، مدیریت متغیرهای محیطی و پاک‌سازی داده‌ها.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۶.۱ تقویم جلالی</h3>
+            
+<div class="code-container">
+  <div class="code-header">
+    <div style="display: flex; align-items: center;">
+      <div class="code-window-controls">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="code-title">تقویم جلالی</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <span class="code-lang-tag">go</span>
+      <button class="code-copy-btn">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>کپی</span>
+      </button>
+    </div>
+  </div>
+  <pre><code>// دریافت زمان جاری به صورت شمسی
+shamsiStr := c.JalaliString() // 1405/06/03 14:30
+
+// تبدیل دستی تاریخ
+jy, jm, jd := gobale.ToJalali(time.Now())</code></pre>
+</div>
+
+          </section>
+        </article>
+
+        <!-- Chapter 17 -->
+        <article class="doc-chapter" id="ch17">
+          <div class="chapter-header">
+            <div class="chapter-badge">Chapter 17</div>
+            <h2 class="chapter-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg> فصل ۱۷: مرجع کامل API و کاتالوگ توابع</h2>
+            <p class="chapter-lead">کاتالوگ کامل کلیه استراکت‌ها، اینترفیس‌ها و متدهای فریم‌ورک GoBale.</p>
+          </div>
+
+          <section class="doc-section">
+            <h3 class="section-title">۱۷.۱ کاتالوگ استراکت‌های اصلی</h3>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr><th>نام Struct</th><th>مسیر پکیج</th><th>توضیحات و کاربرد</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>Bot</code></td><td><code>gobale/bot.go</code></td><td>شیء اصلی کنترل‌کننده بات و موتور روتر.</td></tr>
+                  <tr><td><code>Ctx</code></td><td><code>gobale/context.go</code></td><td>کانتکست هر درخواست ورودی و متدهای اجرایی.</td></tr>
+                  <tr><td><code>SendChain</code></td><td><code>gobale/send.go</code></td><td>زنجیره سازنده و ارسال انواع پیام و مدیا.</td></tr>
+                  <tr><td><code>Update</code></td><td><code>gobale/types.go</code></td><td>پاکت رویداد دریافتی از بله.</td></tr>
+                  <tr><td><code>Database</code></td><td><code>gobale/database.go</code></td><td>دیتابیس درونی با معماری Write-Ahead Log.</td></tr>
+                  <tr><td><code>WarnEngine</code></td><td><code>gobale/warn_engine.go</code></td><td>موتور مدیریت اخطارها و مجازات‌های پلکانی.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </article>
+
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Search Modal Backdrop (Ctrl+K) -->
+  <div class="search-modal-backdrop" id="searchModalBackdrop">
+    <div class="search-modal">
+      <div class="search-input-header">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" class="search-input" id="searchInput" placeholder="جستجوی عمیق در تمام متون، کدها و متدهای داکیومنت...">
+      </div>
+      <ul class="search-results-list" id="searchResultsList"></ul>
+      <div class="search-modal-footer">
+        <div class="search-shortcuts">
+          <span><kbd class="search-kbd">ESC</kbd> بستن</span>
+          <span><kbd class="search-kbd">ENTER</kbd> رفتن به بخش</span>
+        </div>
+        <span>موتور جستجوی سراسری GoBale</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
